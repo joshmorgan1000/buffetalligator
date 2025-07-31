@@ -129,7 +129,8 @@ target_include_directories(buffet_alligator PUBLIC
 )
 
 # Link libraries
-target_link_libraries(buffet_alligator PUBLIC 
+target_link_libraries(buffet_alligator PUBLIC
+    cswift
     $<$<BOOL:${Vulkan_INCLUDE_DIRS}>:Vulkan::Vulkan>
     $<$<BOOL:${CUDA_ARCHITECTURES_INCLUDE_DIRS}>:cuda>
     $<$<BOOL:${METAL_FRAMEWORK_INCLUDE_DIRS}>:Metal>
