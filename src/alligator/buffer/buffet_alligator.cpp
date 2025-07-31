@@ -66,7 +66,7 @@ void BuffetAlligator::garbage_collector() {
         ChainBuffer* buffer = get_buffer(index % registry_size);
         uint64_t current_time = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (buffer && (buffer->consumed_timestamp_.load(std::memory_order_acquire) + 100 < current_time)
+        if (buffer && (buffer->consumed_timestamp_.load(std::memory_order_acquire) < current_time)
                 && (buffer->get_destructor_count() >= buffer->get_constructor_count() || !buffer->pinned_.load(std::memory_order_acquire))) {
             buffer->deallocate();
             buffers_[index % registry_size].store(nullptr, std::memory_order_relaxed);

@@ -75,6 +75,7 @@ protected:
     std::atomic<uint64_t> destructor_call_count_{0};   ///< Destructor call count
     std::atomic<uint64_t> last_message_sequence_{UINT64_MAX};  ///< Sequence number of the last message
     std::atomic<bool> pinned_{false};
+    std::atomic<uint64_t> ttl_{0};
     friend class BuffetAlligator;  ///< Allow BuffetAlligator to access private members
     friend class BufferPin;
 public:
@@ -96,9 +97,18 @@ public:
     void set_last_message_sequence(uint64_t seq) {
         last_message_sequence_.store(seq, std::memory_order_release);
     }
+    void set_ttl(uint64_t ttl) {
+        ttl_.store(ttl, std::memory_order_release);
+    }
     void mark_consumed() {
-        consumed_timestamp_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_release);
+        uint64_t current_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        // Check to make sure that adding the ttl_ to current_time does not overflow the uint64_t
+        if (std::numeric_limits<uint64_t>::max() - current_time < ttl_.load(std::memory_order_acquire)) {
+            consumed_timestamp_.store(std::numeric_limits<uint64_t>::max(), std::memory_order_release);
+        } else {
+            consumed_timestamp_.store(current_time + ttl_.load(std::memory_order_acquire), std::memory_order_release);
+        }
     }
     
     /**
