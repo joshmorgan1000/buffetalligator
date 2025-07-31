@@ -9,9 +9,6 @@
 /**
  * @file heap_buffer.hpp
  * @brief Heap-allocated buffer implementation with chaining support
- * 
- * 30208000
- * 300691456
  */
 
 namespace alligator {

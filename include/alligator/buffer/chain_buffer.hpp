@@ -79,7 +79,7 @@ protected:
     friend class BufferPin;
 public:
     std::atomic<ChainBuffer*> next{nullptr};
-    std::atomic<bool> consumed_{false};  ///< Flag to indicate if the buffer has been consumed
+    std::atomic<uint64_t> consumed_timestamp_{std::numeric_limits<uint64_t>::max()};
     virtual ~ChainBuffer() = default;
     uint64_t increment_constructor_count() {
         return constructor_call_count_.fetch_add(1, std::memory_order_relaxed);
@@ -95,6 +95,10 @@ public:
     }
     void set_last_message_sequence(uint64_t seq) {
         last_message_sequence_.store(seq, std::memory_order_release);
+    }
+    void mark_consumed() {
+        consumed_timestamp_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_release);
     }
     
     /**
