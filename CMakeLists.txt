@@ -123,8 +123,8 @@ add_library(buffet_alligator STATIC ${BUFFER_SOURCES})
 target_include_directories(buffet_alligator PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/asio/include>
-    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/cswift/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cswift/include>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -136,7 +136,7 @@ target_link_libraries(buffet_alligator PUBLIC
     $<$<BOOL:${ACCELERATE_FRAMEWORK_INCLUDE_DIRS}>:Accelerate>
 )
 
-# add_subdirectory(examples)
+add_subdirectory(examples)
 
 # ──────────────────────────────────────────────────────────────
 # Print configuration summary

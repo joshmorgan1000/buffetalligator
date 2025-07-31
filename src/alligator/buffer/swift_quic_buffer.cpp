@@ -409,4 +409,48 @@ SwiftQuicBuffer::NetworkStats SwiftQuicBuffer::get_stats() const {
     };
 }
 
+ssize_t SwiftQuicBuffer::send_from(ICollectiveBuffer* src, size_t size, size_t src_offset) {
+    if (!src || src_offset + size > src->buf_size_) {
+        return -1;
+    }
+    
+    // Copy from source buffer to our buffer
+    // Get the data pointer from the source buffer
+    uint8_t* src_data = nullptr;
+    if (auto* chain_buf = dynamic_cast<ChainBuffer*>(src)) {
+        src_data = chain_buf->data();
+    } else {
+        return -1;  // Can't get data pointer
+    }
+    
+    std::memcpy(data_, src_data + src_offset, size);
+    
+    // Send using default stream
+    return send_stream(0, 0, size);
+}
+
+ssize_t SwiftQuicBuffer::receive_into(ICollectiveBuffer* dst, size_t size, size_t dst_offset) {
+    if (!dst || dst_offset + size > dst->buf_size_) {
+        return -1;
+    }
+    
+    // Receive from default stream
+    ssize_t received = receive_stream(0, 0, size);
+    
+    if (received > 0) {
+        // Copy to destination buffer
+        // Get the data pointer from the destination buffer
+        uint8_t* dst_data = nullptr;
+        if (auto* chain_buf = dynamic_cast<ChainBuffer*>(dst)) {
+            dst_data = chain_buf->data();
+        } else {
+            return -1;  // Can't get data pointer
+        }
+        
+        std::memcpy(dst_data + dst_offset, data_, received);
+    }
+    
+    return received;
+}
+
 } // namespace alligator
