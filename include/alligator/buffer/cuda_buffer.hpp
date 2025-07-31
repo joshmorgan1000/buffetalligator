@@ -177,7 +177,8 @@ public:
 namespace alligator {
 class CUDABuffer : public GPUBuffer {
 public:
-    CUDABuffer(size_t capacity = 0, int device_id = -1, bool prefetch_to_gpu = false) {
+    CUDABuffer(size_t capacity = 0, int device_id = -1, bool prefetch_to_gpu = false) 
+        : GPUBuffer(capacity, GPUMemoryType::DEVICE_LOCAL) {
         throw std::runtime_error("CUDABuffer is not available in this build. "
                                  "Ensure CUDA is enabled and properly configured.");
     }

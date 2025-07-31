@@ -1,6 +1,8 @@
 #include <alligator/buffer/swift_tcp_buffer.hpp>
 #include <alligator/buffer/buffet_alligator.hpp>
 #include <cstring>
+#include <thread>
+#include <chrono>
 
 namespace alligator {
 
@@ -81,12 +83,10 @@ std::span<const uint8_t> SwiftTcpBuffer::get_span(const size_t& offset, const si
 bool SwiftTcpBuffer::bind(const NetworkEndpoint& endpoint) {
     try {
         // Create TCP parameters using cswift
-        auto params = cswift::CSNWParameters::createTCP();
-        params.setLocalOnly(false);
-        params.setReuseLocalAddress(true);
+        auto params = cswift::CSNWParameters::tcp();
         
         // Create listener using cswift
-        listener_ = std::make_unique<cswift::CSNWListener>(params);
+        listener_ = std::make_unique<cswift::CSNWListener>(endpoint.port, *params);
         
         // Set new connection handler
         listener_->setNewConnectionHandler([this](std::unique_ptr<cswift::CSNWConnection> new_connection) {
@@ -98,15 +98,15 @@ bool SwiftTcpBuffer::bind(const NetworkEndpoint& endpoint) {
         });
         
         // Set state handler
-        listener_->setStateUpdateHandler([this](cswift::CSNWListenerState state) {
-            if (state == cswift::CSNWListenerState::Ready) {
+        listener_->setStateUpdateHandler([this](cswift::CSNWConnectionState state) {
+            if (state == cswift::CSNWConnectionState::Ready) {
                 state_.store(State::READY, std::memory_order_release);
-            } else if (state == cswift::CSNWListenerState::Failed) {
+            } else if (state == cswift::CSNWConnectionState::Failed) {
                 state_.store(State::FAILED, std::memory_order_release);
             }
         });
         
-        listener_->start(endpoint.port);
+        listener_->start();
         return true;
         
     } catch (const std::exception& e) {
@@ -169,24 +169,24 @@ void SwiftTcpBuffer::handle_state_change(cswift::CSNWConnectionState new_state) 
 }
 
 void SwiftTcpBuffer::start_receive() {
-    connection_->receive(1, UINT32_MAX, [this](const uint8_t* data, size_t size, bool is_complete) {
-        if (data && size > 0) {
+    connection_->receive(1, UINT32_MAX, [this](std::vector<uint8_t> received_data, bool is_complete, bool success) {
+        if (success && !received_data.empty()) {
             size_t rx_off = rx_offset_.load(std::memory_order_acquire);
             size_t available = buf_size_ - rx_off;
             
-            if (size <= available) {
+            if (received_data.size() <= available) {
                 // Copy data to internal buffer
-                std::memcpy(data_ + rx_off, data, size);
+                std::memcpy(data_ + rx_off, received_data.data(), received_data.size());
                 
-                rx_offset_.fetch_add(size, std::memory_order_release);
+                rx_offset_.fetch_add(received_data.size(), std::memory_order_release);
                 
                 // Add to receive queue
                 {
                     std::lock_guard<std::mutex> lock(rx_mutex_);
-                    rx_queue_.push({rx_off, size});
+                    rx_queue_.push({rx_off, received_data.size()});
                 }
                 
-                stats_.bytes_received.fetch_add(size, std::memory_order_relaxed);
+                stats_.bytes_received.fetch_add(received_data.size(), std::memory_order_relaxed);
                 stats_.packets_received.fetch_add(1, std::memory_order_relaxed);
             }
         }
@@ -208,10 +208,25 @@ ssize_t SwiftTcpBuffer::send(size_t offset, size_t size) {
     }
     
     try {
-        connection_->send(data_ + offset, size, true);
-        stats_.bytes_sent.fetch_add(size, std::memory_order_relaxed);
-        stats_.packets_sent.fetch_add(1, std::memory_order_relaxed);
-        return size;
+        std::atomic<bool> send_complete{false};
+        std::atomic<bool> send_success{false};
+        
+        connection_->send(data_ + offset, size, [&send_complete, &send_success](bool success) {
+            send_success.store(success);
+            send_complete.store(true);
+        });
+        
+        // Wait for send to complete
+        while (!send_complete.load()) {
+            std::this_thread::yield();
+        }
+        
+        if (send_success.load()) {
+            stats_.bytes_sent.fetch_add(size, std::memory_order_relaxed);
+            stats_.packets_sent.fetch_add(1, std::memory_order_relaxed);
+            return size;
+        }
+        return -1;
     } catch (const std::exception& e) {
         return -1;
     }
@@ -249,11 +264,26 @@ ssize_t SwiftTcpBuffer::send_from(ICollectiveBuffer* src, size_t size, size_t sr
     try {
         // Zero-copy send using cswift
         const uint8_t* src_data = src->data() + src_offset;
-        connection_->send(src_data, size, true);
         
-        stats_.bytes_sent.fetch_add(size, std::memory_order_relaxed);
-        stats_.packets_sent.fetch_add(1, std::memory_order_relaxed);
-        return size;
+        std::atomic<bool> send_complete{false};
+        std::atomic<bool> send_success{false};
+        
+        connection_->send(src_data, size, [&send_complete, &send_success](bool success) {
+            send_success.store(success);
+            send_complete.store(true);
+        });
+        
+        // Wait for send to complete
+        while (!send_complete.load()) {
+            std::this_thread::yield();
+        }
+        
+        if (send_success.load()) {
+            stats_.bytes_sent.fetch_add(size, std::memory_order_relaxed);
+            stats_.packets_sent.fetch_add(1, std::memory_order_relaxed);
+            return size;
+        }
+        return -1;
     } catch (const std::exception& e) {
         return -1;
     }

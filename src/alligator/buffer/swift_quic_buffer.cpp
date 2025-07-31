@@ -99,10 +99,10 @@ bool SwiftQuicBuffer::bind(const NetworkEndpoint& endpoint) {
         });
         
         // Set state handler
-        listener_->setStateUpdateHandler([this](cswift::CSNWListenerState state) {
-            if (state == cswift::CSNWListenerState::Ready) {
+        listener_->setStateUpdateHandler([this](cswift::CSNWConnectionState state) {
+            if (state == cswift::CSNWConnectionState::Ready) {
                 state_.store(State::READY, std::memory_order_release);
-            } else if (state == cswift::CSNWListenerState::Failed) {
+            } else if (state == cswift::CSNWConnectionState::Failed) {
                 state_.store(State::FAILED, std::memory_order_release);
             }
         });
@@ -173,34 +173,37 @@ void SwiftQuicBuffer::handle_state_change(cswift::CSNWConnectionState new_state)
 }
 
 void SwiftQuicBuffer::start_receive() {
-    connection_->receive(1, UINT32_MAX, [this](const uint8_t* data, size_t size, bool is_complete) {
-        if (data && size > 0) {
+    connection_->receive(1, UINT32_MAX, [this](std::vector<uint8_t> received_data, bool is_complete, bool success) {
+        if (success && !received_data.empty()) {
             // For QUIC simulation, treat the first 8 bytes as stream ID
             uint64_t stream_id = 0;
-            if (size >= 8) {
-                std::memcpy(&stream_id, data, sizeof(uint64_t));
-                data += 8;
-                size -= 8;
+            size_t data_offset = 0;
+            
+            if (received_data.size() >= 8) {
+                std::memcpy(&stream_id, received_data.data(), sizeof(uint64_t));
+                data_offset = 8;
             }
             
             // Store stream data
-            {
+            if (data_offset < received_data.size()) {
                 std::lock_guard<std::mutex> lock(streams_mutex_);
                 auto& stream = streams_[stream_id];
                 stream.stream_id = stream_id;
                 
                 // Append data to stream buffer
-                stream.data.insert(stream.data.end(), data, data + size);
+                stream.data.insert(stream.data.end(), 
+                                 received_data.begin() + data_offset, 
+                                 received_data.end());
                 
                 if (is_complete) {
                     stream.fin_received = true;
                 }
                 
                 stream.last_activity = std::chrono::steady_clock::now();
+                
+                stats_.bytes_received.fetch_add(received_data.size() - data_offset, std::memory_order_relaxed);
+                stats_.packets_received.fetch_add(1, std::memory_order_relaxed);
             }
-            
-            stats_.bytes_received.fetch_add(size, std::memory_order_relaxed);
-            stats_.packets_received.fetch_add(1, std::memory_order_relaxed);
         }
         
         // Continue receiving if connection is still ready
@@ -208,6 +211,11 @@ void SwiftQuicBuffer::start_receive() {
             start_receive();
         }
     });
+}
+
+int64_t SwiftQuicBuffer::create_stream(bool is_unidirectional) {
+    StreamType type = is_unidirectional ? StreamType::UNIDIRECTIONAL_SEND : StreamType::BIDIRECTIONAL;
+    return create_stream(type);
 }
 
 uint64_t SwiftQuicBuffer::create_stream(StreamType type) {
@@ -255,7 +263,22 @@ ssize_t SwiftQuicBuffer::send_stream(uint64_t stream_id, size_t offset, size_t s
         // Add data
         packet.insert(packet.end(), data_ + offset, data_ + offset + size);
         
-        connection_->send(packet.data(), packet.size(), true);
+        std::atomic<bool> send_complete{false};
+        std::atomic<bool> send_success{false};
+        
+        connection_->send(packet.data(), packet.size(), [&send_complete, &send_success](bool success) {
+            send_success.store(success);
+            send_complete.store(true);
+        });
+        
+        // Wait for send to complete
+        while (!send_complete.load()) {
+            std::this_thread::yield();
+        }
+        
+        if (!send_success.load()) {
+            return -1;
+        }
         
         stats_.bytes_sent.fetch_add(size, std::memory_order_relaxed);
         stats_.packets_sent.fetch_add(1, std::memory_order_relaxed);
@@ -290,8 +313,8 @@ ssize_t SwiftQuicBuffer::receive_stream(uint64_t stream_id, size_t offset, size_
     return -1;
 }
 
-std::optional<QuicStreamInfo> SwiftQuicBuffer::get_stream_info(uint64_t stream_id) const {
-    std::lock_guard<std::mutex> lock(streams_mutex_);
+std::optional<SwiftQuicBuffer::QuicStreamInfo> SwiftQuicBuffer::get_stream_info(uint64_t stream_id) const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(streams_mutex_));
     auto it = streams_.find(stream_id);
     if (it != streams_.end()) {
         QuicStreamInfo info;
@@ -362,7 +385,7 @@ BufferClaim SwiftQuicBuffer::get_rx(size_t size) {
                 
                 rx_offset_.fetch_add(claim_size, std::memory_order_release);
                 
-                return BufferClaim{this, rx_off, claim_size, stream_id};
+                return BufferClaim{this, rx_off, claim_size, static_cast<int64_t>(stream_id)};
             }
         }
     }

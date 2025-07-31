@@ -2,6 +2,8 @@
 #include <alligator/buffer/buffet_alligator.hpp>
 #include <cstring>
 #include <cswift/cswift.hpp>
+#include <thread>
+#include <chrono>
 
 namespace alligator {
 
@@ -45,6 +47,8 @@ void SwiftUdpBuffer::deallocate() {
     
     buffer_.reset();
     data_ = nullptr;
+    
+    state_.store(State::CANCELLED, std::memory_order_release);
 }
 
 uint8_t* SwiftUdpBuffer::data() {
@@ -60,7 +64,7 @@ std::span<uint8_t> SwiftUdpBuffer::get_span(size_t offset, size_t size) {
         return std::span<uint8_t>();
     }
     size_t actual_size = (size == 0) ? (buf_size_ - offset) : std::min(size, buf_size_ - offset);
-    return std::span<uint8_t>(internal_buffer_.data() + offset, actual_size);
+    return std::span<uint8_t>(data_ + offset, actual_size);
 }
 
 std::span<const uint8_t> SwiftUdpBuffer::get_span(const size_t& offset, const size_t& size) const {
@@ -68,118 +72,117 @@ std::span<const uint8_t> SwiftUdpBuffer::get_span(const size_t& offset, const si
         return std::span<const uint8_t>();
     }
     size_t actual_size = (size == 0) ? (buf_size_ - offset) : std::min(size, buf_size_ - offset);
-    return std::span<const uint8_t>(internal_buffer_.data() + offset, actual_size);
+    return std::span<const uint8_t>(data() + offset, actual_size);
 }
 
 bool SwiftUdpBuffer::bind(const NetworkEndpoint& endpoint) {
-    // Create UDP parameters
-    nw_parameters_t parameters = create_udp_parameters();
-    
-    // Create endpoint
-    const char* host = endpoint.address.c_str();
-    std::string port_str = std::to_string(endpoint.port);
-    const char* port = port_str.c_str();
-    nw_endpoint_t nw_endpoint = nw_endpoint_create_host(host, port);
-    
-    // For UDP, we don't use a listener the same way as TCP
-    // Instead, create a connection in server mode
-    connection_ = nw_connection_create(nw_endpoint, parameters);
-    if (!connection_) {
-        nw_release(nw_endpoint);
+    try {
+        // Create UDP parameters using cswift
+        auto params = cswift::CSNWParameters::udp();
+        
+        // Create listener using cswift
+        listener_ = std::make_unique<cswift::CSNWListener>(endpoint.port, *params);
+        
+        // Set new connection handler
+        listener_->setNewConnectionHandler([this](std::unique_ptr<cswift::CSNWConnection> new_connection) {
+            if (!connection_) {
+                connection_ = std::move(new_connection);
+                setup_connection_handlers();
+                connection_->start();
+            }
+        });
+        
+        // Set state handler
+        listener_->setStateUpdateHandler([this](cswift::CSNWConnectionState state) {
+            if (state == cswift::CSNWConnectionState::Ready) {
+                state_.store(State::READY, std::memory_order_release);
+            } else if (state == cswift::CSNWConnectionState::Failed) {
+                state_.store(State::FAILED, std::memory_order_release);
+            }
+        });
+        
+        listener_->start();
+        return true;
+        
+    } catch (const std::exception& e) {
         return false;
     }
-    nw_release(nw_endpoint);
-    nw_release(parameters);
-    
-    // Set up connection handlers for UDP
-    setup_connection_handlers();
-    
-    // Start connection
-    nw_connection_set_queue(connection_, queue_);
-    nw_connection_start(connection_);
-    
-    // Wait for ready state
-    for (int i = 0; i < 50 && !ready_.load(std::memory_order_acquire); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    return ready_.load(std::memory_order_acquire);
 }
 
 bool SwiftUdpBuffer::connect(const NetworkEndpoint& endpoint) {
-    // Create UDP parameters
-    nw_parameters_t parameters = create_udp_parameters();
-    
-    // Create endpoint
-    const char* host = endpoint.address.c_str();
-    std::string port_str = std::to_string(endpoint.port);
-    const char* port = port_str.c_str();
-    remote_endpoint_ = nw_endpoint_create_host(host, port);
-    
-    // Create connection
-    connection_ = nw_connection_create(remote_endpoint_, parameters);
-    nw_release(parameters);
-    
-    if (!connection_) {
+    try {
+        // Create UDP parameters using cswift
+        auto params = cswift::CSNWParameters::udp();
+        
+        // Create connection using cswift
+        connection_ = std::make_unique<cswift::CSNWConnection>(endpoint.address, endpoint.port, *params);
+        state_.store(State::CONNECTING, std::memory_order_release);
+        
+        setup_connection_handlers();
+        connection_->start();
+        
+        // Wait for connection to be ready (with timeout)
+        auto start = std::chrono::steady_clock::now();
+        while (state_.load(std::memory_order_acquire) == State::CONNECTING) {
+            if (std::chrono::steady_clock::now() - start > std::chrono::seconds(5)) {
+                return false; // Timeout
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        
+        return state_.load(std::memory_order_acquire) == State::READY;
+        
+    } catch (const std::exception& e) {
         return false;
     }
-    
-    connected_mode_ = true;
-    setup_connection_handlers();
-    
-    // Start connection
-    nw_connection_set_queue(connection_, queue_);
-    nw_connection_start(connection_);
-    
-    // Wait for ready state
-    for (int i = 0; i < 50 && !ready_.load(std::memory_order_acquire); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    return ready_.load(std::memory_order_acquire);
 }
 
 ssize_t SwiftUdpBuffer::send(size_t offset, size_t size) {
-    if (!connection_ || !ready_.load(std::memory_order_acquire)) {
+    if (state_.load(std::memory_order_acquire) != State::READY || !connection_) {
         return -1;
     }
     
-    if (!connected_mode_) {
-        return -1; // Need endpoint for unconnected mode
+    if (offset + size > buf_size_) {
+        size = buf_size_ - offset;
     }
     
-    // Create dispatch data
-    dispatch_data_t data = create_dispatch_data(offset, size);
-    if (!data) {
-        return -1;
-    }
-    
-    __block ssize_t result = -1;
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-    
-    nw_connection_send(connection_, data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, 
-                      true, ^(nw_error_t error) {
-        if (!error) {
-            result = static_cast<ssize_t>(size);
+    try {
+        std::atomic<bool> send_complete{false};
+        std::atomic<bool> send_success{false};
+        
+        connection_->send(data_ + offset, size, [&send_complete, &send_success](bool success) {
+            send_success.store(success);
+            send_complete.store(true);
+        });
+        
+        // Wait for send to complete
+        while (!send_complete.load()) {
+            std::this_thread::yield();
         }
-        dispatch_semaphore_signal(semaphore);
-    });
-    
-    dispatch_release(data);
-    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-    dispatch_release(semaphore);
-    
-    return result;
+        
+        if (send_success.load()) {
+            stats_.bytes_sent.fetch_add(size, std::memory_order_relaxed);
+            stats_.packets_sent.fetch_add(1, std::memory_order_relaxed);
+            return size;
+        }
+        return -1;
+    } catch (const std::exception& e) {
+        return -1;
+    }
 }
 
-ssize_t SwiftUdpBuffer::send_to(size_t offset, size_t size, nw_endpoint_t endpoint) {
-    // For simplicity, we'll use the connected mode
-    // A full implementation would create a new connection for each endpoint
-    return send(offset, size);
+ssize_t SwiftUdpBuffer::sendto(const void* data, size_t size, const NetworkEndpoint& endpoint) {
+    // For UDP with cswift, we need to create a connection per endpoint
+    // For now, use the existing connection if available
+    if (!connection_) {
+        return -1;
+    }
+    
+    return send(reinterpret_cast<const uint8_t*>(data) - data_, size);
 }
 
 ssize_t SwiftUdpBuffer::receive(size_t offset, size_t size) {
-    if (!connection_ || !ready_.load(std::memory_order_acquire)) {
+    if (state_.load(std::memory_order_acquire) != State::READY || !connection_) {
         return -1;
     }
     
@@ -189,27 +192,25 @@ ssize_t SwiftUdpBuffer::receive(size_t offset, size_t size) {
         return 0; // No data available
     }
     
-    RxPacket packet = rx_queue_.front();
+    RxData packet = rx_queue_.front();
     rx_queue_.pop();
     lock.unlock();
     
     // Copy data
     size_t to_copy = std::min(size, packet.size);
     if (packet.offset + to_copy <= buf_size_ && offset + to_copy <= buf_size_) {
-        std::memcpy(internal_buffer_.data() + offset,
-                   internal_buffer_.data() + packet.offset,
+        std::memcpy(data_ + offset,
+                   data_ + packet.offset,
                    to_copy);
     }
     
-    if (packet.sender) {
-        nw_release(packet.sender);
-    }
+    // UDP packet handled
     
     return static_cast<ssize_t>(to_copy);
 }
 
-ssize_t SwiftUdpBuffer::receive_from(size_t offset, size_t size, nw_endpoint_t& sender) {
-    if (!connection_ || !ready_.load(std::memory_order_acquire)) {
+ssize_t SwiftUdpBuffer::recvfrom(void* dst_data, size_t size, NetworkEndpoint& sender) {
+    if (state_.load(std::memory_order_acquire) != State::READY || !connection_) {
         return -1;
     }
     
@@ -219,26 +220,26 @@ ssize_t SwiftUdpBuffer::receive_from(size_t offset, size_t size, nw_endpoint_t& 
         return 0; // No data available
     }
     
-    RxPacket packet = rx_queue_.front();
+    RxData packet = rx_queue_.front();
     rx_queue_.pop();
     lock.unlock();
     
     // Copy data
     size_t to_copy = std::min(size, packet.size);
-    if (packet.offset + to_copy <= buf_size_ && offset + to_copy <= buf_size_) {
-        std::memcpy(internal_buffer_.data() + offset,
-                   internal_buffer_.data() + packet.offset,
+    if (packet.offset + to_copy <= buf_size_) {
+        std::memcpy(dst_data,
+                   data_ + packet.offset,
                    to_copy);
     }
     
-    sender = packet.sender;
-    // Don't release sender here - caller owns it now
+    // For UDP with cswift, we don't have sender info in this implementation
+    sender = NetworkEndpoint{};
     
     return static_cast<ssize_t>(to_copy);
 }
 
 ssize_t SwiftUdpBuffer::send_from(ICollectiveBuffer* src, size_t size, size_t src_offset) {
-    if (!connection_ || !ready_.load(std::memory_order_acquire) || !src) {
+    if (state_.load(std::memory_order_acquire) != State::READY || !connection_ || !src) {
         return -1;
     }
     
@@ -249,34 +250,35 @@ ssize_t SwiftUdpBuffer::send_from(ICollectiveBuffer* src, size_t size, size_t sr
         return -1;
     }
     
-    std::memcpy(internal_buffer_.data(), src->data() + src_offset, size);
+    std::memcpy(data_, src->data() + src_offset, size);
     return send(0, size);
 }
 
 ssize_t SwiftUdpBuffer::receive_into(ICollectiveBuffer* dst, size_t size, size_t dst_offset) {
-    if (!connection_ || !ready_.load(std::memory_order_acquire) || !dst) {
+    if (state_.load(std::memory_order_acquire) != State::READY || !connection_ || !dst) {
         return -1;
     }
     
-    // Special handling for GPU buffers
-    if (auto* gpu_buffer = dynamic_cast<GPUBuffer*>(dst)) {
-        if (!gpu_buffer->is_local()) {
-            // Receive into our internal buffer first
-            ssize_t bytes_received = receive(0, size);
-            if (bytes_received > 0) {
-                // Then upload to GPU
-                if (gpu_buffer->upload(internal_buffer_.data(), bytes_received, dst_offset)) {
-                    return bytes_received;
-                }
-            }
-            return -1;
-        }
-    }
-    
-    // For local buffers, receive directly
+    // Try to receive
     ssize_t bytes_received = receive(0, size);
     if (bytes_received > 0) {
-        std::memcpy(dst->data() + dst_offset, internal_buffer_.data(), bytes_received);
+        // Check if destination is a GPU buffer
+        if (auto gpu_buffer = dynamic_cast<GPUBuffer*>(dst)) {
+            // Upload to GPU
+            try {
+                if (gpu_buffer->upload(data_, bytes_received, dst_offset)) {
+                    return bytes_received;
+                }
+            } catch (const std::exception& e) {
+                return -1;
+            }
+        } else {
+            // Regular copy
+            if (dst_offset + bytes_received <= dst->buf_size_) {
+                std::memcpy(dst->data() + dst_offset, data_, bytes_received);
+                return bytes_received;
+            }
+        }
     }
     
     return bytes_received;
@@ -284,13 +286,20 @@ ssize_t SwiftUdpBuffer::receive_into(ICollectiveBuffer* dst, size_t size, size_t
 
 BufferClaim SwiftUdpBuffer::get_rx(size_t size) {
     std::lock_guard<std::mutex> lock(rx_mutex_);
+    
     if (rx_queue_.empty()) {
         return BufferClaim{this, 0, 0, 0};
     }
     
-    RxPacket& packet = rx_queue_.front();
-    return BufferClaim{this, packet.offset, packet.size, 
-                      static_cast<int64_t>(buf_size_ - packet.offset - packet.size)};
+    RxData& packet = rx_queue_.front();
+    if (size == 0 || packet.size == size) {
+        BufferClaim claim{this, packet.offset, packet.size, 
+                         static_cast<int64_t>(buf_size_ - packet.offset - packet.size)};
+        rx_queue_.pop();
+        return claim;
+    }
+    
+    return BufferClaim{this, 0, 0, 0};
 }
 
 int SwiftUdpBuffer::poll(int timeout_ms) {
@@ -300,67 +309,52 @@ int SwiftUdpBuffer::poll(int timeout_ms) {
 }
 
 SwiftUdpBuffer::NetworkStats SwiftUdpBuffer::get_stats() const {
-    // Simplified stats
-    return NetworkStats{0, 0, 0, 0, 0, 0};
+    return NetworkStats{
+        stats_.bytes_sent.load(std::memory_order_relaxed),
+        stats_.bytes_received.load(std::memory_order_relaxed),
+        stats_.packets_sent.load(std::memory_order_relaxed),
+        stats_.packets_received.load(std::memory_order_relaxed),
+        stats_.errors.load(std::memory_order_relaxed),
+        stats_.drops.load(std::memory_order_relaxed)
+    };
 }
 
-bool SwiftUdpBuffer::join_multicast_group(const std::string& multicast_address) {
-    // Network.framework handles multicast differently
-    // This would require creating appropriate parameters
-    return false;
-}
-
-bool SwiftUdpBuffer::leave_multicast_group(const std::string& multicast_address) {
-    return false;
-}
-
-void SwiftUdpBuffer::set_broadcast(bool enable) {
-    // Would need to be set in parameters during creation
-}
-
-nw_parameters_t SwiftUdpBuffer::create_udp_parameters() {
-    nw_parameters_t parameters = nw_parameters_create_secure_udp(
-        NW_PARAMETERS_DISABLE_PROTOCOL,
-        NW_PARAMETERS_DEFAULT_CONFIGURATION
-    );
-    
-    // Configure for UDP
-    nw_protocol_stack_t protocol_stack = nw_parameters_copy_default_protocol_stack(parameters);
-    nw_protocol_options_t udp_options = nw_protocol_stack_copy_transport_protocol(protocol_stack);
-    
-    // Set UDP options if needed
-    
-    nw_release(protocol_stack);
-    
-    return parameters;
-}
+// Multicast and broadcast support would require additional implementation
 
 void SwiftUdpBuffer::setup_connection_handlers() {
-    if (!connection_) {
-        return;
-    }
-    
-    nw_connection_set_state_changed_handler(connection_, ^(nw_connection_state_t state, nw_error_t error) {
-        if (state == nw_connection_state_ready) {
-            ready_.store(true, std::memory_order_release);
+    connection_->setStateUpdateHandler([this](cswift::CSNWConnectionState new_state) {
+        handle_state_change(new_state);
+        
+        if (new_state == cswift::CSNWConnectionState::Ready) {
             start_receive();
-        } else if (state == nw_connection_state_failed || state == nw_connection_state_cancelled) {
-            ready_.store(false, std::memory_order_release);
         }
     });
 }
 
-void SwiftUdpBuffer::start_receive() {
-    if (!connection_ || !ready_.load(std::memory_order_acquire)) {
-        return;
+void SwiftUdpBuffer::handle_state_change(cswift::CSNWConnectionState new_state) {
+    switch (new_state) {
+        case cswift::CSNWConnectionState::Preparing:
+            state_.store(State::CONNECTING, std::memory_order_release);
+            break;
+        case cswift::CSNWConnectionState::Ready:
+            state_.store(State::READY, std::memory_order_release);
+            break;
+        case cswift::CSNWConnectionState::Failed:
+            state_.store(State::FAILED, std::memory_order_release);
+            break;
+        case cswift::CSNWConnectionState::Cancelled:
+            state_.store(State::CANCELLED, std::memory_order_release);
+            break;
+        default:
+            break;
     }
-    
-    nw_connection_receive(connection_, 1, UINT32_MAX, 
-        ^(dispatch_data_t content, nw_content_context_t context, bool is_complete, nw_error_t error) {
-        if (content && !error) {
-            // Find a free spot in the buffer
+}
+
+void SwiftUdpBuffer::start_receive() {
+    connection_->receive(1, UINT32_MAX, [this](std::vector<uint8_t> received_data, bool is_complete, bool success) {
+        if (success && !received_data.empty()) {
             size_t offset = rx_offset_.load(std::memory_order_relaxed);
-            size_t data_size = dispatch_data_get_size(content);
+            size_t data_size = received_data.size();
             
             if (offset + data_size > buf_size_) {
                 offset = 0;
@@ -368,44 +362,27 @@ void SwiftUdpBuffer::start_receive() {
             }
             
             // Copy data to our buffer
-            dispatch_data_apply(content, ^bool(dispatch_data_t region, size_t region_offset, const void* buffer, size_t size) {
-                if (offset + region_offset + size <= buf_size_) {
-                    std::memcpy(internal_buffer_.data() + offset + region_offset, buffer, size);
+            if (offset + data_size <= buf_size_) {
+                std::memcpy(data_ + offset, received_data.data(), data_size);
+                
+                // Add to receive queue
+                {
+                    std::lock_guard<std::mutex> lock(rx_mutex_);
+                    rx_queue_.push(RxData{offset, data_size, NetworkEndpoint{}});
                 }
-                return true; // Continue iteration
-            });
-            
-            // Update rx offset
-            rx_offset_.fetch_add(data_size, std::memory_order_relaxed);
-            
-            // Get sender endpoint if available
-            nw_endpoint_t sender = nullptr;
-            if (context) {
-                // Note: Getting sender from context is more complex in practice
-                // This is a simplified version
-            }
-            
-            // Add to rx queue
-            {
-                std::lock_guard<std::mutex> lock(rx_mutex_);
-                rx_queue_.push(RxPacket{sender, offset, data_size});
+                
+                rx_offset_.fetch_add(data_size, std::memory_order_relaxed);
+                
+                stats_.bytes_received.fetch_add(data_size, std::memory_order_relaxed);
+                stats_.packets_received.fetch_add(1, std::memory_order_relaxed);
             }
         }
         
-        // Continue receiving
-        if (!error && ready_.load(std::memory_order_acquire)) {
+        // Continue receiving if connection is still ready
+        if (state_.load(std::memory_order_acquire) == State::READY && !is_complete) {
             start_receive();
         }
     });
-}
-
-dispatch_data_t SwiftUdpBuffer::create_dispatch_data(size_t offset, size_t size) {
-    if (offset + size > buf_size_) {
-        return nullptr;
-    }
-    
-    return dispatch_data_create(internal_buffer_.data() + offset, size, 
-                               queue_, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 }
 
 } // namespace alligator

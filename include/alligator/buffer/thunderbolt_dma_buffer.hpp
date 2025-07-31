@@ -29,13 +29,10 @@ namespace alligator {
  */
 class ThunderboltDMABuffer : public ChainBuffer {
 private:
-#ifdef PSYNE_SWIFT_ENABLED
     std::unique_ptr<cswift::CSSharedBuffer> swift_buffer_;
-    std::unique_ptr<cswift::HighPerformanceNetwork> network_;
+    std::unique_ptr<cswift::CSNWConnection> connection_;
+    std::unique_ptr<cswift::CSNWListener> listener_;
     uint8_t* data_{nullptr};
-#else
-    std::vector<uint8_t> fallback_buffer_;
-#endif
     
     // Network endpoint info
     std::string remote_host_;

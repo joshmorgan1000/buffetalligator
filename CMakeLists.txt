@@ -7,16 +7,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Configuration settings
 # ------------------------------------------------------------------------------
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-option(PSYNE_FORCE_CPU_ONLY "Force CPU-only build (disable GPU)" OFF)
-option(PSYNE_BUILD_EXAMPLES "Build examples" ON)
-option(PSYNE_BUILD_TESTS "Build tests" ON)
-option(PSYNE_BUILD_BENCHMARKS "Build benchmarks" ON)
+option(FORCE_CPU_ONLY "Force CPU-only build (disable GPU)" OFF)
+option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_TESTS "Build tests" ON)
+option(BUILD_BENCHMARKS "Build benchmarks" ON)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
 # Detect optimal configuration for current environment
-if(NOT PSYNE_FORCE_CPU_ONLY)
+if(NOT FORCE_CPU_ONLY)
     include(DetectGPU)
 else()
     message(STATUS "GPU support disabled by user")
@@ -136,20 +136,20 @@ target_link_libraries(buffet_alligator PUBLIC
     $<$<BOOL:${ACCELERATE_FRAMEWORK_INCLUDE_DIRS}>:Accelerate>
 )
 
-add_subdirectory(examples)
+# add_subdirectory(examples)
 
 # ──────────────────────────────────────────────────────────────
 # Print configuration summary
 # ──────────────────────────────────────────────────────────────
-message(STATUS "______________________________________________________")
-message(STATUS "           _  _                      _             ")
-message(STATUS "   |_    _|__|_ _ _|_    _  |  |  o (_| _ _|_ _  __")
-message(STATUS "   |_)|_| |  | (/_ |_   (_| |  |  | __|(_| |_(_) | ")
-message(STATUS "──────────────────────────────────────────────────────")
-message(STATUS "   Buffet Alligator - C++20 Memory Management Library")
+message(STATUS "____________________________________________________")
+message(STATUS "          _  _                      _             ")
+message(STATUS "  |_    _|__|_ _ _|_    _  |  |  o (_| _ _|_ _  __")
+message(STATUS "  |_)|_| |  | (/_ |_   (_| |  |  | __|(_| |_(_) | ")
+message(STATUS "────────────────────────────────────────────────────")
+message(STATUS "  Buffet Alligator - C++20 Memory Management Library")
 message(STATUS "        Version:        ${PROJECT_VERSION}")
 message(STATUS "        C++ Standard:   ${CMAKE_CXX_STANDARD}")
-message(STATUS "        CUDA Enabled:   ${PSYNE_CUDA_ENABLED}")
-message(STATUS "        Vulkan Enabled: ${PSYNE_VULKAN_ENABLED}")
-message(STATUS "        Metal Enabled:  ${PSYNE_METAL_ENABLED}")
-message(STATUS "─────────────────────────────────────────────────────")
+message(STATUS "        CUDA Enabled:   ${CUDA_ENABLED}")
+message(STATUS "        Vulkan Enabled: ${VULKAN_ENABLED}")
+message(STATUS "        Metal Enabled:  ${METAL_ENABLED}")
+message(STATUS "────────────────────────────────────────────────────")

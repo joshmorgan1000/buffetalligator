@@ -80,20 +80,19 @@ enum class BFType : uint32_t{
     SHARED               = 5,   ///< Shared memory buffer
     FILE_BACKED          = 6,   ///< File-backed buffer
     SWIFT                = 7,   ///< Swift buffer
-    FOUNDATION_NETWORK   = 8,   ///< Foundation network buffer (deprecated, use specific types)
     THUNDERBOLT_DMA      = 9,   ///< Thunderbolt DMA buffer
-    TCP                  = 10,  ///< TCP buffer (auto-selects: Foundation on Apple, ASIO otherwise)
-    UDP                  = 11,  ///< UDP buffer (auto-selects: Foundation on Apple, ASIO otherwise)
-    QUIC                 = 12,  ///< QUIC buffer (auto-selects: Foundation on Apple, ASIO otherwise)
+    TCP                  = 10,  ///< TCP buffer (auto-selects: Swift on Apple, ASIO otherwise)
+    UDP                  = 11,  ///< UDP buffer (auto-selects: Swift on Apple, ASIO otherwise)
+    QUIC                 = 12,  ///< QUIC buffer (auto-selects: Swift on Apple, ASIO otherwise)
     GPU                  = 13,  ///< GPU buffer (auto-selects: Metal on Apple, CUDA if available, else Vulkan)
     
     // Explicit network buffer types
     ASIO_TCP             = 14,  ///< ASIO TCP buffer (explicit)
     ASIO_UDP             = 15,  ///< ASIO UDP buffer (explicit)
     ASIO_QUIC            = 16,  ///< ASIO QUIC buffer (explicit)
-    FOUNDATION_TCP       = 17,  ///< Foundation TCP buffer (explicit, Apple only)
-    FOUNDATION_UDP       = 18,  ///< Foundation UDP buffer (explicit, Apple only)
-    FOUNDATION_QUIC      = 19   ///< Foundation QUIC buffer (explicit, Apple only)
+    SWIFT_TCP            = 17,  ///< Swift TCP buffer
+    SWIFT_UDP            = 18,  ///< Swift UDP buffer
+    SWIFT_QUIC           = 19   ///< Swift QUIC buffer
 };
 class BuffetAlligator {
 private:

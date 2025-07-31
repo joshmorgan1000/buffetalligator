@@ -8,6 +8,8 @@
 #include <queue>
 #include <mutex>
 #include <map>
+#include <optional>
+#include <chrono>
 #include <cswift/cswift.hpp>
 
 namespace alligator {
@@ -49,9 +51,27 @@ private:
     struct QuicStream {
         uint64_t stream_id;
         std::vector<uint8_t> data;
-        size_t offset;
-        bool is_unidirectional;
-        bool fin_received;
+        size_t offset{0};
+        size_t bytes_sent{0};
+        bool is_unidirectional{false};
+        bool fin_received{false};
+        bool fin_sent{false};
+        uint8_t priority{128}; // Middle priority
+        std::chrono::steady_clock::time_point last_activity;
+        
+        enum class StreamState {
+            IDLE,
+            OPEN,
+            SEND_CLOSE,
+            RECV_CLOSE,
+            CLOSED
+        } state{StreamState::IDLE};
+        
+        enum class StreamType {
+            BIDIRECTIONAL,
+            UNIDIRECTIONAL_SEND,
+            UNIDIRECTIONAL_RECV
+        } type{StreamType::BIDIRECTIONAL};
     };
     std::map<uint64_t, QuicStream> streams_;
     std::mutex streams_mutex_;
@@ -196,12 +216,34 @@ public:
      */
     NetworkStats get_stats() const override;
 
+    // Public types
+    using StreamType = QuicStream::StreamType;
+    
+    /**
+     * @brief QUIC stream information
+     */
+    struct QuicStreamInfo {
+        uint64_t stream_id;
+        size_t bytes_sent;
+        size_t bytes_received;
+        bool is_open;
+        bool fin_sent;
+        bool fin_received;
+    };
+    
     /**
      * @brief Create a new QUIC stream
      * @param is_unidirectional True for unidirectional stream
      * @return Stream ID, or -1 on error
      */
     int64_t create_stream(bool is_unidirectional = false);
+    
+    /**
+     * @brief Create a new QUIC stream with type
+     * @param type Stream type
+     * @return Stream ID
+     */
+    uint64_t create_stream(StreamType type);
 
     /**
      * @brief Send data on a specific stream
@@ -234,6 +276,52 @@ public:
      * @return Vector of active stream IDs
      */
     std::vector<uint64_t> get_active_streams() const;
+    
+    /**
+     * @brief Send data on a stream (internal buffer)
+     * @param stream_id Stream to send on
+     * @param offset Offset in buffer
+     * @param size Size to send
+     * @return Number of bytes sent, or -1 on error
+     */
+    ssize_t send_stream(uint64_t stream_id, size_t offset, size_t size);
+    
+    /**
+     * @brief Receive data from a stream (internal buffer)
+     * @param stream_id Stream to receive from
+     * @param offset Offset in buffer
+     * @param size Maximum size to receive
+     * @return Number of bytes received, or -1 on error
+     */
+    ssize_t receive_stream(uint64_t stream_id, size_t offset, size_t size);
+    
+    /**
+     * @brief Get stream information
+     * @param stream_id Stream ID
+     * @return Stream info or nullopt if not found
+     */
+    std::optional<QuicStreamInfo> get_stream_info(uint64_t stream_id) const;
+    
+    /**
+     * @brief Set stream priority
+     * @param stream_id Stream ID
+     * @param priority Priority (0-255, lower is higher priority)
+     * @return true on success
+     */
+    bool set_stream_priority(uint64_t stream_id, uint8_t priority);
+    
+    /**
+     * @brief Enable 0-RTT
+     * @return true on success
+     */
+    bool enable_0rtt();
+    
+    /**
+     * @brief Migrate connection to new endpoint
+     * @param new_endpoint New endpoint
+     * @return true on success
+     */
+    bool migrate_connection(const NetworkEndpoint& new_endpoint);
 
 private:
     /**

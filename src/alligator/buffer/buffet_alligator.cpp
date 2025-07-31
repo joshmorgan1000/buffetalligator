@@ -1,20 +1,12 @@
 #include <alligator/buffer/buffet_alligator.hpp>
 #include <alligator/buffer/heap_buffer.hpp>
-#ifdef PSYNE_VULKAN_ENABLED
 #include <alligator/buffer/vulkan_buffer.hpp>
-#endif
-#ifdef PSYNE_SWIFT_ENABLED
 #include <alligator/buffer/swift_buffer.hpp>
-#include <alligator/buffer/foundation_tcp_buffer.hpp>
-#include <alligator/buffer/foundation_udp_buffer.hpp>
-#include <alligator/buffer/foundation_quic_buffer.hpp>
-#endif
-#ifdef PSYNE_CUDA_ENABLED
+#include <alligator/buffer/swift_tcp_buffer.hpp>
+#include <alligator/buffer/swift_udp_buffer.hpp>
+#include <alligator/buffer/swift_quic_buffer.hpp>
 #include <alligator/buffer/cuda_buffer.hpp>
-#endif
-#ifdef PSYNE_METAL_ENABLED
 #include <alligator/buffer/metal_buffer.hpp>
-#endif
 #include <alligator/buffer/file_backed_buffer.hpp>
 #include <alligator/buffer/chain_buffer.hpp>
 #include <alligator/buffer/shared_buffer.hpp>
@@ -93,38 +85,24 @@ ChainBuffer* BuffetAlligator::allocate_buffer(uint32_t size, BFType type) {
             new_buffer = new HeapBuffer(size);
             break;
         case BFType::VULKAN:
-#ifdef PSYNE_VULKAN_ENABLED
+#ifdef VULKAN_ENABLED
             new_buffer = new VulkanBuffer(size);
 #else
             throw std::runtime_error("Vulkan support not available on this system");
 #endif
             break;
-        case BFType::FOUNDATION_NETWORK:
-#ifdef PSYNE_FOUNDATION_NETWORK_ENABLED
-//            LOG_DEBUG_STREAM << "BuffetAlligator: Allocating Foundation Network buffer of size " << size << " bytes";
-            new_buffer = new FoundationNetworkBuffer(size);
-            break;
-#else
-//            LOG_WARN_STREAM << "Foundation Network buffer requested but support not compiled in";
-            new_buffer = new HeapBuffer(size);
-            break;
-#endif
         case BFType::SWIFT:
-#ifdef PSYNE_SWIFT_ENABLED
             new_buffer = new SwiftBuffer(size);
-#else
-            new_buffer = new HeapBuffer(size);  // Fallback to heap
-#endif
             break;
         case BFType::CUDA:
-#ifdef PSYNE_CUDA_ENABLED
+#ifdef CUDA_ENABLED
             new_buffer = new CUDABuffer(size);
 #else
             throw std::runtime_error("CUDA support not available on this system");
 #endif
             break;
         case BFType::METAL:
-#ifdef PSYNE_METAL_ENABLED
+#ifdef METAL_ENABLED
 //            LOG_DEBUG_STREAM << "BuffetAlligator: Allocating Metal buffer of size " << size << " bytes";
             new_buffer = new MetalBuffer(size);
 #else
@@ -147,33 +125,33 @@ ChainBuffer* BuffetAlligator::allocate_buffer(uint32_t size, BFType type) {
             }
             break;
         case BFType::TCP:
-#if defined(PSYNE_SWIFT_ENABLED) && defined(__APPLE__)
-            new_buffer = new FoundationTcpBuffer(size);
+#if defined(__APPLE__)
+            new_buffer = new SwiftTcpBuffer(size);
 #else
             new_buffer = new AsioTcpBuffer(size);
 #endif
             break;
         case BFType::UDP:
-#if defined(PSYNE_SWIFT_ENABLED) && defined(__APPLE__)
-            new_buffer = new FoundationUdpBuffer(size);
+#if defined(__APPLE__)
+            new_buffer = new SwiftUdpBuffer(size);
 #else
             new_buffer = new AsioUdpBuffer(size);
 #endif
             break;
         case BFType::QUIC:
-#if defined(PSYNE_SWIFT_ENABLED) && defined(__APPLE__)
-            new_buffer = new FoundationQuicBuffer(size);
+#if defined(__APPLE__)
+            new_buffer = new SwiftQuicBuffer(size);
 #else
             new_buffer = new AsioQuicBuffer(size);
 #endif
             break;
         case BFType::GPU:
             // Priority order: Metal (on Apple), CUDA, then Vulkan
-#if defined(PSYNE_METAL_ENABLED) && defined(__APPLE__)
+#if defined(METAL_ENABLED) && defined(__APPLE__)
             new_buffer = new MetalBuffer(size);
-#elif defined(PSYNE_CUDA_ENABLED)
+#elif defined(CUDA_ENABLED)
             new_buffer = new CUDABuffer(size);
-#elif defined(PSYNE_VULKAN_ENABLED)
+#elif defined(VULKAN_ENABLED)
             new_buffer = new VulkanBuffer(size);
 #else
             throw std::runtime_error("No GPU support available on this system");
@@ -194,28 +172,16 @@ ChainBuffer* BuffetAlligator::allocate_buffer(uint32_t size, BFType type) {
             break;
             
         // Explicit Foundation network types (require cswift)
-        case BFType::FOUNDATION_TCP:
-#ifdef PSYNE_SWIFT_ENABLED
-            new_buffer = new FoundationTcpBuffer(size);
-#else
-            throw std::runtime_error("Foundation Network support requires cswift");
-#endif
+        case BFType::SWIFT_TCP:
+            new_buffer = new SwiftTcpBuffer(size);
             break;
             
-        case BFType::FOUNDATION_UDP:
-#ifdef PSYNE_SWIFT_ENABLED
-            new_buffer = new FoundationUdpBuffer(size);
-#else
-            throw std::runtime_error("Foundation Network support requires cswift");
-#endif
+        case BFType::SWIFT_UDP:
+            new_buffer = new SwiftUdpBuffer(size);
             break;
             
-        case BFType::FOUNDATION_QUIC:
-#ifdef PSYNE_SWIFT_ENABLED
-            new_buffer = new FoundationQuicBuffer(size);
-#else
-            throw std::runtime_error("Foundation Network support requires cswift");
-#endif
+        case BFType::SWIFT_QUIC:
+            new_buffer = new SwiftQuicBuffer(size);
             break;
             
         default:
