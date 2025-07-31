@@ -1,0 +1,17 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Find required dependencies based on platform
+if(APPLE)
+    find_dependency(Foundation REQUIRED)
+endif()
+
+# Import targets
+include("${CMAKE_CURRENT_LIST_DIR}/cswift-targets.cmake")
+
+# Provide variables for consumers
+set(CSWIFT_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set(CSWIFT_LIBRARIES cswift::cswift)
+
+check_required_components(cswift)
