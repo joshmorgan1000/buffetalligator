@@ -1,156 +1,85 @@
 cmake_minimum_required(VERSION 3.20)
-project(buffet_alligator VERSION 1.0.0 LANGUAGES C CXX ASM)
+project(buffetalligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES CXX)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+    message(FATAL_ERROR "In-source builds are not allowed; run ./run_build.sh")
+endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-# ------------------------------------------------------------------------------
-# Configuration settings
-# ------------------------------------------------------------------------------
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-option(FORCE_CPU_ONLY "Force CPU-only build (disable GPU)" OFF)
-option(BUILD_EXAMPLES "Build examples" ON)
-option(BUILD_TESTS "Build tests" ON)
-option(BUILD_BENCHMARKS "Build benchmarks" ON)
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Debug")
-endif()
-
-# Detect optimal configuration for current environment
-if(NOT FORCE_CPU_ONLY)
-    include(DetectGPU)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(BUFFETALLIGATOR_BUILD_TESTS_DEFAULT ON)
 else()
-    message(STATUS "GPU support disabled by user")
+    set(BUFFETALLIGATOR_BUILD_TESTS_DEFAULT OFF)
 endif()
-
-# Detect CPU features
-include(CheckCXXCompilerFlag)
-
-# Platform-specific base flags (before any architecture detection)
+option(BUFFETALLIGATOR_BUILD_TESTS "Build the BuffetAlligator tests" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
+set(BUFFETALLIGATOR_DEPS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/src" CACHE PATH "Dependency source directory")
+set(THREADSAFE_LOGGER_SOURCE_DIR "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/threadsafe-logger")
+set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET OFF)
+if(NOT TARGET logging::logging)
+    if(NOT EXISTS "${THREADSAFE_LOGGER_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "threadsafe-logger is missing; run ./run_build.sh to fetch and build it")
+    endif()
+    set(LOGGING_BUILD_TESTS OFF)
+    add_subdirectory("${THREADSAFE_LOGGER_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/deps/threadsafe-logger")
+    set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
+endif()
+find_package(Threads REQUIRED)
+add_library(buffetalligator STATIC src/memory/slice.cpp)
+add_library(buffetalligator::buffetalligator ALIAS buffetalligator)
+target_include_directories(buffetalligator
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_features(buffetalligator PUBLIC cxx_std_20)
+target_link_libraries(buffetalligator PUBLIC logging::logging Threads::Threads)
+set_target_properties(buffetalligator PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    # Base flags without architecture-specific options (C++ only)
-    add_compile_options(
-        $<$<COMPILE_LANGUAGE:CXX>:-Wall>
-        $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
-        $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
-        $<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-parameter>
-        $<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-variable>
-        $<$<COMPILE_LANGUAGE:CXX>:-ffast-math>
-        $<$<COMPILE_LANGUAGE:CXX>:-funroll-loops>
-        $<$<COMPILE_LANGUAGE:CXX>:-ftree-vectorize>
-    )
-    # Release-specific flags
-    if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-O3>)
-        add_compile_definitions(NDEBUG)
-    else()
-        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-O0> $<$<COMPILE_LANGUAGE:CXX>:-g>)
-        # Sanitizers for debug (not on Apple due to issues)
-        if(NOT APPLE)
-            add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address> $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=undefined>)
-            add_link_options(-fsanitize=address -fsanitize=undefined)
-        endif()
-    endif()
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    add_compile_options(
-        /W4
-        /fp:fast
-        /Oi  # Enable intrinsic functions
-    )
-    if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        add_compile_options(/O2 /GL)  # Whole program optimization
-        add_link_options(/LTCG)  # Link-time code generation
-        add_compile_definitions(NDEBUG)
-    else()
-        add_compile_options(/Od /Zi)
-    endif()
+    target_compile_options(buffetalligator PRIVATE -Wall -Wextra -Wpedantic)
+elseif(MSVC)
+    target_compile_options(buffetalligator PRIVATE /W4)
 endif()
-
-# Save current compile options
-get_directory_property(SAVED_COMPILE_OPTIONS COMPILE_OPTIONS)
-# Clear compile options for cswift (Swift doesn't understand C++ flags)
-set_directory_properties(PROPERTIES COMPILE_OPTIONS "")
-# Set Swift-specific flags before including cswift
-set(CMAKE_Swift_FLAGS_RELEASE "-O -wmo")  # No -march=native for Swift!
-add_subdirectory(cswift)
-# Restore compile options
-set_directory_properties(PROPERTIES COMPILE_OPTIONS "${SAVED_COMPILE_OPTIONS}")
-
-include_directories(
-    "${CMAKE_PROJECT_SOURCE_DIR}/include"
-    "${CMAKE_PROJECT_SOURCE_DIR}/cswift/include"
+if(BUFFETALLIGATOR_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
+set(BUFFETALLIGATOR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/buffetalligator")
+install(TARGETS buffetalligator
+    EXPORT buffetalligatorTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
-
-# Add module path
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
-# ASIO
-if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/asio/asio/include/asio.hpp")
-    message(STATUS "Using bundled ASIO")
-    set(ASIO_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/asio/asio/include")
+install(FILES include/buffetalligator.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(BUFFETALLIGATOR_OWNS_LOGGING_TARGET)
+    set(BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS "../logging/loggingTargets.cmake")
 else()
-    find_package(Boost REQUIRED COMPONENTS system)
-    if(NOT Boost_FOUND)
-        message(FATAL_ERROR "Could not find ASIO, and Boost was not found either. You may need to run `git submodule update --init --recursive` to fetch ASIO.")
-    endif()
-    set(ASIO_INCLUDE_DIR ${Boost_INCLUDE_DIRS})
-    add_definitions(-DASIO_STANDALONE)
+    set(BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS "")
 endif()
-
-# Source files for buffers
-set(BUFFER_SOURCES
-    src/alligator/buffer/heap_buffer.cpp
-    src/alligator/buffer/buffet_alligator.cpp
-    src/alligator/buffer/buffer_pin.cpp
-    src/alligator/buffer/file_backed_buffer.cpp
-    src/alligator/buffer/shared_buffer.cpp
-    src/alligator/buffer/thunderbolt_dma_buffer.cpp
-    src/alligator/buffer/asio_tcp_buffer.cpp
-    src/alligator/buffer/asio_udp_buffer.cpp
-    src/alligator/buffer/asio_quic_buffer.cpp
-    src/alligator/buffer/vulkan_buffer.cpp
-    src/alligator/buffer/metal_buffer.cpp
-    src/alligator/buffer/cuda_buffer.cpp
-    src/alligator/buffer/swift_buffer.cpp
-    src/alligator/buffer/swift_tcp_buffer.cpp
-    src/alligator/buffer/swift_udp_buffer.cpp
-    src/alligator/buffer/swift_quic_buffer.cpp
+install(EXPORT buffetalligatorTargets
+    FILE buffetalligatorTargets.cmake
+    NAMESPACE buffetalligator::
+    DESTINATION ${BUFFETALLIGATOR_INSTALL_CMAKEDIR}
 )
-
-# Create the buffers library as static
-add_library(buffet_alligator STATIC ${BUFFER_SOURCES})
-
-# Include directories
-target_include_directories(buffet_alligator PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cswift/include>
-    $<INSTALL_INTERFACE:include>
+configure_package_config_file(
+    cmake/buffetalligatorConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfig.cmake"
+    INSTALL_DESTINATION ${BUFFETALLIGATOR_INSTALL_CMAKEDIR}
 )
-
-# Link libraries
-target_link_libraries(buffet_alligator PUBLIC
-    cswift
-    $<$<BOOL:${Vulkan_INCLUDE_DIRS}>:Vulkan::Vulkan>
-    $<$<BOOL:${CUDA_ARCHITECTURES_INCLUDE_DIRS}>:cuda>
-    $<$<BOOL:${METAL_FRAMEWORK_INCLUDE_DIRS}>:Metal>
-    $<$<BOOL:${ACCELERATE_FRAMEWORK_INCLUDE_DIRS}>:Accelerate>
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
 )
-
-add_subdirectory(examples)
-
-# ──────────────────────────────────────────────────────────────
-# Print configuration summary
-# ──────────────────────────────────────────────────────────────
-message(STATUS "____________________________________________________")
-message(STATUS "          _  _                      _             ")
-message(STATUS "  |_    _|__|_ _ _|_    _  |  |  o (_| _ _|_ _  __")
-message(STATUS "  |_)|_| |  | (/_ |_   (_| |  |  | __|(_| |_(_) | ")
-message(STATUS "────────────────────────────────────────────────────")
-message(STATUS "  Buffet Alligator - C++20 Memory Management Library")
-message(STATUS "        Version:        ${PROJECT_VERSION}")
-message(STATUS "        C++ Standard:   ${CMAKE_CXX_STANDARD}")
-message(STATUS "        CUDA Enabled:   ${CUDA_ENABLED}")
-message(STATUS "        Vulkan Enabled: ${VULKAN_ENABLED}")
-message(STATUS "        Metal Enabled:  ${METAL_ENABLED}")
-message(STATUS "────────────────────────────────────────────────────")
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfigVersion.cmake"
+    DESTINATION ${BUFFETALLIGATOR_INSTALL_CMAKEDIR}
+)
+install(FILES LICENSE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/buffetalligator)

@@ -1,36 +1,59 @@
 <div align="center">
   <img src="buffetalligator_logo.png" alt="Buffet Alligator Logo" width="150"/>
-
-
 </div>
 
----
+# BuffetAlligator
 
-BuffetAlligator is a high-performance, cross-platform memory buffer management library written in C++20. It provides a unified interface for various types of memory buffers including heap memory, GPU memory, network buffers, and specialized hardware-accelerated buffers. The library features seamless Swift interoperability through the cswift submodule and supports zero-copy operations wherever possible.
+BuffetAlligator is a C++20 memory arena that serves 16-byte `Slice` handles from preallocated, zeroed slabs. Claims are 64-byte-granular atomic bump-pointer operations; exhausted slabs advance through successors prepared by one dedicated allocator thread.
 
-## What It Does
+The project is pre-release. API and ABI compatibility are not guaranteed until 1.0.
 
-BuffetAlligator abstracts away the complexity of managing different types of memory buffers across various hardware architectures and use cases. Whether you need standard heap allocation, GPU memory for compute operations, shared memory for inter-process communication, or network buffers for high-throughput data transfer, BuffetAlligator provides a consistent API with automatic lifetime management.
+## Placemat
 
-Key capabilities include:
-- **Unified Buffer Interface**: Single API for all buffer types with automatic type selection
-- **Hardware Acceleration**: Native support for CUDA, Vulkan, Metal, and Thunderbolt DMA
-- **Network Integration**: Built-in support for TCP, UDP, and QUIC protocols with both ASIO and Swift Network.framework backends
-- **Zero-Copy Operations**: Efficient buffer chaining and sharing without memory copies
-- **Swift Interoperability**: Seamless integration with Swift code through the cswift bridge
-- **Automatic Memory Management**: Reference-counted buffers with garbage collection
+Each registered `Placemat` (placement) is a process-lifetime factory and owns one independent Buffer chain. A placement supplies only allocation, deallocation, context, and stable host-pointer access. Device addresses, transfers, and synchronization remain private to the consuming implementation.
 
-## How It Works
+BuffetAlligator includes basic heap and 64-byte-aligned heap placements. Aligned heap is the default. Applications may register additional placements before creating the first `Slice` and may install a default placement strategy method.
 
-BuffetAlligator uses a registry pattern with a global allocator (the "Buffet") that manages different buffer types. Each buffer type inherits from a common base class and implements specific allocation strategies optimized for its use case. The library automatically selects the most appropriate buffer type based on size, usage patterns, and available hardware.
+Arena initialization allocates a 64 MiB current slab and a 64 MiB successor for every registered placement. The two built-in placements therefore commit 256 MiB before custom placements; each custom placement adds 128 MiB. Placemat callbacks may run concurrently on the calling thread and the dedicated allocator thread, and placement instances must remain alive for the process lifetime.
 
-The architecture consists of:
-1. **Core Buffer Classes**: Base abstractions for all buffer types
-2. **Specialized Implementations**: Platform-specific optimizations (Metal for macOS, CUDA for NVIDIA GPUs, etc.)
-3. **Network Buffers**: Integration with networking frameworks for efficient data transfer
-4. **Buffer Chains**: Zero-copy concatenation of multiple buffers
-5. **Swift Bridge**: C++ to Swift interoperability layer for Apple platforms
+```cpp
+#include <buffetalligator.hpp>
 
-## The Name
+buffetalligator::Slice bytes(4096);
+auto* values = bytes.data<uint32_t>();
+```
 
-The name "BuffetAlligator" came out from a combination of autocorrect and voice-to-text, and the name stuck. ASCII art courtesy of Claude AI.
+Dedicated novel buffers remain available for long-lived claims:
+
+```cpp
+buffetalligator::Slice long_lived(1024 * 1024, true);
+```
+
+## Build
+
+BuffetAlligator requires a C++20 compiler, CMake 3.20 or newer, Git, and a platform threading library. `run_build.sh` is the supported one-shot build on macOS and Linux; it uses Ninja when available.
+
+```sh
+./run_build.sh
+```
+
+The script checks out [threadsafe-logger](https://github.com/joshmorgan1000/threadsafe-logger) at commit `52588cec8fda78ffa5af31b8479b4e97a9417de8` under `deps/src`, builds both libraries statically, and runs the contract tests. The dependency is MIT-licensed; see `THIRD_PARTY_NOTICES.md`.
+
+## Install
+
+```sh
+cmake --install build/current --prefix /your/install/prefix
+```
+
+Installed CMake consumers can use the exported target:
+
+```cmake
+find_package(buffetalligator CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE buffetalligator::buffetalligator)
+```
+
+Concurrent claims and independent `Slice` handles are supported. Concurrent mutation of the same `Slice` object requires external synchronization.
+
+## License
+
+Apache License 2.0. See `LICENSE`.

@@ -1,0 +1,4 @@
+add_executable(buffetalligator_memory_test memory_test.cpp)
+target_include_directories(buffetalligator_memory_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(buffetalligator_memory_test PRIVATE buffetalligator::buffetalligator)
+add_test(NAME buffetalligator_memory_test COMMAND buffetalligator_memory_test)
