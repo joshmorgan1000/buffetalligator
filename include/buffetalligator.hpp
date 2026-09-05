@@ -27,7 +27,7 @@
 #include <vector>
 
 namespace buffetalligator {
-class Alligator; class Buffet; class BuffetMenu; class Slice; class Memory;
+class Alligator; class Buffet; class BuffetMenu; class Slice; class SliceFriend; class Slice; class Memory;
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 /** --------------------------------------------------------------------------------------------------------- Placemat
@@ -101,7 +101,7 @@ public:
         if (default_slab_size < 256 * 1024 * 1024) default_slab_size = 256 * 1024 * 1024;
         auto& inst = instance();
         uint16_t type = static_cast<uint16_t>(inst.placements_.size());
-        auto placement = std::make_unique<Placemat>();
+        auto placement = std::unique_ptr<Placemat>(new Placemat());
         placement->name_ = name;
         placement->alligator_ = alligator;
         placement->default_slab_size_ = default_slab_size >> 12;
@@ -115,6 +115,7 @@ public:
         }
         inst.placement_indices_.emplace(name, type);
         inst.placements_.emplace_back(std::move(placement));
+        inst.notify_change_listeners();
         return type;
     }
     /** ------------------------------------------------------------------------------------------- Get
@@ -125,6 +126,13 @@ public:
     static Placemat* get(uint16_t type) {
         return instance().placements_.at(type).get();
     }
+    /** ------------------------------------------------------------------------------------------- Count
+     * @brief Returns the number of Placemat types registered so far.
+     * @return The registered placement count.
+     */
+    static size_t count() {
+        return instance().placements_.size();
+    }
     /** ------------------------------------------------------------------------------------------- Default Placement
      * @brief Returns the default Placemat instance.
      * @return The default Placemat pointer.
@@ -132,6 +140,17 @@ public:
     static const Placemat*& default_placement() {
         static const Placemat* default_placement = nullptr;
         return default_placement;
+    }
+    /** ------------------------------------------------------------------------------------------- Register Change Listener
+     * @brief Registers a change listener that will be called when certain events occur.
+     * @param context The context pointer to be passed to the callback.
+     * @param callback The callback function to be invoked.
+     */
+    static void register_change_listener(
+        void* context,
+        void (*callback)(void*)
+    ) {
+        instance().change_listeners_.emplace_back(context, callback);
     }
     /** ------------------------------------------------------------------------------------------- No copy/move */
     BuffetMenu(const BuffetMenu&) = delete;
@@ -142,6 +161,16 @@ public:
 private:
     std::vector<std::unique_ptr<Placemat>> placements_;
     std::unordered_map<std::string, size_t> placement_indices_;
+    std::vector<std::pair<void*, void (*)(void*)>> change_listeners_;
+    /** ------------------------------------------------------------------------------------------- Notify Change Listeners
+     * @brief Notifies all registered change listeners by invoking their callbacks with the
+     * provided context.
+     */
+    void notify_change_listeners() {
+        for (auto& listener : change_listeners_) {
+            listener.second(listener.first);
+        }
+    }
     BuffetMenu() = default;
     static BuffetMenu& instance() {
         static BuffetMenu instance;
@@ -216,12 +245,6 @@ public:
      * @param size The size of the slice in bytes.
      */
     Slice(size_t size, const Placemat* placement = default_placement());
-    /** ------------------------------------------------------------------------------------------- Constructor - From Slice with Placement
-     * @brief Constructs a `Slice` from an existing `Slice`, with the option to specify the placement.
-     * @param other The existing `Slice` to construct from.
-     * @param placement The placement for the new slice.
-     */
-    Slice(Slice other, const Placemat* placement);
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
      * @brief Claims a slice of pre-allocated memory in Nebula's slab arena, with the option to
      * specify whether the slice should be part of a larger slab or a novel buffer. The slice is

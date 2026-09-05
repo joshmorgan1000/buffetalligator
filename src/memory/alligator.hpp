@@ -31,8 +31,7 @@ private:
     inline static constexpr size_t SLOT_CAPACITY = 0x20000;
     inline static constexpr size_t SPAN_CAPACITY = 0x8000;
     inline static constexpr size_t ORDER_RING_CAPACITY = 0x10000;
-    std::array<std::atomic<Buffet*>, SLOT_CAPACITY> bufs{};
-    std::array<std::atomic<uint64_t>, SPAN_CAPACITY> reserved{};
+    std::array<std::atomic<std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>*>, SLOT_CAPACITY> bufs{};
     std::atomic<uint64_t> next_buffer_{0};
     std::vector<std::atomic<Buffet*>> pool_current_;
     std::vector<std::atomic<Buffet*>> pool_previous_;
@@ -109,13 +108,19 @@ private:
      */
     uint32_t get_next_free_slot(Buffet* buffer) {
         size_t rounds = 0;
+        std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>* new_entry =
+            new std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>(
+                std::piecewise_construct, std::forward_as_tuple(buffer), std::forward_as_tuple());
         while (true) {
             const uint32_t index = next_buffer_.fetch_add(1, std::memory_order_relaxed) & 0x1FFFF;
             if (bufs[index].load(std::memory_order_acquire) == nullptr) {
-                Buffet* expected = nullptr;
+                std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>* expected = nullptr;
                 if (bufs[index].compare_exchange_weak(
-                    expected, buffer, std::memory_order_release, std::memory_order_relaxed
-                )) return index;
+                    expected, new_entry, std::memory_order_release, std::memory_order_relaxed
+                )) {
+                    buffer->alligator_idx_ = static_cast<uint32_t>(index);
+                    return index;
+                }
             }
             if (++rounds > SLOT_CAPACITY * 2) {
                 std::string error_message = "Alligator::get_next_free_slot: exceeded "

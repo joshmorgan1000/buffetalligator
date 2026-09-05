@@ -111,13 +111,13 @@ struct BuffetOrder {
     void* context;
     void (*deleter)(BuffetOrder*);
     BuffetOrder(
-        void* context,
-        void* (*task)(void*),
-        void (*deleter)(BuffetOrder*)
-    ) : context(context)
-    , task(task)
-    , deleter(deleter)
-    , promise(nullptr) {}
+        void* context_,
+        void* (*task_)(void*),
+        void (*deleter_)(BuffetOrder*)
+    ) : promise(nullptr)
+    , task(task_)
+    , context(context_)
+    , deleter(deleter_) {}
     ~BuffetOrder() {
         if (deleter) {
             deleter(this);
