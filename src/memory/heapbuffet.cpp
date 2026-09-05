@@ -3,10 +3,10 @@
  * @brief Built-in heap and aligned-heap placements plus their one-time registration.
  */
 #include <buffetalligator.hpp>
-#include <memory/slicefriend.hpp>
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <thread>
 
 namespace buffetalligator {
 namespace {
@@ -60,33 +60,39 @@ void* heap_context() {
     return nullptr;
 }
 }
-/** --------------------------------------------------------------------------------------------------------- Ensure Heap Buffet Builtins
- * @brief Registers the heap (0) and aligned-heap (1) placements exactly once.
+/** --------------------------------------------------------------------------------------------------------- Ensure Builtins Slow
+ * @brief Registers the heap (0) and aligned-heap (1) placements exactly once; a caller that
+ * loses the claim waits until the identifiers are stable.
  */
-void ensure_heap_buffet_builtins() {
-    static const bool done = [] {
-        BuffetMenu::register_type(
-            "heap",
-            64ull * 1024 * 1024,
-            16,
-            &heap_allocate,
-            &heap_deallocate,
-            &heap_host_ptr,
-            &heap_context,
-            false
-        );
-        BuffetMenu::register_type(
-            "aligned_heap",
-            64ull * 1024 * 1024,
-            64,
-            &aligned_heap_allocate,
-            &heap_deallocate,
-            &heap_host_ptr,
-            &heap_context,
-            true
-        );
-        return true;
-    }();
-    (void)done;
+void BuffetMenu::ensure_builtins_slow() {
+    BuffetMenu& menu = instance();
+    bool unclaimed = false;
+    if (!menu.builtins_claimed_.compare_exchange_strong(unclaimed, true, std::memory_order_acq_rel)) {
+        while (!menu.builtins_ready_.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        return;
+    }
+    register_type_unchecked(
+        "heap",
+        64ull * 1024 * 1024,
+        16,
+        &heap_allocate,
+        &heap_deallocate,
+        &heap_host_ptr,
+        &heap_context,
+        false
+    );
+    register_type_unchecked(
+        "aligned_heap",
+        64ull * 1024 * 1024,
+        64,
+        &aligned_heap_allocate,
+        &heap_deallocate,
+        &heap_host_ptr,
+        &heap_context,
+        true
+    );
+    menu.builtins_ready_.store(true, std::memory_order_release);
 }
 } // namespace buffetalligator

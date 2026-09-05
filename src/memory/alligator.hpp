@@ -13,14 +13,55 @@
 #include <thread>
 
 namespace buffetalligator {
-struct SizeAndContext {
-    Placemat::Handle* (*allocator)(size_t size, void* context) = nullptr;
-    void* context = nullptr;
-    size_t size = 0;
-    uint16_t placement_type = 0;
-    Alligator* instance = nullptr;
-    Placemat::Handle* handle = nullptr;
-};
+/** ------------------------------------------------------------------------------------------- Heap Allocate
+ * @brief Allocates one zeroed slab from the C heap.
+ * @param size The slab size in bytes.
+ * @return The handle wrapping the zeroed block.
+ */
+inline static Placemat::Handle* heap_allocate(size_t size, void*) {
+    void* memory = std::calloc(1, size);
+    if (memory == nullptr) {
+        throw std::bad_alloc();
+    }
+    return new Placemat::Handle{memory, nullptr};
+}
+/** ------------------------------------------------------------------------------------------- Aligned Heap Allocate
+ * @brief Allocates one zeroed, 64-byte-aligned slab from the C heap.
+ * @param size The slab size in bytes.
+ * @return The handle wrapping the zeroed block.
+ */
+inline static Placemat::Handle* aligned_heap_allocate(size_t size, void*) {
+    void* memory = nullptr;
+    if (posix_memalign(&memory, 64, size) != 0) {
+        throw std::bad_alloc();
+    }
+    std::memset(memory, 0, size);
+    return new Placemat::Handle{memory, nullptr};
+}
+/** ------------------------------------------------------------------------------------------- Heap Deallocate
+ * @brief Frees a heap slab's block; the handle itself is deleted by the framework.
+ * @param handle The handle wrapping the block.
+ */
+inline static void heap_deallocate(Placemat::Handle* handle, void*) {
+    if (handle != nullptr && handle->substrate_handle != nullptr) {
+        std::free(handle->substrate_handle);
+    }
+}
+/** ------------------------------------------------------------------------------------------- Heap Host Pointer
+ * @brief Returns the host-visible base pointer of a heap slab.
+ * @param handle The handle wrapping the block.
+ * @return The block's base pointer.
+ */
+inline static void* heap_host_ptr(Placemat::Handle* handle) {
+    return handle->substrate_handle;
+}
+/** ------------------------------------------------------------------------------------------- Heap Context
+ * @brief The heap placements carry no context.
+ * @return Always returns nullptr.
+ */
+inline static void* heap_context() {
+    return nullptr;
+}
 /** --------------------------------------------------------------------------------------------------------- Arena
  * @class Alligator
  * @brief Maintains one preallocated Buffer chain per registered Placemat.
@@ -31,33 +72,19 @@ private:
     inline static constexpr size_t ORDER_RING_CAPACITY = 0x10000;
     std::array<std::atomic<Buffet*>, SLOT_CAPACITY> bufs{};
     std::atomic<uint64_t> next_buffer_{0};
-    std::vector<std::unique_ptr<std::atomic<Buffet*>>> pool_current_;
-    std::vector<std::unique_ptr<std::atomic<Buffet*>>> pool_previous_;
+    std::vector<std::unique_ptr<std::atomic<Buffet*>>> pool_current_;  /// This is a vector on purpose. It holds the current active Buffer pointer for each Placemat* it is NOT the same as bufs.
+    std::vector<std::unique_ptr<std::atomic<Buffet*>>> pool_previous_;   /// One version behind the above.
     std::atomic<bool> stop_{false};
     std::thread worker_thread_;
     std::atomic<uint16_t> ring_head_{0};
     std::atomic<uint16_t> ring_tail_{0};
     std::atomic_flag enqueue_lock_ = ATOMIC_FLAG_INIT;
-    std::array<BuffetOrder*, ORDER_RING_CAPACITY> orders_{nullptr};
+    std::array<void*, ORDER_RING_CAPACITY> orders_{nullptr};
     /** ------------------------------------------------------------------------------------------- Enqueue Order
      * @brief Adds a new order to the ring buffer.
      * @param order The order to enqueue.
-     * @return True if the order was successfully enqueued, false if the ring is full.
      */
-    void enqueue_order(BuffetOrder* order) {
-        while (enqueue_lock_.test_and_set(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-        uint16_t head = ring_head_.load(std::memory_order_relaxed);
-        uint16_t desired = static_cast<uint16_t>(head + 1);
-        while (desired == ring_tail_.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-        orders_[head] = order;
-        ring_head_.store(desired, std::memory_order_release);
-        enqueue_lock_.clear(std::memory_order_release);
-        ring_head_.notify_one();
-    }
+    void enqueue_order(void* order);
     /** ------------------------------------------------------------------------------------------- Spin Yield Wait
      * @brief Spins and yields until the ring tail is not equal to the ring head.
      * @return The updated tail index.
@@ -67,7 +94,7 @@ private:
         int spins = 0;
         while (tail == ring_head_.load(std::memory_order_acquire)) {
             if (++spins > 1000) {
-                ring_head_.wait(ring_head_.load(std::memory_order_acquire), std::memory_order_acquire);
+                ring_head_.wait(tail, std::memory_order_acquire);
             } else {
                 std::this_thread::yield();
             }
@@ -79,71 +106,73 @@ private:
      * @brief Retrieves the next order from the ring buffer.
      * @return The next order, or nullptr if the ring is empty.
      */
-    BuffetOrder* dequeue_order() {
-        uint16_t tail = ring_tail_.load(std::memory_order_acquire);
-        while (tail == ring_head_.load(std::memory_order_acquire)) {
-            tail = spin_yield_wait();
-        }
-        BuffetOrder* order = orders_[tail];
-        ring_tail_.store(static_cast<uint16_t>(tail + 1), std::memory_order_release);
-        ring_tail_.notify_one();
-        return order;
-    }
-    /** ------------------------------------------------------------------------------------------- Ensure Chains
-     * @brief Ensures that all buffer chains are properly initialized.
-     */
-    static void ensure_chains();
+    void* dequeue_order();
     /** ------------------------------------------------------------------------------------------- Worker Loop
-     * @brief Replenishes active chains without a dynamically allocating task queue.
+     * @brief Executes queued orders and replenishes runway.
      */
     void worker_loop();
     /** ------------------------------------------------------------------------------------------- Next Free Slot
      * @brief Atomically claims an Arena registry slot.
-     * @param buffer The slot to publish.
-     * @return The registry index.
+     * @param buffer The slab to publish.
      */
-    void get_next_free_slot(Buffet* buffer) {
-        size_t rounds = 0;
-        while (true) {
-            const uint32_t index = next_buffer_.fetch_add(1, std::memory_order_relaxed) & 0x1FFFF;
-            if (bufs[index].load(std::memory_order_acquire) == nullptr) {
-                Buffet* expected = nullptr;
-                if (bufs[index].compare_exchange_weak(
-                    expected, buffer, std::memory_order_release, std::memory_order_relaxed
-                )) {
-                    buffer->size_ = (buffer->size_ & ~0x1FFFF) | static_cast<uint32_t>(index);
-                    return;
-                }
-            }
-            if (++rounds > SLOT_CAPACITY * 2) {
-                std::string error_message = "Alligator::get_next_free_slot: exceeded "
-                    "maximum rounds while searching for a free slot";
-                ALLIGATOR_THROW(error_message);
-            }
-        }
-        ALLIGATOR_THROW("Arena::get_next_free_slot: every slab slot is occupied");
-    }
+    void get_next_free_slot(Buffet* buffer);
+    /** ------------------------------------------------------------------------------------------- Ensure Chains
+     * @brief Ensures that all buffer chains are properly initialized.
+     */
+    void ensure_chains();
+    /** ------------------------------------------------------------------------------------------- Build Initial Chain
+     * @brief Worker task that builds a placement's first slab plus its successor and publishes
+     * the pool head.
+     * @param type The placement identifier.
+     * @return The published pool head.
+     */
+    Buffet* build_initial_chain(uint16_t type);
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Initializes and cleans up the Alligator instance.
+     */
     Alligator();
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Cleans up the Alligator instance.
+     */
     ~Alligator();
     static Alligator& instance() {
-        static Alligator alligator;
-        return alligator;
+        static Alligator inst;
+        return inst;
     }
     friend class Buffet;
     friend class Placemat;
     friend class Slice;
-    friend struct SizeAndContext;
     friend class Memory;
+    friend class SliceFriend;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
     Alligator(Alligator&&) = delete;
     Alligator& operator=(Alligator&&) = delete;
     /** ------------------------------------------------------------------------------------------- Get
-     * @brief Retrieves a Buffet instance by its registry index.
-     * @param index The registry index.
-     * @return The Buffet instance at the specified index.
+     * @brief Resolves a registry slot to its slab.
+     * @param slot The registry slot held in a Slice's meta word.
+     * @return The slab, or nullptr when the slot is unoccupied.
      */
-    static Buffet* get(size_t index);
+    Buffet* get(uint32_t slot) {
+        Buffet* b = bufs[slot & 0x1FFFF].load(std::memory_order_acquire);
+        while (b == nullptr) {
+            b = bufs[slot & 0x1FFFF].load(std::memory_order_acquire);
+        }
+        return b;
+    }
+    /** ------------------------------------------------------------------------------------------- Current for Placement
+     * @brief Returns the current buffer for a given placement type.
+     * @param placement_type The placement identifier.
+     * @return The current buffer for the specified placement type.
+     */
+    Buffet* current_for_placement(uint16_t placement_type) {
+        Buffet* head = pool_current_[placement_type]->load(std::memory_order_acquire);
+        while (head == nullptr) {
+            std::this_thread::yield();
+            head = pool_current_[placement_type]->load(std::memory_order_acquire);
+        }
+        return head;
+    }
 };
 } // namespace buffetalligator

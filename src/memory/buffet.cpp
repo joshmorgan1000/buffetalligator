@@ -26,14 +26,9 @@ Buffet::Buffet(
     }
 ), host_(placement->get_host_ptr_(cold_->handle)) {
     size_ = size << 17;
-    Alligator::instance().get_next_free_slot(this);
     if (is_novel) {
         bump_offset_.store(size << 6, std::memory_order_release);
-    } else {
-        Slice* new_slice = new Slice();
-        new_slice->meta_ = size_;
-        new_slice->cached_ = cold_->placement->get_host_ptr_(cold_->handle);
-        cold_->root.store(new_slice, std::memory_order_release);
+        cold_->next.store(NOVEL_NEXT_SENTINEL, std::memory_order_release);
     }
 }
 struct DeleteCold {
@@ -44,12 +39,9 @@ namespace {
 inline static void* delete_cold(void* ptr) {
     DeleteCold* deleter = static_cast<DeleteCold*>(ptr);
     if (deleter->cold_ != nullptr) {
-        if (deleter->cold_->root.load(std::memory_order_acquire) != nullptr) {
-            delete deleter->cold_->root.load(std::memory_order_acquire);
-            deleter->cold_->root.store(nullptr, std::memory_order_release);
-        }
         if (deleter->cold_->handle != nullptr) {
             if (deleter->cold_->placement != nullptr) {
+                Memory::record_deallocation(*deleter->cold_->placement, deleter->buffet_->size());
                 void* de_all = const_cast<Placemat*>(deleter->cold_->placement)->deallocate();
                 void (*deallocate)(Placemat::Handle* handle, void* context) = 
                     reinterpret_cast<void (*)(Placemat::Handle* handle, void* context)>(de_all);
@@ -68,21 +60,15 @@ inline static void* delete_cold(void* ptr) {
     delete deleter;
     return nullptr;
 }
-void buffet_order_deleter(BuffetOrder* order) {
-    if (order != nullptr) {
-        delete order;
-    }
-}
 }
 void Buffet::free() {
     if (cold_ && ref_count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         DeleteCold* deleter = new DeleteCold();
         deleter->cold_ = cold_;
         deleter->buffet_ = this;
-        BuffetOrder* order = new BuffetOrder(static_cast<void*>(deleter), &delete_cold, &buffet_order_deleter);
-        Alligator::instance().enqueue_order(order);
-        Alligator::instance().bufs[deleter->buffet_->size_ & 0x1FFFF].store(nullptr, std::memory_order_release);
+        Alligator::instance().bufs[size_ & 0x1FFFF].store(nullptr, std::memory_order_release);
         cold_ = nullptr;
+        SliceFriend::execute_async<void*>(&delete_cold, static_cast<void*>(deleter));
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Destructor
@@ -105,27 +91,11 @@ Slice Buffet::novel_slice(size_t size, const Placemat* placement, void* context)
         size,
         true
     );
+    Alligator::instance().get_next_free_slot(buffet);
     Slice slice;
     slice.cached_ = buffet->cold_->placement->get_host_ptr_(buffet->cold_->handle);
     slice.meta_ = (size << 17) | (buffet->size_ & 0x1FFFF);
     return slice;
-}
-/** ------------------------------------------------------------------------------------------- Make Active
- * @brief Marks this slab as its pool's current claim target, demoting the occupant to
- * previous status and dropping the self-reference of the slab two generations back.
- */
-void Buffet::make_active() {
-    Buffet* previous = Alligator::instance().pool_current_[size_ & 0x1FFFF]->exchange(this, std::memory_order_acq_rel);
-    if (previous != nullptr) {
-        previous = Alligator::instance().pool_previous_[size_ & 0x1FFFF]->exchange(previous, std::memory_order_acq_rel);
-        if (previous != nullptr) {
-            DeleteCold* deleter = new DeleteCold();
-            deleter->buffet_ = previous;
-            deleter->cold_ = previous->cold_;
-            BuffetOrder* order = new BuffetOrder(static_cast<void*>(deleter), &delete_cold, &buffet_order_deleter);
-            Alligator::instance().enqueue_order(order);
-        }
-    }
 }
 /** ------------------------------------------------------------------------------------------- Deallocate
  * @brief Drops the Arena's chain pin on a demoted slab.
@@ -161,8 +131,8 @@ Buffet* Buffet::next() {
         Buffet* expected = nullptr;
         if (cold_->next.compare_exchange_strong(expected, SWAP_SENTINEL, std::memory_order_acq_rel)) {
             Buffet* fresh = new Buffet(cold_->placement, cold_->context, size(), false);
+            Alligator::instance().get_next_free_slot(fresh);
             cold_->next.store(fresh, std::memory_order_release);
-            fresh->make_active();
             return fresh;
         }
         std::this_thread::yield();
@@ -192,14 +162,42 @@ bool Buffet::full() const {
  * @brief Bump-allocates a Slice from this chain.
  */
 Slice Buffet::claim(size_t size_requested) {
-    if (cold_ == nullptr) [[unlikely]] {
+    size_t size_they_ll_get = ((size_requested + 63ull) & ~static_cast<size_t>(63ull));
+    if (cold_ == nullptr || cold_->root.load(std::memory_order_acquire) == nullptr) [[unlikely]] {
         return Slice();
     }
-    if (size_requested >= size()) {
-        return novel_slice(size_requested, cold_->placement, cold_->context);
+    if (size_they_ll_get >= size()) {
+        return novel_slice(size_they_ll_get, cold_->placement, cold_->context);
     }
-    size_t start_offset = bump_offset_.fetch_add(size_requested, std::memory_order_relaxed);
-    if (start_offset + size_requested > size()) {
+    size_t start_offset = (bump_offset_.fetch_add(size_they_ll_get >> 6, std::memory_order_relaxed)) << 6;
+    if (start_offset + size_they_ll_get >= size()) {
+        if (start_offset >= size()) {
+            return next()->claim(size_requested);
+        }
+        int32_t refs = ref_count_.fetch_add(1, std::memory_order_relaxed);
+        if (refs == 0) {
+            ref_count_.fetch_sub(1, std::memory_order_relaxed);
+            return next()->claim(size_requested);
+        }
+        // We are the thread that crossed the boundary. Atomics mean it is impossible that
+        // any other thread could claim any more from this buffer.
+        std::atomic<Buffet*>& current_pool = *Alligator::instance().pool_current_[cold_->placement->type()];
+        std::atomic<Buffet*>& previous_pool = *Alligator::instance().pool_previous_[cold_->placement->type()];
+        if (current_pool.load(std::memory_order_acquire) == this) {
+            Buffet* nxt = next();
+            current_pool.store(nxt, std::memory_order_release);
+            for (size_t i = 0; i < 4; ++i) {
+                nxt = nxt->next();
+            }
+            Buffet* previous = previous_pool.exchange(this, std::memory_order_acq_rel);
+            if (previous != nullptr) {
+                Slice* prev_root = previous->cold_->root.exchange(nullptr, std::memory_order_acquire);
+                delete prev_root;
+            }
+        }
+        if (start_offset + size_they_ll_get == size()) {
+            return cold_->root.load(std::memory_order_acquire)->slice(start_offset, size_requested);
+        }
         return next()->claim(size_requested);
     }
     return cold_->root.load(std::memory_order_acquire)->slice(start_offset, size_requested);

@@ -24,7 +24,7 @@ const Placemat* Slice::default_placement() {
  * @param size The size of the slice in bytes.
  */
 Slice::Slice(size_t size, const Placemat* placement) {
-    *this = Alligator::instance().pool_current_[placement->type()]->load(std::memory_order_acquire)->claim(size);
+    *this = Alligator::instance().current_for_placement(placement->type())->claim(size);
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
  * @brief Claims a slice of pre-allocated memory in Nebula's slab arena, with the option to
@@ -36,7 +36,7 @@ Slice::Slice(size_t size, const Placemat* placement) {
  * reduce fragmentation in the arena.
  */
 Slice::Slice(size_t size, bool novel_buffer, const Placemat* placement) {
-    *this = Alligator::instance().pool_current_[placement->type()]->load(std::memory_order_acquire)->claim(size, novel_buffer);
+    *this = Alligator::instance().current_for_placement(placement->type())->claim(size, novel_buffer);
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
  * @brief Copies data from an external memory location into a new slice of memory in Nebula.
@@ -57,7 +57,7 @@ Slice::Slice(
     if (copy_from == nullptr || size == 0) {
         return;
     }
-    *this = Alligator::instance().pool_current_[placement->type()]->load(std::memory_order_acquire)->claim(copy_from, size, novel_buffer);
+    *this = Alligator::instance().current_for_placement(placement->type())->claim(copy_from, size, novel_buffer);
 }
 /** ------------------------------------------------------------------------------------------- Copy/move semantics
  * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
@@ -187,6 +187,10 @@ void Slice::resize(
     bool novel_buffer,
     const Placemat* placement
 ) {
+    if (is_null()) {
+        *this = Slice(new_size, novel_buffer, placement);
+        return;
+    }
     if (new_size == size_bytes()) {
         return;
     }
@@ -211,11 +215,18 @@ void Slice::free() {
         return;
     }
     uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffet = Alligator::instance().get(slot);
+    Buffet* buffet = Alligator::instance().bufs[slot & 0x1FFFFu].load(std::memory_order_acquire);
     if (buffet != nullptr) {
         buffet->free();
     }
     meta_ = UINT64_MAX;
     cached_ = nullptr;
+}
+/** ------------------------------------------------------------------------------------------- Do Something Fun
+ * @brief A placeholder function for demonstration purposes.
+ * @param ptr A void pointer parameter.
+ */
+void SliceFriend::do_somthing_fun(void* ptr) {
+    Alligator::instance().enqueue_order(ptr);
 }
 } // namespace buffetalligator

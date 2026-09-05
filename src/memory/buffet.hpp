@@ -43,10 +43,11 @@ private:
     void* host_ = nullptr;
     /// @brief The total size of the allocation in bytes, with the 17 LSB's being the alligator index.
     uint64_t size_ = 0;
-    /// @brief The bump cursor within the allocation, counted in claim-granularity units.
+    /// @brief The bump cursor within the allocation, counted in units set by
+    /// the placement's claim granularity.
     std::atomic<uint32_t> bump_offset_{0};
     /// @brief The reference count for this slab.
-    std::atomic<int32_t> ref_count_{0};
+    std::atomic<int32_t> ref_count_{1};
     /// @brief Frees the buffet if its reference count reaches zero.
     void free();
     /** ------------------------------------------------------------------------------------------- Slice
@@ -86,11 +87,6 @@ private:
      * @return A Slice object representing the requested portion of the novel buffer.
      */
     static Slice novel_slice(size_t size, const Placemat* placement, void* context);
-    /** ------------------------------------------------------------------------------------------- Make Active
-     * @brief Marks this slab as its pool's current claim target, demoting the occupant to
-     * previous status and dropping the self-reference of the slab two generations back.
-     */
-    void make_active();
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Creates the counted handle around one completed placement allocation.
      * @param placement The factory that owns the allocation.

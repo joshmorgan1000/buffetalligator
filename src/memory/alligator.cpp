@@ -5,39 +5,16 @@
 #include <buffetalligator.hpp>
 #include <memory/alligator.hpp>
 #include <memory/buffet.hpp>
-
+#include <memory/slicefriend.hpp>
+#include <memory/tracker.hpp>
 
 namespace buffetalligator {
-namespace {
-/** --------------------------------------------------------------------------------------------------------- Allocate Buffer For
- * @brief Allocates a buffer for the given SizeAndContext.
- * @param context The context containing the SizeAndContext.
- * @return Always returns nullptr.
- */
-inline static void* allocate_buffer_for(void* context) {
-    SizeAndContext* sac = static_cast<SizeAndContext*>(context);
-    sac->handle = sac->allocator(sac->size, sac->context);
-    return nullptr;
-}
-/** --------------------------------------------------------------------------------------------------------- SAC Deleter
- * @brief Custom deleter for SizeAndContext wrapped in a BuffetOrder.
- * @param order The BuffetOrder containing the SizeAndContext to be deleted.
- */
-inline static void sac_deleter(BuffetOrder* order) {
-    if (order) {
-        if (order->context) {
-            SizeAndContext* sac = static_cast<SizeAndContext*>(order->context);
-            delete sac;
-        }
-        delete order;
-    }
-}
-
-} // anonymous namespace
 /** --------------------------------------------------------------------------------------------------------- Constructor & Destructor
  * @brief Implements the Alligator's constructor and destructor.
  */
 Alligator::Alligator() {
+    worker_thread_ = std::thread(&Alligator::worker_loop, this);
+    ensure_chains();
     BuffetMenu::register_change_listener(
         this,
         [](void* myself) {
@@ -46,24 +23,6 @@ Alligator::Alligator() {
             }
         }
     );
-    for (size_t i = 0; i < pool_current_.size(); ++i) {
-        pool_previous_[i]->store(nullptr, std::memory_order_release);
-        const Placemat* placement = BuffetMenu::get(static_cast<uint16_t>(i));
-        SizeAndContext* sac = new SizeAndContext();
-        sac->allocator = placement->alligator_;
-        sac->context = placement->get_context_();
-        sac->size = placement->default_slab_size_;
-        sac->placement_type = static_cast<uint16_t>(i);
-        sac->instance = this;
-        BuffetOrder* order = new BuffetOrder(
-            sac,
-            &allocate_buffer_for,
-            &sac_deleter
-        );
-        enqueue_order(order);
-    }
-    worker_thread_ = std::thread(&Alligator::worker_loop, this);
-    worker_thread_.detach();
 }
 /** --------------------------------------------------------------------------------------------------------- Destructor
  * @brief Implements the Alligator's destructor.
@@ -71,11 +30,12 @@ Alligator::Alligator() {
 Alligator::~Alligator() {
     LOG_DEBUG_STREAM << "Alligator shutting down.";
     AtomicContainer* stop_signal = AtomicRegistry::get_global("stop_signal");
-    if (stop_signal) {
+    if (!stop_signal->load<bool>(std::memory_order_acquire)) {
         stop_signal->store(true, std::memory_order_release);
     } else {
         LOG_ERROR_STREAM << "Failed to retrieve stop_signal from AtomicRegistry.";
     }
+    enqueue_order(nullptr);
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
@@ -86,35 +46,38 @@ Alligator::~Alligator() {
  * @return The length of the buffer chain.
  */
 void Alligator::ensure_chains() {
-    if (instance().pool_current_.size() < BuffetMenu::count()) {
-        instance().pool_current_.resize(BuffetMenu::count());
-        for (size_t i = 0; i < instance().pool_current_.size(); ++i) {
-            if (!instance().pool_current_[i]) {
-                instance().pool_current_[i] = std::make_unique<std::atomic<Buffet*>>(nullptr);
-                const Placemat* placement = BuffetMenu::get(static_cast<uint16_t>(i));
-                Buffet* buf = new Buffet(
-                    placement,
-                    placement->get_context_(),
-                    placement->default_slab_size_,
-                    false
-                );
-                instance().pool_current_[i]->store(buf, std::memory_order_release);
-            }
-        }
-        instance().pool_previous_.resize(BuffetMenu::count());
-        for (size_t i = 0; i < instance().pool_previous_.size(); ++i) {
-            if (!instance().pool_previous_[i]) {
-                instance().pool_previous_[i] = std::make_unique<std::atomic<Buffet*>>(nullptr);
-            }
-        }
+    const size_t placement_count = BuffetMenu::count();
+    const size_t first_new_type = pool_current_.size();
+    while (pool_current_.size() < placement_count) {
+        pool_current_.emplace_back(std::make_unique<std::atomic<Buffet*>>(nullptr));
+        pool_previous_.emplace_back(std::make_unique<std::atomic<Buffet*>>(nullptr));
     }
-    for (size_t i = 0; i < instance().pool_current_.size(); ++i) {
-        Buffet* buf = instance().pool_current_[i]->load(std::memory_order_acquire);
-        size_t length = 4;
-        while (0 < --length) {
-            buf = buf->next();
-        }
+    std::vector<std::future<Buffet*>> pending;
+    for (size_t type = first_new_type; type < placement_count; ++type) {
+        auto [order, future] = SliceFriend::BuffetOrder::bind<Buffet*>(
+            &Alligator::build_initial_chain, this, static_cast<uint16_t>(type)
+        );
+        enqueue_order(order.release());
+        pending.emplace_back(std::move(future));
     }
+    for (std::future<Buffet*>& future : pending) {
+        future.get();
+    }
+}
+/** ------------------------------------------------------------------------------------------- Build Initial Chain
+ * @brief Worker task that builds a placement's first slab plus its successor and sets the
+ * first as the active Buffet for that Placemat.
+ */
+Buffet* Alligator::build_initial_chain(uint16_t type) {
+    const Placemat* placement = BuffetMenu::get(type);
+    const size_t slab_bytes = static_cast<size_t>(placement->default_slab_size_) << 12;
+    Buffet* first = new Buffet(placement, placement->get_context_(), slab_bytes, false);
+    get_next_free_slot(first);
+    Buffet* second = new Buffet(placement, placement->get_context_(), slab_bytes, false);
+    get_next_free_slot(second);
+    first->cold_->next.store(second, std::memory_order_release);
+    pool_current_[type]->store(first, std::memory_order_release);
+    return first;
 }
 /** ------------------------------------------------------------------------------------------- Worker Loop
  * @brief Replenishes active chains without a dynamically allocating task queue.
@@ -122,29 +85,79 @@ void Alligator::ensure_chains() {
 void Alligator::worker_loop() {
     AtomicContainer* stop_signal = AtomicRegistry::get_or_create_global("stop_signal", false);
     while (!stop_signal->load<bool>(std::memory_order_acquire)) {
-        BuffetOrder* order = dequeue_order();
-        if (order == nullptr) [[unlikely]] {
-            if (stop_signal->load<bool>(std::memory_order_acquire)) [[unlikely]] {
-                break;
-            } else {
-                std::this_thread::yield();
+        void* order = dequeue_order();
+        if (!order && stop_signal->load<bool>(std::memory_order_acquire)) {
+            break;
+        } else if (!order) {
+            std::this_thread::yield();
+            continue;
+        }
+        SliceFriend::BuffetOrder* order_ptr = static_cast<SliceFriend::BuffetOrder*>(order);
+        if (order_ptr->main) {
+            order_ptr->main(order_ptr);
+        }
+        delete order_ptr;
+    }
+}
+/** ------------------------------------------------------------------------------------------- Dequeue Order
+ * @brief Retrieves the next order from the ring buffer.
+ * @return The next order, or nullptr if the ring is empty.
+ */
+void* Alligator::dequeue_order() {
+    uint16_t tail = ring_tail_.load(std::memory_order_acquire);
+    while (tail == ring_head_.load(std::memory_order_acquire)) {
+        tail = spin_yield_wait();
+    }
+    void* order = orders_[tail];
+    ring_tail_.store(static_cast<uint16_t>(tail + 1), std::memory_order_release);
+    ring_tail_.notify_one();
+    return order;
+}
+/** ------------------------------------------------------------------------------------------- Next Free Slot
+ * @brief Atomically claims an Arena registry slot.
+ * @param buffer The slab to publish.
+ */
+void Alligator::get_next_free_slot(Buffet* buffer) {
+    size_t rounds = 0;
+    while (true) {
+        const uint32_t index = next_buffer_.fetch_add(1, std::memory_order_relaxed) & 0x1FFFF;
+        if (bufs[index].load(std::memory_order_acquire) == nullptr) {
+            buffer->size_ = (buffer->size_ & ~static_cast<uint64_t>(0x1FFFF)) | index;
+            Buffet* expected = nullptr;
+            if (bufs[index].compare_exchange_weak(
+                expected, buffer, std::memory_order_release, std::memory_order_relaxed
+            )) {
+                if (buffer->cold_->next.load(std::memory_order_acquire) != Buffet::NOVEL_NEXT_SENTINEL) {
+                    buffer->cold_->root.store(new Slice(buffer->slice()), std::memory_order_release);
+                }
+                Memory::record_allocation(*buffer->cold_->placement, buffer->size());
+                return;
             }
         }
-        if (order->promise) {
-            order->promise->set_value(order->task(order->context));
-            delete order;
-        } else {
-            order->task(order->context);
-            delete order;
+        if (++rounds > SLOT_CAPACITY * 2) {
+            std::string error_message = "Alligator::get_next_free_slot: exceeded "
+                "maximum rounds while searching for a free slot";
+            ALLIGATOR_THROW(error_message);
         }
     }
 }
-/** ------------------------------------------------------------------------------------------- Get Buffet
- * @brief Retrieves the buffet at the specified index.
- * @param index The index of the buffet.
- * @return The buffet at the given index.
+/** ------------------------------------------------------------------------------------------- Enqueue Order
+ * @brief Adds a new order to the ring buffer.
+ * @param order The order to enqueue.
  */
-Buffet* Alligator::get(size_t index) {
-    return instance().bufs[index & 0x1FFFF].load(std::memory_order_acquire);
+void Alligator::enqueue_order(void* order) {
+    SliceFriend::BuffetOrder* order_ptr = static_cast<SliceFriend::BuffetOrder*>(order);
+    while (enqueue_lock_.test_and_set(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    uint16_t head = ring_head_.load(std::memory_order_relaxed);
+    uint16_t desired = static_cast<uint16_t>(head + 1);
+    while (desired == ring_tail_.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    orders_[head] = order_ptr;
+    ring_head_.store(desired, std::memory_order_release);
+    enqueue_lock_.clear(std::memory_order_release);
+    ring_head_.notify_one();
 }
 } // namespace buffetalligator

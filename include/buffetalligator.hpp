@@ -103,25 +103,13 @@ public:
         void* (*get_context)(),
         bool set_as_default = false
     ) {
-        if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
-        auto& inst = instance();
-        uint16_t type = static_cast<uint16_t>(inst.placements_.size());
-        auto placement = std::unique_ptr<Placemat>(new Placemat());
-        placement->name_ = name;
-        placement->alligator_ = alligator;
-        placement->default_slab_size_ = default_slab_size >> 12;
-        placement->bump_alignment_ = bump_alignment;
-        placement->deallocate_ = deallocate;
-        placement->get_host_ptr_ = get_host_ptr;
-        placement->get_context_ = get_context;
-        placement->type_ = type;
-        if (set_as_default || default_placement() == nullptr) {
-            default_placement() = placement.get();
+        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
+            ensure_builtins_slow();
         }
-        inst.placement_indices_.emplace(name, type);
-        inst.placements_.emplace_back(std::move(placement));
-        inst.notify_change_listeners();
-        return type;
+        return register_type_unchecked(
+            name, default_slab_size, bump_alignment, alligator, deallocate, get_host_ptr,
+            get_context, set_as_default
+        );
     }
     /** ------------------------------------------------------------------------------------------- Get
      * @brief Returns the registered Placemat for an identifier.
@@ -129,6 +117,9 @@ public:
      * @return The registered placement factory.
      */
     static Placemat* get(uint16_t type) {
+        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
+            ensure_builtins_slow();
+        }
         return instance().placements_.at(type).get();
     }
     /** ------------------------------------------------------------------------------------------- Count
@@ -136,15 +127,20 @@ public:
      * @return The registered placement count.
      */
     static size_t count() {
+        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
+            ensure_builtins_slow();
+        }
         return instance().placements_.size();
     }
     /** ------------------------------------------------------------------------------------------- Default Placement
-     * @brief Returns the default Placemat instance.
+     * @brief Returns the default Placemat instance, registering the built-ins first if needed.
      * @return The default Placemat pointer.
      */
     static const Placemat*& default_placement() {
-        static const Placemat* default_placement = nullptr;
-        return default_placement;
+        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
+            ensure_builtins_slow();
+        }
+        return default_placement_slot();
     }
     /** ------------------------------------------------------------------------------------------- Register Change Listener
      * @brief Registers a change listener that will be called when certain events occur.
@@ -178,6 +174,49 @@ private:
      * @brief Slow path that registers the built-in placements; defined in the library.
      */
     static void ensure_builtins_slow();
+    /** ------------------------------------------------------------------------------------------- Default Placement Slot
+     * @brief The storage behind default_placement(), reachable without the built-in check.
+     * @return The default Placemat pointer slot.
+     */
+    static const Placemat*& default_placement_slot() {
+        static const Placemat* default_placement = nullptr;
+        return default_placement;
+    }
+    /** ------------------------------------------------------------------------------------------- Register Type Unchecked
+     * @brief Registers one Placemat without the built-in check; the slow path uses this to
+     * give the built-ins their stable identifiers.
+     * @return The stable placement identifier.
+     */
+    static uint16_t register_type_unchecked(
+        const char* name,
+        size_t default_slab_size,
+        size_t bump_alignment,
+        Placemat::Handle* (*alligator)(size_t size, void* context),
+        void (*deallocate)(Placemat::Handle* handle, void* context),
+        void* (*get_host_ptr)(Placemat::Handle* handle),
+        void* (*get_context)(),
+        bool set_as_default
+    ) {
+        if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
+        auto& inst = instance();
+        uint16_t type = static_cast<uint16_t>(inst.placements_.size());
+        auto placement = std::unique_ptr<Placemat>(new Placemat());
+        placement->name_ = name;
+        placement->alligator_ = alligator;
+        placement->default_slab_size_ = default_slab_size >> 12;
+        placement->bump_alignment_ = bump_alignment;
+        placement->deallocate_ = deallocate;
+        placement->get_host_ptr_ = get_host_ptr;
+        placement->get_context_ = get_context;
+        placement->type_ = type;
+        if (set_as_default || default_placement_slot() == nullptr) {
+            default_placement_slot() = placement.get();
+        }
+        inst.placement_indices_.emplace(name, type);
+        inst.placements_.emplace_back(std::move(placement));
+        inst.notify_change_listeners();
+        return type;
+    }
     /** ------------------------------------------------------------------------------------------- Notify Change Listeners
      * @brief Notifies all registered change listeners by invoking their callbacks with the
      * provided context.
@@ -287,16 +326,6 @@ public:
         bool novel_buffer = false,
         const Placemat* placement = default_placement()
     );
-    /** ------------------------------------------------------------------------------------------- Constructor - From Slice
-     * @brief Constructs a `Slice` from an existing object
-     * @param other The existing `Slice` to construct from.
-     */
-    template<typename T>
-        requires (!std::is_same_v<T, Slice>)
-        && (!std::is_arithmetic_v<T>)
-        && (std::is_standard_layout_v<T>
-        || std::is_convertible_v<T, Slice>)
-    explicit Slice(T other, const Placemat* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Copy/move semantics
      * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
      * much like `std::shared_ptr` in that they share the same reference counter and underlying
@@ -469,28 +498,6 @@ public:
      * @param slice The Slice to wrap.
      */
     explicit SliceT(Slice slice);
-    /** ------------------------------------------------------------------------------------------- Conversion from other primitive slice types
-     * @tparam U The type of the other primitive slice type.
-     * @param other The other primitive slice to convert from.
-     */
-    template<typename U>
-        requires (!std::is_same_v<U, SliceT<T>>)
-        && (!std::is_arithmetic_v<U>)
-        && (PrimitiveSliceType<std::remove_reference_t<U>>
-        || std::is_standard_layout_v<std::remove_reference_t<U>>
-        || std::is_convertible_v<U, Slice>)
-    SliceT(U other) {
-        if constexpr (PrimitiveSliceType<std::remove_reference_t<U>>) {
-            *this = SliceT(static_cast<Slice>(other));
-        } else if constexpr (std::is_convertible_v<U, Slice>) {
-            *this = SliceT(static_cast<Slice>(other));
-        } else if constexpr (std::is_standard_layout_v<std::remove_reference_t<U>>) {
-            *this = SliceT(sizeof(U));
-            std::memcpy(raw(), &other, sizeof(U));
-        } else {
-            static_assert(false, "Unsupported type for SliceT conversion.");
-        }
-    }
     /** ------------------------------------------------------------------------------------------- Copy/Move semantics */
     SliceT(const SliceT& other);
     SliceT(SliceT&& other) noexcept;
@@ -669,31 +676,6 @@ public:
     }
 };
 static_assert(sizeof(SliceT<uint8_t>) == sizeof(Slice), "SliceT must be the same size as Slice.");
-/** ------------------------------------------------------------------------------------------- Constructor - From Slice with Placemat
- * @brief Constructs a `Slice` from an existing `Slice`, with the option to specify the
- * placement.
- * @param other The existing `Slice` to construct from.
- * @param placement The placement for the new slice.
- */
-template<typename T>
-    requires (!std::is_same_v<T, Slice>)
-    && (!std::is_arithmetic_v<T>)
-    && (std::is_standard_layout_v<T>
-    || std::is_convertible_v<T, Slice>)
-inline Slice::Slice(T other, const Placemat* placement) {
-    if constexpr (PrimitiveSliceType<std::remove_reference_t<T>>) {
-        if (placement == other.placement()) {
-            *this = Slice(static_cast<Slice>(other));
-        }
-        *this = Slice(other.size_bytes(), placement);
-        std::memcpy(data(), other.data(), other.size_bytes());
-    } else if constexpr (std::is_standard_layout_v<T>) {
-        *this = Slice(sizeof(T), placement);
-        std::memcpy(data(), &other, sizeof(T));
-    } else {
-        static_assert(false, "Unsupported type for Slice constructor with placement.");
-    }
-}
 /** --------------------------------------------------------------------------------------------------------- SliceT Definitions
  * @brief Out-of-class definitions for SliceT's declared members.
  */

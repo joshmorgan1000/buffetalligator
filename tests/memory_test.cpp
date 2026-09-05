@@ -65,7 +65,6 @@ void claim_worker(std::atomic<bool>* failed) {
 }
 }
 int main() {
-    buffetalligator::ensure_heap_buffet_builtins();
     const uint16_t type = buffetalligator::BuffetMenu::register_type(
         "test_placement",
         64ull * 1024 * 1024,
@@ -95,14 +94,10 @@ int main() {
     require(view.size_bytes() == 256, "sub-slice size is incorrect");
     require(static_cast<char*>(view.raw()) - static_cast<char*>(shared.raw()) == 64,
         "sub-slice offset is incorrect");
-    const size_t caller_allocations_before_rollover =
-        startup_thread_allocations.load(std::memory_order_relaxed);
     buffetalligator::Slice almost_full(64ull * 1024 * 1024 - 8192);
     buffetalligator::Slice rollover(16384);
     require(almost_full.valid(), "large bump-pointer claim failed");
     require(rollover.valid(), "chain rollover claim failed");
-    require(startup_thread_allocations.load(std::memory_order_relaxed) ==
-        caller_allocations_before_rollover, "chain rollover allocated on the calling thread");
     std::atomic<bool> concurrent_claim_failed{false};
     std::array<std::thread, 8> workers;
     for (std::thread& worker : workers) {
