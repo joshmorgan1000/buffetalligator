@@ -27,7 +27,7 @@
 #include <vector>
 
 namespace buffetalligator {
-class Alligator; class Buffet; class BuffetMenu; class Slice; class SliceFriend; class Slice; class Memory;
+class Alligator; class Buffet; class BuffetMenu; class Slice; class SliceFriend; class Memory;
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 /** --------------------------------------------------------------------------------------------------------- Placemat
@@ -42,7 +42,7 @@ public:
      */
     struct Handle {
         /// @brief The buffet instance associated with this allocation.
-        Buffet* buffet = nullptr;
+        void* substrate_handle = nullptr;
         /// @brief The special context associated with this allocation.
         void* context = nullptr;
     };
@@ -56,6 +56,11 @@ public:
      * @return The placement name.
      */
     const char* name() const { return name_; }
+    /** ------------------------------------------------------------------------------------------- Accessors */
+    void* alligator() { return reinterpret_cast<void*>(alligator_); }
+    void* deallocate() { return reinterpret_cast<void*>(deallocate_); }
+    void* get_host_ptr() { return reinterpret_cast<void*>(get_host_ptr_); }
+    void* get_context() { return reinterpret_cast<void*>(get_context_); }
     /** ------------------------------------------------------------------------------------------- No copy/move */
     Placemat(const Placemat&) = delete;
     Placemat& operator=(const Placemat&) = delete;
@@ -98,7 +103,7 @@ public:
         void* (*get_context)(),
         bool set_as_default = false
     ) {
-        if (default_slab_size < 256 * 1024 * 1024) default_slab_size = 256 * 1024 * 1024;
+        if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
         auto& inst = instance();
         uint16_t type = static_cast<uint16_t>(inst.placements_.size());
         auto placement = std::unique_ptr<Placemat>(new Placemat());
@@ -159,9 +164,20 @@ public:
     BuffetMenu& operator=(BuffetMenu&&) = delete;
     ~BuffetMenu() = default;
 private:
+    /// @brief Vector of unique pointers to all registered Placemat instances.
     std::vector<std::unique_ptr<Placemat>> placements_;
+    /// @brief Mapping from placement names to their corresponding indices in the placements_ vector.
     std::unordered_map<std::string, size_t> placement_indices_;
+    /// @brief List of registered change listeners along with their context pointers.
     std::vector<std::pair<void*, void (*)(void*)>> change_listeners_;
+    /// @brief Set while the built-in placements are being registered.
+    std::atomic<bool> builtins_claimed_{false};
+    /// @brief Set once the built-in placements hold their stable identifiers.
+    std::atomic<bool> builtins_ready_{false};
+    /** ------------------------------------------------------------------------------------------- Ensure Builtins Slow
+     * @brief Slow path that registers the built-in placements; defined in the library.
+     */
+    static void ensure_builtins_slow();
     /** ------------------------------------------------------------------------------------------- Notify Change Listeners
      * @brief Notifies all registered change listeners by invoking their callbacks with the
      * provided context.
@@ -303,12 +319,12 @@ public:
      * @brief Use Nebula's internal memory arena system to resolve the slice's host-writable
      * pointer to the underlying memory.
      */
-    void* raw();
+    void* raw() { return cached_; }
     /** ------------------------------------------------------------------------------------------- Raw accessors - const
      * @brief Use Nebula's internal memory arena system to resolve the slice's host-writable
      * pointer to the underlying memory, but as a read-only pointer.
      */
-    const void* raw() const;
+    const void* raw() const { return cached_; }
     /** ------------------------------------------------------------------------------------------- Accessor - Typed
      * @brief Returns a pointer to the underlying data of the slice, cast to the specified type.
      * @tparam T The type to cast the underlying data to. Default is uint8_t.
@@ -340,7 +356,7 @@ public:
      * @brief Returns the size of the slice in bytes.
      * @return The size of the slice in bytes.
      */
-    size_t size_bytes() const;
+    size_t size_bytes() const { return (meta_ >> 17) & SIZE_MAX; }
     /** ------------------------------------------------------------------------------------------- Size in elements
      * @brief Returns the size of the slice in elements of type T.
      * @tparam T The type of elements in the slice. Default is `uint8_t`.
@@ -379,7 +395,7 @@ public:
      * @brief Checks if the slice is null (i.e., has no underlying memory).
      * @return True if the slice is null, false otherwise.
      */
-    bool is_null() const;
+    bool is_null() const { return meta_ == UINT64_MAX; }
     /** ------------------------------------------------------------------------------------------- Check if slice is valid
      * @brief Checks if the slice is valid (i.e., has underlying memory).
      * @return True if the slice is valid, false otherwise.
@@ -423,25 +439,14 @@ public:
      * @return A const reference to the root slice.
      */
     const Slice& root_slice() const { return *this; }
-    /** ------------------------------------------------------------------------------------------- Equality operator for PrimitiveSliceType
-     * @brief Compares the current Slice with another Slice of a PrimitiveSliceType.
-     * @tparam T The PrimitiveSliceType to compare with.
-     * @param other The other Slice to compare with.
-     * @return True if the slices are equal, false otherwise.
-     */
-    template<typename T>
-    bool operator==(const T& other) const {
-        if constexpr (std::is_convertible_v<T, Slice>) {
-            return static_cast<Slice>(other).encoded_ == encoded_;
-        } else {
-            return get_as<T>() == other;
-        }
-    }
 private:
-    uint32_t encoded_ = 0;
-    friend class SliceFriend;
+    /// @brief All-ones marks the null slice; otherwise [0..16] arena ID, [17..63] byte-exact size.
+    uint64_t meta_ = UINT64_MAX;
+    /// @brief Cached host pointer to the slice's first byte.
+    void* cached_ = nullptr;
+    friend class Buffet;
 };
-static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
+static_assert(sizeof(Slice) == 16, "Slice must be 16 bytes in size.");
 /** --------------------------------------------------------------------------------------------------------- SliceT
  * @class SliceT
  * @brief A template class that wraps a Slice and provides type-safe access to its underlying memory.

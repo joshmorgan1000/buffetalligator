@@ -20,7 +20,6 @@ struct SizeAndContext {
     uint16_t placement_type = 0;
     Alligator* instance = nullptr;
     Placemat::Handle* handle = nullptr;
-    void set_slot();
 };
 /** --------------------------------------------------------------------------------------------------------- Arena
  * @class Alligator
@@ -29,12 +28,11 @@ struct SizeAndContext {
 class Alligator {
 private:
     inline static constexpr size_t SLOT_CAPACITY = 0x20000;
-    inline static constexpr size_t SPAN_CAPACITY = 0x8000;
     inline static constexpr size_t ORDER_RING_CAPACITY = 0x10000;
-    std::array<std::atomic<std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>*>, SLOT_CAPACITY> bufs{};
+    std::array<std::atomic<Buffet*>, SLOT_CAPACITY> bufs{};
     std::atomic<uint64_t> next_buffer_{0};
-    std::vector<std::atomic<Buffet*>> pool_current_;
-    std::vector<std::atomic<Buffet*>> pool_previous_;
+    std::vector<std::unique_ptr<std::atomic<Buffet*>>> pool_current_;
+    std::vector<std::unique_ptr<std::atomic<Buffet*>>> pool_previous_;
     std::atomic<bool> stop_{false};
     std::thread worker_thread_;
     std::atomic<uint16_t> ring_head_{0};
@@ -91,12 +89,10 @@ private:
         ring_tail_.notify_one();
         return order;
     }
-    /** ------------------------------------------------------------------------------------------- Chain Length
-     * @brief Returns the length of the buffer chain for a given placement type.
-     * @param placement_type The placement identifier.
-     * @return The length of the buffer chain.
+    /** ------------------------------------------------------------------------------------------- Ensure Chains
+     * @brief Ensures that all buffer chains are properly initialized.
      */
-    static size_t chain_length(uint16_t placement_type);
+    static void ensure_chains();
     /** ------------------------------------------------------------------------------------------- Worker Loop
      * @brief Replenishes active chains without a dynamically allocating task queue.
      */
@@ -106,20 +102,17 @@ private:
      * @param buffer The slot to publish.
      * @return The registry index.
      */
-    uint32_t get_next_free_slot(Buffet* buffer) {
+    void get_next_free_slot(Buffet* buffer) {
         size_t rounds = 0;
-        std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>* new_entry =
-            new std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>(
-                std::piecewise_construct, std::forward_as_tuple(buffer), std::forward_as_tuple());
         while (true) {
             const uint32_t index = next_buffer_.fetch_add(1, std::memory_order_relaxed) & 0x1FFFF;
             if (bufs[index].load(std::memory_order_acquire) == nullptr) {
-                std::pair<Buffet*, std::array<std::atomic<uint64_t>, SPAN_CAPACITY>>* expected = nullptr;
+                Buffet* expected = nullptr;
                 if (bufs[index].compare_exchange_weak(
-                    expected, new_entry, std::memory_order_release, std::memory_order_relaxed
+                    expected, buffer, std::memory_order_release, std::memory_order_relaxed
                 )) {
-                    buffer->alligator_idx_ = static_cast<uint32_t>(index);
-                    return index;
+                    buffer->size_ = (buffer->size_ & ~0x1FFFF) | static_cast<uint32_t>(index);
+                    return;
                 }
             }
             if (++rounds > SLOT_CAPACITY * 2) {
@@ -146,27 +139,11 @@ public:
     Alligator& operator=(const Alligator&) = delete;
     Alligator(Alligator&&) = delete;
     Alligator& operator=(Alligator&&) = delete;
-    /** ------------------------------------------------------------------------------------------- Claim
-     * @brief Claims zeroed bytes from the selected placement chain.
-     * @param size The exact byte size.
-     * @param novel_buffer True to allocate a dedicated Buffer on the calling thread.
-     * @param placement The registered placement factory.
-     * @return The claimed Slice.
+    /** ------------------------------------------------------------------------------------------- Get
+     * @brief Retrieves a Buffet instance by its registry index.
+     * @param index The registry index.
+     * @return The Buffet instance at the specified index.
      */
-    static Slice claim(size_t size, bool novel_buffer, const Placemat* placement);
-    /** ------------------------------------------------------------------------------------------- Claim with Copy
-     * @brief Claims zeroed bytes from the selected placement and copies data into it.
-     * @param copy_from The source data to copy.
-     * @param size The exact byte size.
-     * @param novel_buffer True to allocate a dedicated Buffer on the calling thread.
-     * @param placement The registered placement factory.
-     * @return The claimed Slice.
-     */
-    static Slice claim(
-        const void* copy_from,
-        size_t size,
-        bool novel_buffer,
-        const Placemat* placement
-    );
+    static Buffet* get(size_t index);
 };
 } // namespace buffetalligator

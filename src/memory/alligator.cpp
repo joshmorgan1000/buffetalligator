@@ -8,12 +8,6 @@
 
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Set Slot
- * @brief Sets the slot for the SizeAndContext.
- */
-void SizeAndContext::set_slot() {
-    instance->get_next_free_slot(handle->buffet);
-}
 namespace {
 /** --------------------------------------------------------------------------------------------------------- Allocate Buffer For
  * @brief Allocates a buffer for the given SizeAndContext.
@@ -33,7 +27,6 @@ inline static void sac_deleter(BuffetOrder* order) {
     if (order) {
         if (order->context) {
             SizeAndContext* sac = static_cast<SizeAndContext*>(order->context);
-            sac->set_slot();
             delete sac;
         }
         delete order;
@@ -45,8 +38,16 @@ inline static void sac_deleter(BuffetOrder* order) {
  * @brief Implements the Alligator's constructor and destructor.
  */
 Alligator::Alligator() {
+    BuffetMenu::register_change_listener(
+        this,
+        [](void* myself) {
+            if (myself) {
+                static_cast<Alligator*>(myself)->ensure_chains();
+            }
+        }
+    );
     for (size_t i = 0; i < pool_current_.size(); ++i) {
-        pool_previous_[i].store(nullptr, std::memory_order_release);
+        pool_previous_[i]->store(nullptr, std::memory_order_release);
         const Placemat* placement = BuffetMenu::get(static_cast<uint16_t>(i));
         SizeAndContext* sac = new SizeAndContext();
         sac->allocator = placement->alligator_;
@@ -84,16 +85,36 @@ Alligator::~Alligator() {
  * @param placement_type The placement identifier.
  * @return The length of the buffer chain.
  */
-size_t Alligator::chain_length(uint16_t placement_type) {
-    size_t length = 0;
-    Buffet* buf = instance().pool_current_[placement_type].load(std::memory_order_acquire);
-    while (buf != nullptr) {
-        ++length;
-        if (buf && buf->cold_) {
-            buf = buf->cold_->next.load(std::memory_order_acquire);
+void Alligator::ensure_chains() {
+    if (instance().pool_current_.size() < BuffetMenu::count()) {
+        instance().pool_current_.resize(BuffetMenu::count());
+        for (size_t i = 0; i < instance().pool_current_.size(); ++i) {
+            if (!instance().pool_current_[i]) {
+                instance().pool_current_[i] = std::make_unique<std::atomic<Buffet*>>(nullptr);
+                const Placemat* placement = BuffetMenu::get(static_cast<uint16_t>(i));
+                Buffet* buf = new Buffet(
+                    placement,
+                    placement->get_context_(),
+                    placement->default_slab_size_,
+                    false
+                );
+                instance().pool_current_[i]->store(buf, std::memory_order_release);
+            }
+        }
+        instance().pool_previous_.resize(BuffetMenu::count());
+        for (size_t i = 0; i < instance().pool_previous_.size(); ++i) {
+            if (!instance().pool_previous_[i]) {
+                instance().pool_previous_[i] = std::make_unique<std::atomic<Buffet*>>(nullptr);
+            }
         }
     }
-    return length;
+    for (size_t i = 0; i < instance().pool_current_.size(); ++i) {
+        Buffet* buf = instance().pool_current_[i]->load(std::memory_order_acquire);
+        size_t length = 4;
+        while (0 < --length) {
+            buf = buf->next();
+        }
+    }
 }
 /** ------------------------------------------------------------------------------------------- Worker Loop
  * @brief Replenishes active chains without a dynamically allocating task queue.
@@ -118,30 +139,12 @@ void Alligator::worker_loop() {
         }
     }
 }
-/** ------------------------------------------------------------------------------------------- Claim
- * @brief Claims zeroed bytes from the selected placement chain.
- * @param size The exact byte size.
- * @param novel_buffer True to allocate a dedicated Buffer on the calling thread.
- * @param placement The registered placement factory.
- * @return The claimed Slice.
+/** ------------------------------------------------------------------------------------------- Get Buffet
+ * @brief Retrieves the buffet at the specified index.
+ * @param index The index of the buffet.
+ * @return The buffet at the given index.
  */
-Slice Alligator::claim(size_t size, bool novel_buffer, const Placemat* placement) {
-    
-}
-/** ------------------------------------------------------------------------------------------- Claim with Copy
- * @brief Claims zeroed bytes from the selected placement and copies data into it.
- * @param copy_from The source data to copy.
- * @param size The exact byte size.
- * @param novel_buffer True to allocate a dedicated Buffer on the calling thread.
- * @param placement The registered placement factory.
- * @return The claimed Slice.
- */
-Slice Alligator::claim(
-    const void* copy_from,
-    size_t size,
-    bool novel_buffer,
-    const Placemat* placement
-) {
-    
+Buffet* Alligator::get(size_t index) {
+    return instance().bufs[index & 0x1FFFF].load(std::memory_order_acquire);
 }
 } // namespace buffetalligator

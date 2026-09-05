@@ -25,7 +25,12 @@ if(NOT TARGET logging::logging)
     set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
 endif()
 find_package(Threads REQUIRED)
-add_library(buffetalligator STATIC src/memory/slice.cpp)
+add_library(buffetalligator STATIC
+    src/memory/slice.cpp
+    src/memory/buffet.cpp
+    src/memory/alligator.cpp
+    src/memory/heapbuffet.cpp
+)
 add_library(buffetalligator::buffetalligator ALIAS buffetalligator)
 target_include_directories(buffetalligator
     PUBLIC
