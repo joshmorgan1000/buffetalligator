@@ -47,6 +47,12 @@ public:
         /// @brief The special context associated with this allocation.
         void* context = nullptr;
     };
+    /** ------------------------------------------------------------------------------------------- Get for Slice
+     * @brief Returns the handle associated with a given Slice.
+     * @param slice The slice for which to retrieve the handle.
+     * @return The handle associated with the slice, or nullptr if not found.
+     */
+    static Handle* get_for(const Slice* slice);
     /** ------------------------------------------------------------------------------------------- Type
      * @brief Returns the registry identifier assigned to this placement.
      * @return The placement registry identifier.
@@ -497,6 +503,7 @@ private:
     /// @brief Cached host pointer to the slice's first byte.
     void* cached_ = nullptr;
     friend class Buffet;
+    friend class Placemat;
 };
 static_assert(sizeof(Slice) == 16, "Slice must be 16 bytes in size.");
 /** --------------------------------------------------------------------------------------------------------- SliceT

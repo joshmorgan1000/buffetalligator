@@ -306,4 +306,14 @@ Slice SliceMap::get_slice_internal(uint32_t id) {
     }
     return Slice();
 }
+/** --------------------------------------------------------------------------------------------------------- Get Placemat Handle for Slice
+ * @brief Retrieves the Placemat handle associated with the given slice.
+ * @param slice The slice to retrieve the handle for.
+ * @return The Placemat handle associated with the slice, or nullptr if not found.
+ */
+Placemat::Handle* Placemat::get_for(const Slice* slice) {
+    uint32_t arena_id = slice->meta_ & 0x1FFFF; // Extract the arena ID from the meta_ field
+    Buffet* buffet = Alligator::instance().get(arena_id);
+    return buffet ? static_cast<Placemat::Handle*>(buffet->handle()) : nullptr;
+}
 } // namespace buffetalligator
