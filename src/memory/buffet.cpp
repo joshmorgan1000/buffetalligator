@@ -2,6 +2,7 @@
  * @file buffet.cpp
  * @brief Implements the counted slab handle, its bump-pointer claim, and chain advancement.
  */
+#include <alligator.hpp>
 #include <memory/alligator.hpp>
 #include <memory/slicefriend.hpp>
 #include <memory/tracker.hpp>

@@ -260,14 +260,14 @@ concept PrimitiveSliceType = (
 ) || std::is_same_v<T, Slice>;
 /** --------------------------------------------------------------------------------------------------------- Slice
  * @class Slice
- * @brief Represents a slice of memory in Nebula.
+ * @brief Represents a slice of memory in the buffet alligator.
  * 
- * All operations in Nebula are performed on slices of memory, represented by the `Slice` class.
+ * All operations in the buffet alligator are performed on slices of memory, represented by the `Slice` class.
  * 
- * Memory slices are claims from pre-allocated memory buffers that are managed by Nebula's slab arena. On
+ * Memory slices are claims from pre-allocated memory buffers that are managed by the buffet alligator's slab arena. On
  * systems that support unified memory, they are always sliced from host-coherent GPU buffers. For systems
  * that do not support unified memory, transfers between host and device memory are handled automatically
- * by Nebula.
+ * by the buffet alligator.
  * 
  * Slices can be sub-sliced to create smaller slices, and they all share the same reference counter and
  * underlying memory. Slices can behave much like `std::shared_ptr` by calling the `slice()` method with
@@ -295,13 +295,13 @@ public:
      */
     Slice() = default;
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in Nebula's slab arena. The slice is
+     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
      * guaranteed to be zero-initialized.
      * @param size The size of the slice in bytes.
      */
     Slice(size_t size, const Placemat* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in Nebula's slab arena, with the option to
+     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with the option to
      * specify whether the slice should be part of a larger slab or a novel buffer. The slice is
      * guaranteed to be zero-initialized.
      * @param size The size of the slice in bytes.
@@ -311,8 +311,8 @@ public:
      */
     Slice(size_t size, bool novel_buffer, const Placemat* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
-     * @brief Copies data from an external memory location into a new slice of memory in Nebula.
-     * This can be used to deep-copy a slice, or load data from an external source into Nebula's
+     * @brief Copies data from an external memory location into a new slice of memory in the buffet alligator.
+     * This can be used to deep-copy a slice, or load data from an external source into the buffet alligator's
      * memory management system.
      * @param copy_from Pointer to the external memory to copy from.
      * @param size The size of the data to copy in bytes.
@@ -345,12 +345,12 @@ public:
      */
     const Placemat* placement() const;
     /** ------------------------------------------------------------------------------------------- Raw accessors
-     * @brief Use Nebula's internal memory arena system to resolve the slice's host-writable
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
      * pointer to the underlying memory.
      */
     void* raw() { return cached_; }
     /** ------------------------------------------------------------------------------------------- Raw accessors - const
-     * @brief Use Nebula's internal memory arena system to resolve the slice's host-writable
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
      * pointer to the underlying memory, but as a read-only pointer.
      */
     const void* raw() const { return cached_; }
@@ -2367,6 +2367,730 @@ public:
     void reset() {
         counter_->store<uint64_t>(0, std::memory_order_release);
         notify_all();
+    }
+};
+/** -------------------------------------------------------------------------------------------------------------------- SliceMap
+ * @class SliceMap
+ * @brief Fixed-capacity result channel of (ID, Slice) rows with per-slot publication and hazard-pointer-safe row
+ * reclamation.
+ */
+class SliceMap {
+public:
+    inline static constexpr int kHazardPtrsPerThread = 2;    ///< Hazard slots per thread row
+    inline static constexpr int kHazardMaxThreads    = 256;  ///< Global hazard row cap
+    inline static constexpr size_t kRetireBatch      = 32;   ///< Retired nodes scanned per reclamation pass
+    struct HazardSlot { std::atomic<void*> ptr{nullptr}; };
+    struct HazardRegistration {
+        unsigned row = 0;
+        ~HazardRegistration() {
+            if (row != 0) hazard_release_row(row);
+        }
+    };
+    struct Row {
+        int64_t id;
+        Slice payload;
+        Row(const int64_t& row_id, Slice&& claim)
+        : id(row_id), payload(std::move(claim)) {}
+    };
+    struct OrphanBatch {
+        static constexpr size_t kCapacity = 32;
+        void* nodes[kCapacity];
+        size_t count = 0;
+        OrphanBatch* next = nullptr;
+    };
+    struct RetiredList {
+        std::vector<void*> nodes;
+        ~RetiredList() {
+            for (void* node : nodes) {
+                if (!try_reclaim(node)) orphan_push(node);
+            }
+        }
+        bool try_reclaim(void* p) {
+            if (hazard_is_protected(p)) return false;
+            destroy_row(p);
+            return true;
+        }
+        void scan_and_reclaim() {
+            std::vector<void*> survivors;
+            survivors.reserve(nodes.size());
+            for (void* node : nodes) {
+                if (!try_reclaim(node)) survivors.push_back(node);
+            }
+            nodes = std::move(survivors);
+            OrphanBatch* batch = orphan_top().exchange(nullptr, std::memory_order_acq_rel);
+            while (batch != nullptr) {
+                OrphanBatch* next = batch->next;
+                for (size_t i = 0; i < batch->count; ++i) {
+                    if (!try_reclaim(batch->nodes[i])) nodes.push_back(batch->nodes[i]);
+                }
+                operator delete(batch);
+                batch = next;
+            }
+        }
+        void retire(void* p) {
+            nodes.push_back(p);
+            if (nodes.size() >= kRetireBatch) scan_and_reclaim();
+        }
+    };
+    /** ------------------------------------------------------------------------------------------- Constructor with Capacity
+     * @brief Claims slots for exactly the rows the request will produce; there is no resize.
+     * @param capacity Number of rows this set will carry.
+     */
+    explicit SliceMap(size_t capacity)
+    : ids_(capacity * sizeof(int64_t))
+    , raws_(capacity * sizeof(void*))
+    , slots_(capacity * sizeof(Row*))
+    , expected_(capacity)
+    , capacity_(capacity) {
+        /// The sentinel is all-ones, so one byte fill marks every slot unpublished.
+        std::memset(ids(), 0xFF, capacity_ * sizeof(int64_t));
+    }
+    /** ------------------------------------------------------------------------------------------- Move Only Semantics
+     * @brief The slots hold live row claims, so the set moves rather than copies.
+     */
+    SliceMap(const SliceMap&) = delete;
+    SliceMap& operator=(const SliceMap&) = delete;
+    SliceMap(SliceMap&& other) noexcept
+    : ids_(std::move(other.ids_))
+    , raws_(std::move(other.raws_))
+    , slots_(std::move(other.slots_))
+    , claimed_(other.claimed_.load(std::memory_order_acquire))
+    , published_(other.published_.load(std::memory_order_acquire))
+    , expected_(other.expected_.load(std::memory_order_acquire))
+    , wait_threshold_(other.wait_threshold_.load(std::memory_order_acquire))
+    , wait_sem_(other.wait_sem_.exchange(nullptr, std::memory_order_acq_rel))
+    , on_publish_(other.on_publish_)
+    , on_publish_context_(other.on_publish_context_)
+    , capacity_(other.capacity_) {
+        other.capacity_ = 0;
+        other.expected_.store(0, std::memory_order_release);
+    }
+    SliceMap& operator=(SliceMap&& other) noexcept {
+        if (this != &other) {
+            this->~SliceMap();
+            new (this) SliceMap(std::move(other));
+        }
+        return *this;
+    }
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Frees every row still in its slot; retired rows are owned by the reclamation lists.
+     */
+    ~SliceMap() {
+        if (slots_) {
+            for (size_t slot = 0; slot < capacity_; ++slot) {
+                destroy_row(slot_row(slot).exchange(nullptr, std::memory_order_acquire));
+            }
+        }
+        delete wait_sem_.exchange(nullptr, std::memory_order_acq_rel);
+    }
+    /** ------------------------------------------------------------------------------------------- Add Slice
+     * @brief Claims and publishes one row in a single call.
+     * @param id The identifier for the row.
+     * @param slice The row's payload claim, moved in.
+     */
+    template<typename ID>
+        requires std::is_convertible_v<ID, int64_t>
+    void add_slice(ID id, Slice slice) {
+        publish_row(claim(), static_cast<int64_t>(id), std::move(slice));
+    }
+    /** ------------------------------------------------------------------------------------------- Merge
+     * @brief Drains another set's landed rows into this one at node-transfer speed; runs after
+     * both gathers have landed, never concurrently with publishes or readers.
+     * @param other The set to drain into this one.
+     * @return This set, holding both sets' rows.
+     */
+    SliceMap& merge(SliceMap& other) {
+        const size_t count = other.capacity_;
+        const size_t first = claim(count);
+        size_t taken = 0;
+        for (size_t slot = 0; slot < count; ++slot) {
+            Row* row = other.slot_row(slot).exchange(nullptr, std::memory_order_acquire);
+            if (row == nullptr) continue;
+            raws()[first + taken] = row->payload.data<void>();
+            slot_row(first + taken).store(row, std::memory_order_relaxed);
+            std::atomic_ref<int64_t>(ids()[first + taken]).store(row->id, std::memory_order_release);
+            ++taken;
+        }
+        std::memset(other.ids(), 0xFF, count * sizeof(int64_t));
+        std::memset(other.raws(), 0, count * sizeof(void*));
+        other.published_.store(0, std::memory_order_release);
+        other.claimed_.store(0, std::memory_order_release);
+        notify_if_waiting(published_.fetch_add(taken, std::memory_order_release) + taken);
+        return *this;
+    }
+    /** ------------------------------------------------------------------------------------------- Addition Operator
+     * @brief Combine two sets by draining the other into this one.
+     * @param other The other set to drain.
+     * @return A reference to the updated set.
+     */
+    SliceMap& operator+(SliceMap& other) {
+        return merge(other);
+    }
+    /** ------------------------------------------------------------------------------------------- Find
+     * @brief Locates a published row by ID; a miss means the row has not landed (yet). The hit is
+     * hazard-validated, so the returned slot stays safe to read under any reclamation schedule.
+     * @param id The ID to look for.
+     * @return The row's slot, or -1 when it has not been published.
+     */
+    template<typename ID>
+        requires std::is_convertible_v<ID, int64_t>
+    int64_t find(const ID& id) const {
+        return find_internal(id);
+    }
+    /** ------------------------------------------------------------------------------------------- Get Slice by ID
+     * @brief Copies a published row's payload out by ID, sharing the underlying claim; safe under
+     * any reclamation schedule because the copy-out happens inside the hazard window.
+     * @param id The identifier of the row to retrieve.
+     * @return The payload claim, or a null slice when the row has not been published.
+     */
+    template<typename ID>
+        requires std::is_convertible_v<ID, int64_t>
+    Slice get_slice(ID id) {
+        return get_slice_internal(id);
+    }
+    /** ------------------------------------------------------------------------------------------- Data Access
+     * @brief The kernel-facing pointer list: one payload data pointer per slot, in slot order,
+     * maintained at publish time so extraction is free. Several of our SIMD distance methods
+     * accept these lists of raw data pointers as parameters.
+     * @return Pointer list with `capacity()` entries; unpublished slots read as nullptr.
+     */
+    template<typename P = void>
+    P** data() {
+        return reinterpret_cast<P**>(raws());
+    }
+    /** ------------------------------------------------------------------------------------------- Access Payload as Specific Type
+     * @brief Access the payload at the given slot as a specific type.
+     * @tparam T The payload type.
+     * @param index The slot of the row to access.
+     * @return A reference to the payload viewed as type T.
+     */
+    template<typename T>
+    T& as(size_t index) {
+        return *reinterpret_cast<T*>(raws()[index]);
+    }
+    /** ------------------------------------------------------------------------------------------- Slice At
+     * @brief Shares the payload claim at a slot; call after `wait`/`wait_until_full` or under a
+     * drain gate per the slot-access protocol.
+     * @param index The slot of the row.
+     * @return The payload claim.
+     */
+    Slice slice_at(size_t index) const {
+        return slot_row(index).load(std::memory_order_acquire)->payload.slice();
+    }
+    /** ------------------------------------------------------------------------------------------- Access ID as Specific Type
+     * @brief Access the ID at the given slot in the collection's native ID type.
+     * @param index The slot of the row to access.
+     * @return The ID; the sentinel value when the slot has not been published.
+     */
+    template<typename ID>
+        requires std::is_convertible_v<int64_t, ID>
+    ID id(size_t index) const {
+        return static_cast<ID>(ids()[index]);
+    }
+    /** ------------------------------------------------------------------------------------------- Published Check
+     * @brief Whether a slot's row has landed.
+     * @param slot The slot to check.
+     * @return True once the slot's ID has been release-stored.
+     */
+    bool published(const size_t& slot) const {
+        return std::atomic_ref<int64_t>(const_cast<int64_t&>(ids()[slot]))
+            .load(std::memory_order_acquire) != SENTINEL;
+    }
+    /** ------------------------------------------------------------------------------------------- Size Access
+     * @brief The number of rows that have landed so far.
+     * @return The published row count.
+     */
+    size_t size() const {
+        return published_.load(std::memory_order_acquire);
+    }
+    /** ------------------------------------------------------------------------------------------- Capacity
+     * @brief Number of slots in the set.
+     * @return The capacity.
+     */
+    size_t capacity() const noexcept { return capacity_; }
+    /** ------------------------------------------------------------------------------------------- Expect
+     * @brief Arms the landed-count the channel is expected to fulfill; `wait` and
+     * `wait_threshold` watch this value, and `settled`-style callers compare `size()` against it.
+     * @param count The expected landed count.
+     */
+    void expect(const size_t& count) {
+        expected_.store(count, std::memory_order_release);
+    }
+    /** ------------------------------------------------------------------------------------------- Wait Threshold
+     * @brief The armed expectation; `size()` equaling this value means every requested row landed.
+     * @return The expected landed count.
+     */
+    size_t wait_threshold() const {
+        return expected_.load(std::memory_order_acquire);
+    }
+    /** ------------------------------------------------------------------------------------------- Wait
+     * @brief Parks until the armed expectation has landed; the expectation defaults to capacity.
+     */
+    void wait() {
+        wait_until_full(expected_.load(std::memory_order_acquire));
+    }
+    /** ------------------------------------------------------------------------------------------- Wait Until Full
+     * @brief Parks the calling thread until at least `count` rows have landed. Producers signal
+     * when their landed count crosses the armed threshold for an instant wake; the bounded poll
+     * is the coherence backstop that no interleaving can strand.
+     * @param count The number of rows to wait for.
+     */
+    void wait_until_full(size_t count) {
+        if (published_.load(std::memory_order_acquire) >= count) return;
+        moodycamel::LightweightSemaphore* semaphore = wait_sem_.load(std::memory_order_acquire);
+        if (semaphore == nullptr) {
+            semaphore = new moodycamel::LightweightSemaphore();
+            wait_sem_.store(semaphore, std::memory_order_release);
+        }
+        wait_threshold_.store(count, std::memory_order_release);
+        while (published_.load(std::memory_order_acquire) < count) {
+            semaphore->wait(1000);
+        }
+        wait_threshold_.store(SIZE_MAX, std::memory_order_release);
+    }
+    /** ------------------------------------------------------------------------------------------- Reset
+     * @brief Retires every landed row and rewinds the channel for reuse; not concurrent with
+     * producers, and readers of retired rows survive through their hazard claims.0
+     */
+    void reset() {
+        for (size_t slot = 0; slot < capacity_; ++slot) {
+            Row* row = slot_row(slot).exchange(nullptr, std::memory_order_acquire);
+            if (row != nullptr) [[likely]] {
+                thread_retired().retire(row);
+            }
+        }
+        std::memset(ids(), 0xFF, capacity_ * sizeof(int64_t));
+        std::memset(raws(), 0, capacity_ * sizeof(void*));
+        claimed_.store(0, std::memory_order_release);
+        published_.store(0, std::memory_order_release);
+        wait_threshold_.store(SIZE_MAX, std::memory_order_release);
+        thread_retired().scan_and_reclaim();
+    }
+    /** ------------------------------------------------------------------------------------------- Publish Hook Signature
+     * @brief Static hook fired on the publishing thread once a row's ID is visible and before the
+     * row counts toward `size()` - so any waiter woken by the row sees the hook's effects.
+     */
+    using PublishHook = void (*)(void*, void*, const size_t&);
+    /** ------------------------------------------------------------------------------------------- On Publish
+     * @brief Registers the per-row publish hook; call once before the channel enters service.
+     * @param hook The static hook to fire per landed row.
+     * @param context Caller-defined context handed back to the hook.
+     */
+    void on_publish(PublishHook hook, void* context) {
+        on_publish_context_ = context;
+        on_publish_ = hook;
+    }
+    /** ------------------------------------------------------------------------------------------- Gc
+     * @brief Periodic reclamation helper: frees retired rows no thread currently hazard-claims.
+     */
+    static void gc() { thread_retired().scan_and_reclaim(); }
+private:
+    /// @brief Unpublished-slot marker; all-ones is never a valid ID in either category.
+    static constexpr int64_t SENTINEL = -1;
+    /// @brief One ID per slot, sentinel-filled until its row is published; the publication flag.
+    Slice ids_;
+    /// @brief One raw payload pointer per slot, the kernel-facing view maintained at publish time.
+    Slice raws_;
+    /// @brief One row node pointer per slot, null until published and after reset.
+    Slice slots_;
+    /// @brief Producer slot claims; claiming and publishing are separate steps.
+    std::atomic<size_t> claimed_{0};
+    /// @brief Rows landed; the counter `size()` and `wait_until_full` watch.
+    std::atomic<size_t> published_{0};
+    /// @brief The landed count the channel is expected to fulfill; `wait` and `wait_threshold` watch.
+    std::atomic<size_t> expected_{0};
+    /// @brief Armed landed-count threshold a parked waiter is watching; SIZE_MAX means none.
+    std::atomic<size_t> wait_threshold_{SIZE_MAX};
+    /// @brief The parked waiter's semaphore, created on first wait.
+    std::atomic<moodycamel::LightweightSemaphore*> wait_sem_{nullptr};
+    /// @brief The per-row publish hook, or null when none is registered.
+    PublishHook on_publish_ = nullptr;
+    /// @brief Caller-defined context handed to the publish hook.
+    void* on_publish_context_ = nullptr;
+    /// @brief Number of slots.
+    size_t capacity_ = 0;
+    /// @brief Internal type-erased accessor for slices based on ID category and ID.
+    int64_t find_internal(int64_t id) const;
+    int64_t find_internal(uint32_t id) const;
+    Slice get_slice_internal(int64_t id);
+    Slice get_slice_internal(uint32_t id);
+    /** ------------------------------------------------------------------------------------------- Typed bases */
+    int64_t* ids() { return ids_.template data<int64_t>(); }
+    const int64_t* ids() const { return ids_.template data<int64_t>(); }
+    void** raws() { return raws_.template data<void*>(); }
+    Row** row_base() { return reinterpret_cast<Row**>(slots_.template data<void*>()); }
+    const Row* const* row_base() const {
+        return reinterpret_cast<const Row* const*>(slots_.template data<void*>());
+    }
+    std::atomic_ref<Row*> slot_row(size_t index) {
+        return std::atomic_ref<Row*>(row_base()[index]);
+    }
+    std::atomic_ref<Row*> slot_row(size_t index) const {
+        return std::atomic_ref<Row*>(const_cast<Row*&>(row_base()[index]));
+    }
+    /** ------------------------------------------------------------------------------------------- Claim
+     * @brief Claims the next `n` slots for the producer; slots publish independently.
+     * @param n Number of slots to claim.
+     * @return The first claimed slot.
+     */
+    size_t claim(const size_t& n = 1) {
+        return claimed_.fetch_add(n, std::memory_order_relaxed);
+    }
+    /** ------------------------------------------------------------------------------------------- Publish
+     * @brief Fills a claimed slot and publishes it; the release store of the ID is what makes
+     * the payload bytes visible to readers.
+     * @param slot The claimed slot.
+     * @param id The row's ID.
+     * @param slice The row's payload, moved in.
+     */
+    template<typename ID>
+        requires std::is_convertible_v<ID, int64_t>
+    void publish(const size_t& slot, const ID& id, Slice&& slice) {
+        publish_row(slot, static_cast<int64_t>(id), std::move(slice));
+    }
+    /** ------------------------------------------------------------------------------------------- Publish Row
+     * @brief Lands one row: the release store of the ID makes the payload bytes visible to
+     * readers, the hook runs before the row counts, and the waiter channel wakes last.
+     * @param slot The claimed slot.
+     * @param id The row's ID.
+     * @param slice The row's payload, moved in.
+     */
+    void publish_row(const size_t& slot, const int64_t& id, Slice&& slice) {
+        Row* row = new Row(id, std::move(slice));
+        raws()[slot] = row->payload.data<void>();
+        slot_row(slot).store(row, std::memory_order_relaxed);
+        std::atomic_ref<int64_t>(ids()[slot]).store(id, std::memory_order_release);
+        if (on_publish_ != nullptr) [[unlikely]] {
+            on_publish_(on_publish_context_, static_cast<void*>(this), slot);
+        }
+        notify_if_waiting(published_.fetch_add(1, std::memory_order_release) + 1);
+    }
+    /** ------------------------------------------------------------------------------------------- Notify If Waiting
+     * @brief Wakes a parked waiter once the landed count crosses its armed threshold.
+     * @param landed The landed count after this publish.
+     */
+    void notify_if_waiting(const size_t& landed) {
+        if (landed >= wait_threshold_.load(std::memory_order_acquire)) [[unlikely]] {
+            moodycamel::LightweightSemaphore* semaphore = wait_sem_.load(std::memory_order_acquire);
+            if (semaphore != nullptr) {
+                semaphore->signal();
+            }
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Verify Slot
+     * @brief Hazard-validates that slot's row is live and still carries the needle; leaves the
+     * slot's hazard claim held on success so the caller can read the row, clears it on failure.
+     * @param slot The candidate slot.
+     * @param needle The ID the caller is matching.
+     * @return True when the hazard claim is held and the row matches.
+     */
+    bool verify_slot(size_t slot, int64_t needle) const {
+        Row* row = slot_row(slot).load(std::memory_order_acquire);
+        hazard_protect(0, row);
+        if (verify_held(slot, needle, row)) return true;
+        hazard_clear(0);
+        return false;
+    }
+    /** ------------------------------------------------------------------------------------------- Verify Held
+     * @brief Re-validates an already-held hazard claim: the row pointer is stable, non-null, and
+     * still carries the needle - the ABA guard that makes the read safe to complete.
+     * @param slot The candidate slot.
+     * @param needle The ID the caller is matching.
+     * @param row The hazard-held row candidate.
+     * @return True when the held claim is valid for the needle.
+     */
+    bool verify_held(size_t slot, int64_t needle, const Row* row) const {
+        return row != nullptr
+            && slot_row(slot).load(std::memory_order_acquire) == row
+            && std::atomic_ref<int64_t>(const_cast<int64_t&>(ids()[slot]))
+                .load(std::memory_order_acquire) == needle;
+    }
+    static HazardSlot* hazard_pool() {
+        static HazardSlot pool[kHazardMaxThreads * kHazardPtrsPerThread];
+        return pool;
+    }
+    static std::atomic<unsigned>& hazard_fresh_row() {
+        static std::atomic<unsigned> next{1};
+        return next;
+    }
+    static std::atomic<unsigned>* hazard_free_stack() {
+        static std::atomic<unsigned> stack[kHazardMaxThreads];
+        return stack;
+    }
+    static std::atomic<unsigned>& hazard_free_head() {
+        static std::atomic<unsigned> head{0};
+        return head;
+    }
+    static unsigned hazard_claim_row() {
+        std::atomic<unsigned>* stack = hazard_free_stack();
+        unsigned row = hazard_free_head().load(std::memory_order_acquire);
+        while (row != 0) {
+            const unsigned beneath = stack[row].load(std::memory_order_acquire);
+            if (hazard_free_head().compare_exchange_weak(
+                row, beneath, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                return row;
+            }
+        }
+        return hazard_fresh_row().fetch_add(1, std::memory_order_relaxed);
+    }
+    static void hazard_release_row(unsigned row) {
+        HazardSlot* pool = hazard_pool();
+        for (int slot = 0; slot < kHazardPtrsPerThread; ++slot) {
+            pool[row * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_relaxed);
+        }
+        std::atomic<unsigned>* stack = hazard_free_stack();
+        unsigned beneath = hazard_free_head().load(std::memory_order_acquire);
+        stack[row].store(beneath, std::memory_order_release);
+        while (!hazard_free_head().compare_exchange_weak(
+            beneath, row, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            stack[row].store(beneath, std::memory_order_release);
+        }
+    }
+    static HazardRegistration& hazard_registration() {
+        static thread_local HazardRegistration registration;
+        return registration;
+    }
+    static unsigned hazard_mine() {
+        HazardRegistration& registration = hazard_registration();
+        if (registration.row == 0) [[unlikely]] {
+            registration.row = hazard_claim_row();
+        }
+        return registration.row;
+    }
+    static void hazard_protect(int slot, void* p) {
+        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(p, std::memory_order_release);
+    }
+    static void hazard_clear(int slot) {
+        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_release);
+    }
+    static bool hazard_is_protected(const void* p) {
+        const HazardSlot* pool = hazard_pool();
+        for (int row = 1; row < kHazardMaxThreads; ++row) {
+            for (int slot = 0; slot < kHazardPtrsPerThread; ++slot) {
+                if (pool[row * kHazardPtrsPerThread + slot].ptr.load(std::memory_order_acquire) == p) return true;
+            }
+        }
+        return false;
+    }
+    static std::atomic<OrphanBatch*>& orphan_top() {
+        static std::atomic<OrphanBatch*> top{nullptr};
+        return top;
+    }
+    static void orphan_push(void* p) {
+        OrphanBatch* batch = new OrphanBatch();
+        batch->nodes[batch->count++] = p;
+        batch->next = orphan_top().load(std::memory_order_relaxed);
+        while (!orphan_top().compare_exchange_weak(
+            batch->next, batch, std::memory_order_release, std::memory_order_relaxed)) {}
+    }
+    static void destroy_row(void* p) {
+        if (p != nullptr) {
+            static_cast<Row*>(p)->~Row();
+            operator delete(p);
+        }
+    }
+    static RetiredList& thread_retired() {
+        static thread_local RetiredList retired;
+        return retired;
+    }
+};
+/** ----------------------------------------------------------------------------------------------- SliceMapT
+ * @class SliceMapT
+ * @brief The typed twin of SliceMap: the same claim/publish/find engine with `as()` typing the
+ * payload view and `emplace()` constructing typed rows in place.
+ * @tparam T The payload type rows carry.
+ */
+template<typename T>
+class SliceMapT final : public SliceMap {
+public:
+    /** ------------------------------------------------------------------------------------------- Constructor with Capacity
+     * @brief Claims slots for exactly the rows the request will produce; there is no resize.
+     * @param capacity Number of rows this set will carry.
+     */
+    explicit SliceMapT(size_t capacity) : SliceMap(capacity) {}
+    /** ------------------------------------------------------------------------------------------- Move Only Semantics
+     * @brief The payload slots hold live claims, so the set moves rather than copies.
+     */
+    SliceMapT(const SliceMapT&) = delete;
+    SliceMapT& operator=(const SliceMapT&) = delete;
+    SliceMapT(SliceMapT&& other) noexcept = default;
+    SliceMapT& operator=(SliceMapT&& other) noexcept = default;
+    /** ------------------------------------------------------------------------------------------- Emplace
+     * @brief Constructs a typed row in place from its arguments and publishes it under `id`.
+     * Total atomic operations: the add_slice protocol
+     * Total branches: 0
+     * @param id The identifier for the row.
+     * @param args Arguments forwarded to T's constructor.
+     */
+    template<IDType ID, typename... Args>
+    void emplace(ID id, Args&&... args) {
+        Slice payload(sizeof(T));
+        new (payload.data<void>()) T(std::forward<Args>(args)...);
+        add_slice(id, std::move(payload));
+    }
+    /** ------------------------------------------------------------------------------------------- Access Payload as T
+     * @brief Access the payload at the given slot as its native type.
+     * @param index The slot of the row to access.
+     * @return A reference to the payload.
+     */
+    T& as(size_t index) {
+        return SliceMap::as<T>(index);
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- WeakSlice
+ * @class WeakSlice
+ * @brief A non-owning reference to an anonymous pointer.
+ */
+class WeakSlice {
+private:
+    /// @brief A std::span of bytes representing the memory block.
+    std::span<std::byte> span_;
+public:
+    /** ----------------------------------------------------------------------------------------- Valid
+     * @brief Checks if the WeakSlice is valid (non-empty).
+     * @return True if the WeakSlice is valid, false otherwise.
+     */
+    bool valid() const { return !span_.empty(); }
+    /** ----------------------------------------------------------------------------------------- Conversion to bool
+     * @brief Converts the WeakSlice to a boolean value indicating its validity.
+     * @return True if the WeakSlice is valid, false otherwise.
+     */
+    operator bool() const { return valid(); }
+    /** ----------------------------------------------------------------------------------------- Null
+     * @brief Checks if the WeakSlice is null (empty).
+     * @return True if the WeakSlice is null, false otherwise.
+     */
+    bool is_null() const { return span_.empty(); }
+    /** ----------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a WeakSlice from a raw pointer and size.
+     * @param ptr Pointer to the memory block.
+     * @param size Size of the memory block in bytes.
+     */
+    WeakSlice(void* ptr = nullptr, size_t size = 0)
+    : span_(static_cast<std::byte*>(ptr), size) {}
+    /** ----------------------------------------------------------------------------------------- Constructor - Non-owning
+     * @brief Constructs a WeakSlice with a specified size, but throws an exception since it
+     * cannot allocate memory.
+     * @param size The size of the memory block in bytes.
+     * @param unused A boolean parameter to differentiate this constructor.
+     */
+    WeakSlice(size_t size, bool) {
+        NEBULA_SLICE_THROW("WeakSlice: cannot allocate memory for non-owning slice.");
+    }
+    /** ----------------------------------------------------------------------------------------- Constructor - Copy
+     * @brief Copy constructor for WeakSlice.
+     * @param other The WeakSlice object to copy from.
+     */
+    WeakSlice(const WeakSlice& other) : span_(other.span_) {}
+    /** ----------------------------------------------------------------------------------------- Operator= Copy
+     * @brief Copy assignment operator for WeakSlice.
+     * @param other The WeakSlice object to copy from.
+     * @return Reference to the current WeakSlice object.
+     */
+    WeakSlice& operator=(const WeakSlice& other) {
+        if (this != &other) span_ = other.span_;
+        return *this;
+    }
+    /** ----------------------------------------------------------------------------------------- Constructor - Move
+     * @brief Move constructor for WeakSlice.
+     * @param other The WeakSlice object to move from.
+     */
+    WeakSlice(WeakSlice&& other) noexcept : span_(std::move(other.span_)) {}
+    /** ----------------------------------------------------------------------------------------- Operator= Move
+     * @brief Move assignment operator for WeakSlice.
+     * @param other The WeakSlice object to move from.
+     * @return Reference to the current WeakSlice object.
+     */
+    WeakSlice& operator=(WeakSlice&& other) noexcept {
+        if (this != &other) span_ = std::move(other.span_);
+        return *this;
+    }
+    /** ----------------------------------------------------------------------------------------- Destructor
+     * @brief Default destructor for WeakSlice.
+     */
+    ~WeakSlice() = default;
+    /** ----------------------------------------------------------------------------------------- Placement
+     * @brief Returns the placement of the memory block. Since this is a weak reference, we
+     * don't know the actual placement.
+     */
+    Placement placement() const {
+        return Placement::UNSPECIFIED;
+    }
+    /** ----------------------------------------------------------------------------------------- Raw
+     * @brief Returns a raw pointer to the memory block.
+     */
+    void* raw() { return span_.data(); }
+    /** ----------------------------------------------------------------------------------------- Raw Const
+     * @brief Returns a raw pointer to the memory block.
+     */
+    const void* raw() const { return span_.data(); }
+    /** ----------------------------------------------------------------------------------------- Raw
+     * @brief Returns a raw pointer to the memory block.
+     */
+    template<typename T>
+    T* data() { return static_cast<T*>(span_.data()); }
+    /** ----------------------------------------------------------------------------------------- Data
+     * @brief Returns a typed pointer to the memory block.
+     * @tparam T The type to cast the memory block to.
+     */
+    template<typename T>
+    const T* data() const { return static_cast<const T*>(span_.data()); }
+    /** ----------------------------------------------------------------------------------------- Get As
+     * @brief Returns a typed reference to the memory block.
+     * @tparam T The type to cast the memory block to.
+     */
+    template<typename T>
+    T& get_as() { return *static_cast<T*>(span_.data()); }
+    /** ----------------------------------------------------------------------------------------- Get As
+     * @brief Returns a typed reference to the memory block.
+     * @tparam T The type to cast the memory block to.
+     */
+    template<typename T>
+    const T& get_as() const { return *static_cast<const T*>(span_.data()); }
+    /** ----------------------------------------------------------------------------------------- Size
+     * @brief Returns the size of the memory block in bytes.
+     */
+    template<typename T>
+    size_t size() const { 
+        return span_.size() / sizeof(T);
+    }
+    /** ----------------------------------------------------------------------------------------- Size Bytes
+     * @brief Returns the size of the memory block in bytes.
+     */
+    size_t size_bytes() const {
+        return span_.size();
+    }
+    /** ----------------------------------------------------------------------------------------- Root Slice
+     * @brief Returns a reference to the root Slice object. Since a `WeakSlice` is not a full
+     * owning slice, this operation is discouraged since it requires a memory copy.
+     * @return A new `Slice` object with the memory copied from the `WeakSlice`.
+     */
+    Slice root_slice() const {
+        return static_cast<const Slice&>(*this);
+    }
+    /** ----------------------------------------------------------------------------------------- Operator Slice
+     * @brief Converts the WeakSlice to a Slice object.
+     * @return A new Slice object containing the memory from the WeakSlice.
+     */
+    explicit operator Slice() const {
+        return slice();
+    }
+    /** ----------------------------------------------------------------------------------------- Slice
+     * @brief Creates a new Slice object representing a subrange of the memory block.
+     * @param offset The starting offset of the subrange.
+     * @param size The size of the subrange in bytes.
+     * @return A new Slice object containing the specified subrange.
+     */
+    Slice slice(size_t offset = 0, size_t size = SIZE_MAX) const {
+        if (offset >= span_.size()) [[unlikely]] {
+            NEBULA_SLICE_THROW("WeakSlice::slice(): offset out of bounds");
+        }
+        if (offset + size > span_.size()) [[unlikely]] {
+            size = span_.size() - offset;
+        }
+        Slice new_slice(size);
+        std::memcpy(new_slice.data<uint8_t>() + offset, span_.data() + offset, size);
+        return new_slice;
     }
 };
 } // namespace buffetalligator

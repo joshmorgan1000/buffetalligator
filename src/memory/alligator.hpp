@@ -4,7 +4,7 @@
  * @brief Internal multi-placement slab arena with background chain replenishment.
  */
 #include <logging.hpp>
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <memory/buffet.hpp>
 #include <memory/slicefriend.hpp>
 #include <array>

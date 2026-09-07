@@ -3,7 +3,7 @@
  * @brief Verifies placement registration, worker preallocation, runway replenishment, chain
  * rollover, Slice lifetime, novel buffers, and tracking.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <memory/slicefriend.hpp>
 #include <memory/tracker.hpp>
 #include <algorithm>

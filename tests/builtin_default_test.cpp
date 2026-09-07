@@ -3,7 +3,7 @@
  * @brief Verifies that a process which registers nothing gets the heap and aligned-heap
  * placements at their stable identifiers with aligned heap as the default.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <cstring>
 #include <stdexcept>
 

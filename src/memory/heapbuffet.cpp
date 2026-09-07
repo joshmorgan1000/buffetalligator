@@ -2,7 +2,7 @@
  * @file heapbuffet.cpp
  * @brief Built-in heap and aligned-heap placements plus their one-time registration.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <cstdlib>
 #include <cstring>
 #include <new>

@@ -4,7 +4,7 @@
  * @brief The worker order type shared by the arena internals.
  */
 #include <logging.hpp>
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <memory/alligator.hpp>
 #include <array>
 #include <atomic>

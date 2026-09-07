@@ -2,7 +2,7 @@
  * @file alligator.cpp
  * @brief Implementation of the Alligator class.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <memory/alligator.hpp>
 #include <memory/buffet.hpp>
 #include <memory/slicefriend.hpp>

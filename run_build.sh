@@ -12,9 +12,51 @@ else
     GREEN="" CYAN="" YELLOW="" RED="" DIM="" NC=""
 fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_ROOT="${REPO_ROOT}/build"
+DEPS_DIR="${REPO_ROOT}/deps"
+INSTALL_DIR="${REPO_ROOT}/build/install"
+CLEAN_BUILD=false
+REBUILD_VENDORED=false
+while (( $# > 0 )); do
+    case "$1" in
+        --clean)
+            # Delete the build directory to start fresh.
+            CLEAN_BUILD=true
+            shift
+            ;;
+        --rebuild-vendored)
+            REBUILD_VENDORED=true
+            shift
+            ;;
+        --build-dir)
+            BUILD_ROOT="$2"
+            shift 2
+            ;;
+        --deps-dir)
+            DEPS_DIR="$2"
+            shift 2
+            ;;
+        --install-dir)
+            INSTALL_DIR="$2"
+            shift 2
+            ;;
+        *)
+            printf '%s\n' "${RED}Unknown option: $1${NC}"
+            printf '%s\n' "Usage: $0 [OPTIONS]"
+            printf '%s\n' "Options:"
+            printf '%s\n' "  --clean              Delete the build directory to start fresh."
+            printf '%s\n' "  --rebuild-vendored   Force rebuild of vendored dependencies."
+            printf '%s\n' "  --build-dir DIR      Specify the build directory."
+            printf '%s\n' "  --deps-dir DIR       Specify the dependencies directory."
+            printf '%s\n' "  --install-dir DIR    Specify the installation directory."
+            printf '%s\n' "  --help               Show this help message."
+            exit 0
+            ;;
+    esac
+done
 BUILD_DIR="${REPO_ROOT}/build/current"
-DEPS_SOURCE_DIR="${REPO_ROOT}/deps/src"
-LOG_FILE="${REPO_ROOT}/build/build_buffetalligator.log"
+DEPS_SOURCE_DIR="${DEPS_DIR}/src"
+LOG_FILE="${BUILD_ROOT}/build_buffetalligator.log"
 LOGGER_DIR="${DEPS_SOURCE_DIR}/threadsafe-logger"
 LOGGER_URL="https://github.com/joshmorgan1000/threadsafe-logger.git"
 LOGGER_COMMIT="52588cec8fda78ffa5af31b8479b4e97a9417de8"
@@ -77,4 +119,11 @@ if ! ctest --test-dir "${BUILD_DIR}" --output-on-failure >>"${LOG_FILE}" 2>&1; t
     tail -n 40 "${LOG_FILE}"
     exit 1
 fi
+printf '%s\n' "${CYAN}Installing the library...${NC}"
+if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" >>"${LOG_FILE}" 2>&1; then
+    printf '%s\n' "${RED}Installation failed.${NC}" "The last diagnostics were:"
+    tail -n 30 "${LOG_FILE}"
+    exit 1
+fi
 printf '%s\n' "${GREEN}BuffetAlligator is built and all tests passed.${NC}" "${DIM}Static library: ${BUILD_DIR}/libbuffetalligator.a${NC}"
+printf '%s\n' "${DIM}Installation directory: ${INSTALL_DIR}${NC}"

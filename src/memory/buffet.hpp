@@ -3,7 +3,7 @@
  * @file buffet.hpp
  * @brief Internal counted slab handle and preallocated chain link.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>

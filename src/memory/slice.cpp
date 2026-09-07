@@ -2,7 +2,7 @@
  * @file slice.cpp
  * @brief Implements registered placement chains, background replenishment, and Slice lifetime.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <memory/alligator.hpp>
 #include <memory/buffet.hpp>
 #include <memory/slicefriend.hpp>
@@ -19,7 +19,7 @@ const Placemat* Slice::default_placement() {
     return BuffetMenu::default_placement();
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in Nebula's slab arena. The slice is
+ * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
  * guaranteed to be zero-initialized.
  * @param size The size of the slice in bytes.
  */
@@ -27,7 +27,7 @@ Slice::Slice(size_t size, const Placemat* placement) {
     *this = Alligator::instance().current_for_placement(placement->type())->claim(size);
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in Nebula's slab arena, with the option to
+ * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with the option to
  * specify whether the slice should be part of a larger slab or a novel buffer. The slice is
  * guaranteed to be zero-initialized.
  * @param size The size of the slice in bytes.
@@ -39,8 +39,8 @@ Slice::Slice(size_t size, bool novel_buffer, const Placemat* placement) {
     *this = Alligator::instance().current_for_placement(placement->type())->claim(size, novel_buffer);
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
- * @brief Copies data from an external memory location into a new slice of memory in Nebula.
- * This can be used to deep-copy a slice, or load data from an external source into Nebula's
+ * @brief Copies data from an external memory location into a new slice of memory in the buffet alligator.
+ * This can be used to deep-copy a slice, or load data from an external source into the buffet alligator's
  * memory management system.
  * @param copy_from Pointer to the external memory to copy from.
  * @param size The size of the data to copy in bytes.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(buffetalligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES CXX)
+project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed; run ./run_build.sh")
 endif()
@@ -25,27 +25,27 @@ if(NOT TARGET logging::logging)
     set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
 endif()
 find_package(Threads REQUIRED)
-add_library(buffetalligator STATIC
+add_library(alligator STATIC
     src/memory/slice.cpp
     src/memory/buffet.cpp
     src/memory/alligator.cpp
     src/memory/heapbuffet.cpp
 )
-add_library(buffetalligator::buffetalligator ALIAS buffetalligator)
-target_include_directories(buffetalligator
+add_library(alligator::alligator ALIAS alligator)
+target_include_directories(alligator
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_compile_features(buffetalligator PUBLIC cxx_std_20)
-target_link_libraries(buffetalligator PUBLIC logging::logging Threads::Threads)
-set_target_properties(buffetalligator PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(alligator PUBLIC cxx_std_20)
+target_link_libraries(alligator PUBLIC logging::logging Threads::Threads)
+set_target_properties(alligator PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(buffetalligator PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(alligator PRIVATE -Wall -Wextra -Wpedantic)
 elseif(MSVC)
-    target_compile_options(buffetalligator PRIVATE /W4)
+    target_compile_options(alligator PRIVATE /W4)
 endif()
 if(BUFFETALLIGATOR_BUILD_TESTS)
     enable_testing()
@@ -53,9 +53,9 @@ if(BUFFETALLIGATOR_BUILD_TESTS)
 endif()
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
-set(BUFFETALLIGATOR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/buffetalligator")
-install(TARGETS buffetalligator
-    EXPORT buffetalligatorTargets
+set(BUFFETALLIGATOR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/alligator")
+install(TARGETS alligator
+    EXPORT alligatorTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -67,24 +67,24 @@ if(BUFFETALLIGATOR_OWNS_LOGGING_TARGET)
 else()
     set(BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS "")
 endif()
-install(EXPORT buffetalligatorTargets
-    FILE buffetalligatorTargets.cmake
-    NAMESPACE buffetalligator::
+install(EXPORT alligatorTargets
+    FILE alligatorTargets.cmake
+    NAMESPACE alligator::
     DESTINATION ${BUFFETALLIGATOR_INSTALL_CMAKEDIR}
 )
 configure_package_config_file(
-    cmake/buffetalligatorConfig.cmake.in
-    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfig.cmake"
+    cmake/alligatorConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/alligatorConfig.cmake"
     INSTALL_DESTINATION ${BUFFETALLIGATOR_INSTALL_CMAKEDIR}
 )
 write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfigVersion.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/alligatorConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
 )
 install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/buffetalligatorConfigVersion.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/alligatorConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/alligatorConfigVersion.cmake"
     DESTINATION ${BUFFETALLIGATOR_INSTALL_CMAKEDIR}
 )
-install(FILES LICENSE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/buffetalligator)
+install(FILES LICENSE THIRD_PARTY_NOTICES.md DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/alligator)

@@ -5,7 +5,7 @@
  * completed allocations. Allocation and deallocation calls happen elsewhere and simply report
  * their results here.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Memory

@@ -3,7 +3,7 @@
  * @brief Verifies the Slice handle contract: null state, zero fill, copy and move semantics,
  * sub-slicing, external copies, resize, and placement identity on the built-in placements.
  */
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
