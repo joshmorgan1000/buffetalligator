@@ -414,7 +414,9 @@ public:
      * @brief Returns the size of the slice in bytes.
      * @return The size of the slice in bytes.
      */
-    size_t size_bytes() const { return (meta_ >> 17) & SIZE_MAX; }
+    size_t size_bytes() const {
+        return meta_ == SIZE_MAX ? 0 : (meta_ >> 17) & SIZE_MAX;
+    }
     /** ------------------------------------------------------------------------------------------- Size in elements
      * @brief Returns the size of the slice in elements of type T.
      * @tparam T The type of elements in the slice. Default is `uint8_t`.
