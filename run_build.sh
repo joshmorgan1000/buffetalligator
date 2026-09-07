@@ -125,5 +125,5 @@ if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" >>"${LOG_FILE}" 2>
     tail -n 30 "${LOG_FILE}"
     exit 1
 fi
-printf '%s\n' "${GREEN}BuffetAlligator is built and all tests passed.${NC}" "${DIM}Static library: ${BUILD_DIR}/libbuffetalligator.a${NC}"
+printf '%s\n' "${GREEN}BuffetAlligator is built and all tests passed.${NC}" "${DIM}Static library: ${BUILD_DIR}/liballigator.a${NC}"
 printf '%s\n' "${DIM}Installation directory: ${INSTALL_DIR}${NC}"

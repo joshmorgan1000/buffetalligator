@@ -17,7 +17,7 @@ BuffetAlligator includes basic heap and 64-byte-aligned heap placements. Aligned
 Arena initialization allocates a 64 MiB current slab and a 64 MiB successor for every registered placement. The two built-in placements therefore commit 256 MiB before custom placements; each custom placement adds 128 MiB. The allocator thread then keeps a runway of additional prepared successors beyond each active slab so chain rollovers never wait on allocation; teardown of drained slabs is also deferred to that thread. Placemat callbacks may run concurrently on the calling thread and the dedicated allocator thread, and placement instances must remain alive for the process lifetime.
 
 ```cpp
-#include <buffetalligator.hpp>
+#include <alligator.hpp>
 
 buffetalligator::Slice bytes(4096);
 auto* values = bytes.data<uint32_t>();
@@ -48,8 +48,8 @@ cmake --install build/current --prefix /your/install/prefix
 Installed CMake consumers can use the exported target:
 
 ```cmake
-find_package(buffetalligator CONFIG REQUIRED)
-target_link_libraries(your_target PRIVATE buffetalligator::buffetalligator)
+find_package(alligator CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE alligator::alligator)
 ```
 
 Concurrent claims and independent `Slice` handles are supported. Concurrent mutation of the same `Slice` object requires external synchronization.

@@ -6,6 +6,7 @@
 #include <memory/alligator.hpp>
 #include <memory/buffet.hpp>
 #include <memory/slicefriend.hpp>
+#include <simd.hpp>
 #include <algorithm>
 #include <cstring>
 
@@ -228,5 +229,81 @@ void Slice::free() {
  */
 void SliceFriend::do_somthing_fun(void* ptr) {
     Alligator::instance().enqueue_order(ptr);
+}
+/** --------------------------------------------------------------------------------------------------------- Find Internal
+ * @brief Locates the slot index for the given ID, or -1 if not found.
+ * @param id The ID to search for.
+ * @return The slot index containing the ID, or -1 if not found.
+ */
+int64_t SliceMap::find_internal(int64_t id) const {
+    const int64_t needle = static_cast<int64_t>(id);
+    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    while (slot >= 0) {
+        if (verify_slot(slot, needle)) return slot;
+        const int64_t next =
+            SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+        slot = next < 0 ? -1 : next + slot + 1;
+    }
+    return -1;
+}
+/** --------------------------------------------------------------------------------------------------------- Find Internal
+ * @brief Locates the slot index for the given ID, or -1 if not found.
+ * @param id The ID to search for.
+ * @return The slot index containing the ID, or -1 if not found.
+ */
+int64_t SliceMap::find_internal(uint32_t id) const {
+    const int64_t needle = static_cast<int64_t>(id);
+    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    while (slot >= 0) {
+        if (verify_slot(slot, needle)) return slot;
+        const int64_t next =
+            SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+        slot = next < 0 ? -1 : next + slot + 1;
+    }
+    return -1;
+}
+/** --------------------------------------------------------------------------------------------------------- Get Slice Internal
+ * @brief Retrieves the payload slice for the given ID, or an empty slice if not found.
+ * @param id The ID to search for.
+ * @return The payload slice associated with the ID, or an empty slice if not found.
+ */
+Slice SliceMap::get_slice_internal(int64_t id) {
+    const int64_t needle = static_cast<int64_t>(id);
+    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    while (slot >= 0) {
+        Row* row = slot_row(slot).load(std::memory_order_acquire);
+        hazard_protect(0, row);
+        if (verify_held(slot, needle, row)) {
+            Slice out = row->payload.slice();
+            hazard_clear(0);
+            return out;
+        }
+        hazard_clear(0);
+        const int64_t next = SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+        slot = next < 0 ? -1 : next + slot + 1;
+    }
+    return Slice();
+}
+/** --------------------------------------------------------------------------------------------------------- Get Slice Internal
+ * @brief Retrieves the payload slice for the given ID, or an empty slice if not found.
+ * @param id The ID to search for.
+ * @return The payload slice associated with the ID, or an empty slice if not found.
+ */
+Slice SliceMap::get_slice_internal(uint32_t id) {
+    const int64_t needle = static_cast<int64_t>(id);
+    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    while (slot >= 0) {
+        Row* row = slot_row(slot).load(std::memory_order_acquire);
+        hazard_protect(0, row);
+        if (verify_held(slot, needle, row)) {
+            Slice out = row->payload.slice();
+            hazard_clear(0);
+            return out;
+        }
+        hazard_clear(0);
+        const int64_t next = SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+        slot = next < 0 ? -1 : next + slot + 1;
+    }
+    return Slice();
 }
 } // namespace buffetalligator

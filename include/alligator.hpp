@@ -1,6 +1,6 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- Slice
- * @file buffetalligator.hpp
+ * @file alligator.hpp
  * @brief Unified header for the BuffetAlligator.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
  */
@@ -15,6 +15,7 @@
 #include <concepts>
 #include <limits>
 #include <memory>
+#include <semaphore>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -255,8 +256,15 @@ concept PrimitiveSliceType = (
         { t.is_null() } -> std::convertible_to<bool>;
         { t.root_slice() } -> std::convertible_to<Slice>;
         { std::as_const(t).root_slice() } -> std::convertible_to<Slice>;
-        { t.placement() } -> std::same_as<const Placemat*>;
-    }
+    } && (
+        requires(T t) {
+            { t.placement() } -> std::same_as<const Placemat*>;
+        }
+    ||
+        requires(T t) {
+            { t.placement() } -> std::same_as<nullptr_t>;
+        }
+    )
 ) || std::is_same_v<T, Slice>;
 /** --------------------------------------------------------------------------------------------------------- Slice
  * @class Slice
@@ -2458,7 +2466,7 @@ public:
     , published_(other.published_.load(std::memory_order_acquire))
     , expected_(other.expected_.load(std::memory_order_acquire))
     , wait_threshold_(other.wait_threshold_.load(std::memory_order_acquire))
-    , wait_sem_(other.wait_sem_.exchange(nullptr, std::memory_order_acq_rel))
+    , wait_sem_(0)
     , on_publish_(other.on_publish_)
     , on_publish_context_(other.on_publish_context_)
     , capacity_(other.capacity_) {
@@ -2481,7 +2489,6 @@ public:
                 destroy_row(slot_row(slot).exchange(nullptr, std::memory_order_acquire));
             }
         }
-        delete wait_sem_.exchange(nullptr, std::memory_order_acq_rel);
     }
     /** ------------------------------------------------------------------------------------------- Add Slice
      * @brief Claims and publishes one row in a single call.
@@ -2637,14 +2644,9 @@ public:
      */
     void wait_until_full(size_t count) {
         if (published_.load(std::memory_order_acquire) >= count) return;
-        moodycamel::LightweightSemaphore* semaphore = wait_sem_.load(std::memory_order_acquire);
-        if (semaphore == nullptr) {
-            semaphore = new moodycamel::LightweightSemaphore();
-            wait_sem_.store(semaphore, std::memory_order_release);
-        }
         wait_threshold_.store(count, std::memory_order_release);
         while (published_.load(std::memory_order_acquire) < count) {
-            semaphore->wait(1000);
+            wait_sem_.try_acquire_for(std::chrono::microseconds(1000));
         }
         wait_threshold_.store(SIZE_MAX, std::memory_order_release);
     }
@@ -2701,8 +2703,8 @@ private:
     std::atomic<size_t> expected_{0};
     /// @brief Armed landed-count threshold a parked waiter is watching; SIZE_MAX means none.
     std::atomic<size_t> wait_threshold_{SIZE_MAX};
-    /// @brief The parked waiter's semaphore, created on first wait.
-    std::atomic<moodycamel::LightweightSemaphore*> wait_sem_{nullptr};
+    /// @brief The parked waiter's semaphore; release saturates so producer wakes coalesce.
+    std::binary_semaphore wait_sem_{0};
     /// @brief The per-row publish hook, or null when none is registered.
     PublishHook on_publish_ = nullptr;
     /// @brief Caller-defined context handed to the publish hook.
@@ -2771,10 +2773,7 @@ private:
      */
     void notify_if_waiting(const size_t& landed) {
         if (landed >= wait_threshold_.load(std::memory_order_acquire)) [[unlikely]] {
-            moodycamel::LightweightSemaphore* semaphore = wait_sem_.load(std::memory_order_acquire);
-            if (semaphore != nullptr) {
-                semaphore->signal();
-            }
+            wait_sem_.release();
         }
     }
     /** ------------------------------------------------------------------------------------------- Verify Slot
@@ -2919,10 +2918,11 @@ public:
      * @brief Constructs a typed row in place from its arguments and publishes it under `id`.
      * Total atomic operations: the add_slice protocol
      * Total branches: 0
-     * @param id The identifier for the row.
+     * @param id The identifier for the row. Must be convertible to int64_t.
      * @param args Arguments forwarded to T's constructor.
      */
-    template<IDType ID, typename... Args>
+    template<typename ID, typename... Args>
+        requires std::is_convertible_v<ID, int64_t>
     void emplace(ID id, Args&&... args) {
         Slice payload(sizeof(T));
         new (payload.data<void>()) T(std::forward<Args>(args)...);
@@ -2975,7 +2975,7 @@ public:
      * @param unused A boolean parameter to differentiate this constructor.
      */
     WeakSlice(size_t size, bool) {
-        NEBULA_SLICE_THROW("WeakSlice: cannot allocate memory for non-owning slice.");
+        ALLIGATOR_THROW("WeakSlice: cannot allocate memory for non-owning slice.");
     }
     /** ----------------------------------------------------------------------------------------- Constructor - Copy
      * @brief Copy constructor for WeakSlice.
@@ -3013,8 +3013,8 @@ public:
      * @brief Returns the placement of the memory block. Since this is a weak reference, we
      * don't know the actual placement.
      */
-    Placement placement() const {
-        return Placement::UNSPECIFIED;
+    const Placemat* placement() const {
+        return nullptr;
     }
     /** ----------------------------------------------------------------------------------------- Raw
      * @brief Returns a raw pointer to the memory block.
@@ -3083,7 +3083,7 @@ public:
      */
     Slice slice(size_t offset = 0, size_t size = SIZE_MAX) const {
         if (offset >= span_.size()) [[unlikely]] {
-            NEBULA_SLICE_THROW("WeakSlice::slice(): offset out of bounds");
+            ALLIGATOR_THROW("WeakSlice::slice(): offset out of bounds");
         }
         if (offset + size > span_.size()) [[unlikely]] {
             size = span_.size() - offset;
