@@ -54,7 +54,7 @@ while (( $# > 0 )); do
             ;;
     esac
 done
-BUILD_DIR="${REPO_ROOT}/build/current"
+BUILD_DIR="${BUILD_ROOT}/current"
 DEPS_SOURCE_DIR="${DEPS_DIR}/src"
 LOG_FILE="${BUILD_ROOT}/build_buffetalligator.log"
 LOGGER_DIR="${DEPS_SOURCE_DIR}/threadsafe-logger"
@@ -102,7 +102,7 @@ if command -v ninja >/dev/null 2>&1; then
     GENERATOR_ARGS=(-G Ninja)
 fi
 printf '%s\n' "${CYAN}Configuring BuffetAlligator...${NC}"
-if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release -DBUFFETALLIGATOR_BUILD_TESTS=ON >>"${LOG_FILE}" 2>&1; then
+if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release -DBUFFETALLIGATOR_BUILD_TESTS=ON -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" >>"${LOG_FILE}" 2>&1; then
     printf '%s\n' "${RED}Configuration failed.${NC}" "The last diagnostics were:"
     tail -n 30 "${LOG_FILE}"
     exit 1
