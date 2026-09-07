@@ -123,6 +123,21 @@ public:
         }
         return instance().placements_.at(type).get();
     }
+    /** ------------------------------------------------------------------------------------------- Get by Name
+     * @brief Returns the registered Placemat for a given name.
+     * @param name The name of the placement.
+     * @return The registered placement factory, or nullptr if not found.
+     */
+    static Placemat* get(const std::string& name) {
+        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
+            ensure_builtins_slow();
+        }
+        auto it = instance().placement_indices_.find(name);
+        if (it != instance().placement_indices_.end()) {
+            return instance().placements_.at(it->second).get();
+        }
+        return nullptr;
+    }
     /** ------------------------------------------------------------------------------------------- Count
      * @brief Returns the number of Placemat types registered so far.
      * @return The registered placement count.
