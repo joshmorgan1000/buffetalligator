@@ -28,12 +28,9 @@ Alligator::Alligator() {
  * @brief Implements the Alligator's destructor.
  */
 Alligator::~Alligator() {
-    LOG_DEBUG_STREAM << "Alligator shutting down.";
     AtomicContainer* stop_signal = AtomicRegistry::get_global("stop_signal");
     if (!stop_signal->load<bool>(std::memory_order_acquire)) {
         stop_signal->store(true, std::memory_order_release);
-    } else {
-        LOG_ERROR_STREAM << "Failed to retrieve stop_signal from AtomicRegistry.";
     }
     enqueue_order(nullptr);
     if (worker_thread_.joinable()) {
