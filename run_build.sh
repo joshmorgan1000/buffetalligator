@@ -59,7 +59,6 @@ DEPS_SOURCE_DIR="${DEPS_DIR}/src"
 LOG_FILE="${BUILD_ROOT}/build_buffetalligator.log"
 LOGGER_DIR="${DEPS_SOURCE_DIR}/threadsafe-logger"
 LOGGER_URL="https://github.com/joshmorgan1000/threadsafe-logger.git"
-LOGGER_COMMIT="52588cec8fda78ffa5af31b8479b4e97a9417de8"
 printf '%s\n' "${CYAN}BUFFET ALLIGATOR${NC}"
 missing_dependency() {
     local command_name="$1"
@@ -91,11 +90,15 @@ if [[ ! -d "${LOGGER_DIR}/.git" ]]; then
         exit 1
     fi
 fi
-printf '%s\n' "${CYAN}Pinning threadsafe-logger to the tested revision...${NC}"
-if ! git -C "${LOGGER_DIR}" fetch origin "${LOGGER_COMMIT}" >>"${LOG_FILE}" 2>&1 ||
-   ! git -C "${LOGGER_DIR}" checkout --detach "${LOGGER_COMMIT}" >>"${LOG_FILE}" 2>&1; then
-    printf '%s\n' "${RED}Could not prepare threadsafe-logger.${NC}" "Remove ${LOGGER_DIR} and rerun this script." "Details: ${LOG_FILE}"
-    exit 1
+if git -C "${LOGGER_DIR}" remote get-url origin >>"${LOG_FILE}" 2>&1; then
+    printf '%s\n' "${CYAN}Updating threadsafe-logger to the latest main...${NC}"
+    if ! git -C "${LOGGER_DIR}" fetch origin main >>"${LOG_FILE}" 2>&1 ||
+       ! git -C "${LOGGER_DIR}" checkout --detach FETCH_HEAD >>"${LOG_FILE}" 2>&1; then
+        printf '%s\n' "${RED}Could not update threadsafe-logger.${NC}" "Check network access, then rerun ./run_build.sh." "Details: ${LOG_FILE}"
+        exit 1
+    fi
+else
+    printf '%s\n' "${CYAN}Using the vendored threadsafe-logger checkout...${NC}"
 fi
 GENERATOR_ARGS=()
 if command -v ninja >/dev/null 2>&1; then
