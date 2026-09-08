@@ -17,6 +17,7 @@ DEPS_DIR="${REPO_ROOT}/deps"
 INSTALL_DIR="${REPO_ROOT}/build/install"
 CLEAN_BUILD=false
 REBUILD_VENDORED=false
+RUN_TESTS=true
 while (( $# > 0 )); do
     case "$1" in
         --clean)
@@ -26,6 +27,10 @@ while (( $# > 0 )); do
             ;;
         --rebuild-vendored)
             REBUILD_VENDORED=true
+            shift
+            ;;
+        --skip-tests)
+            RUN_TESTS=false
             shift
             ;;
         --build-dir)
@@ -46,6 +51,7 @@ while (( $# > 0 )); do
             printf '%s\n' "Options:"
             printf '%s\n' "  --clean              Delete the build directory to start fresh."
             printf '%s\n' "  --rebuild-vendored   Force rebuild of vendored dependencies."
+            printf '%s\n' "  --skip-tests         Build and install without running the test suite."
             printf '%s\n' "  --build-dir DIR      Specify the build directory."
             printf '%s\n' "  --deps-dir DIR       Specify the dependencies directory."
             printf '%s\n' "  --install-dir DIR    Specify the installation directory."
@@ -105,7 +111,7 @@ if command -v ninja >/dev/null 2>&1; then
     GENERATOR_ARGS=(-G Ninja)
 fi
 printf '%s\n' "${CYAN}Configuring BuffetAlligator...${NC}"
-if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release -DBUFFETALLIGATOR_BUILD_TESTS=ON -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" >>"${LOG_FILE}" 2>&1; then
+if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib -DBUFFETALLIGATOR_BUILD_TESTS="$([[ "${RUN_TESTS}" == true ]] && echo ON || echo OFF)" -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" >>"${LOG_FILE}" 2>&1; then
     printf '%s\n' "${RED}Configuration failed.${NC}" "The last diagnostics were:"
     tail -n 30 "${LOG_FILE}"
     exit 1
@@ -116,11 +122,15 @@ if ! cmake --build "${BUILD_DIR}" --parallel >>"${LOG_FILE}" 2>&1; then
     tail -n 30 "${LOG_FILE}"
     exit 1
 fi
-printf '%s\n' "${CYAN}Running the memory contract tests...${NC}"
-if ! ctest --test-dir "${BUILD_DIR}" --output-on-failure >>"${LOG_FILE}" 2>&1; then
-    printf '%s\n' "${RED}Tests failed.${NC}" "The last diagnostics were:"
-    tail -n 40 "${LOG_FILE}"
-    exit 1
+if [[ "${RUN_TESTS}" == true ]]; then
+    printf '%s\n' "${CYAN}Running the memory contract tests...${NC}"
+    if ! ctest --test-dir "${BUILD_DIR}" --output-on-failure >>"${LOG_FILE}" 2>&1; then
+        printf '%s\n' "${RED}Tests failed.${NC}" "The last diagnostics were:"
+        tail -n 40 "${LOG_FILE}"
+        exit 1
+    fi
+else
+    printf '%s\n' "${DIM}Skipping the test suite (--skip-tests).${NC}"
 fi
 printf '%s\n' "${CYAN}Installing the library...${NC}"
 if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" >>"${LOG_FILE}" 2>&1; then
@@ -128,5 +138,10 @@ if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" >>"${LOG_FILE}" 2>
     tail -n 30 "${LOG_FILE}"
     exit 1
 fi
-printf '%s\n' "${GREEN}BuffetAlligator is built and all tests passed.${NC}" "${DIM}Static library: ${BUILD_DIR}/liballigator.a${NC}"
+if [[ "${RUN_TESTS}" == true ]]; then
+    printf '%s\n' "${GREEN}BuffetAlligator is built and all tests passed.${NC}"
+else
+    printf '%s\n' "${GREEN}BuffetAlligator is built and installed.${NC}"
+fi
+printf '%s\n' "${DIM}Static library: ${BUILD_DIR}/liballigator.a${NC}"
 printf '%s\n' "${DIM}Installation directory: ${INSTALL_DIR}${NC}"
