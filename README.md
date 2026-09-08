@@ -4,30 +4,74 @@
 
 # BuffetAlligator
 
-BuffetAlligator is a C++20 memory arena that serves 16-byte `Slice` handles from preallocated, zeroed slabs. Claims are 64-byte-granular atomic bump-pointer operations; exhausted slabs advance through successors prepared by one dedicated allocator thread.
+BuffetAlligator is a C++20 memory arena backed by a private C11 core. Its 16-byte `Slice` handles reference zeroed regions of preallocated slabs. Ordinary claims bump a thread-local plate cursor without atomic operations; reference counting happens at plate granularity.
 
 The project is pre-release. API and ABI compatibility are not guaranteed until 1.0.
 
 ## Placemat
 
-Each registered `Placemat` (placement) is a process-lifetime factory and owns one independent Buffer chain. A placement supplies only allocation, deallocation, context, and stable host-pointer access. Device addresses, transfers, and synchronization remain private to the consuming implementation.
+A registered `Placemat` is a process-lifetime memory source with stable host-pointer access. `heap` has identifier 0, `aligned_heap` has identifier 1 and is the default, and custom identifiers start at 2. Both built-ins use anonymous OS pages. Every claim has a host pointer aligned to at least 64 bytes and reads as zero when returned. Sub-slice views retain the original allocation and can begin at an arbitrary byte offset.
 
-BuffetAlligator includes basic heap and 64-byte-aligned heap placements. Aligned heap is the default. Applications may register additional placements before creating the first `Slice` and may install a default placement strategy method.
+Slabs are divided into plates. Each thread bumps within its own plate; sealing the plate publishes its issued claim count, and thread exit seals its remaining plates. Larger claims receive direct plates or dedicated novel allocations. Holding a small slice keeps its plate and parent slab alive.
 
-Arena initialization allocates a 64 MiB current slab and a 64 MiB successor for every registered placement. The two built-in placements therefore commit 256 MiB before custom placements; each custom placement adds 128 MiB. The allocator thread then keeps a runway of additional prepared successors beyond each active slab so chain rollovers never wait on allocation; teardown of drained slabs is also deferred to that thread. Placemat callbacks may run concurrently on the calling thread and the dedicated allocator thread, and placement instances must remain alive for the process lifetime.
+One worker prepares a runway of slabs, recycles retired slabs into a bounded free list, zeroes reusable memory, and releases excess capacity. Runtime page size, available memory, process limits, hardware threads, and measured consumption determine slab geometry and runway depth. A nonzero requested slab size is rounded to the OS granule and honored without a fixed minimum; zero requests runtime sizing. A runway miss builds a slab on the caller, subject to its budget.
+
+Registration waits for the worker to prepare the first current slab and runway. Register custom placements before starting concurrent use. Callbacks can run concurrently on callers and the worker. The allocator must return zeroed memory with the declared alignment, wrapped in a newly allocated `Placemat::Handle`; deallocation releases the substrate, and the framework deletes the handle. Names and callback context must remain valid for the placement's lifetime. Device addresses, transfers, and synchronization belong to the consuming implementation.
+
+OS-page placements share a global capacity ceiling derived from three quarters of startup headroom. Each placement also has its own budget. Custom placements can supply a budget or a capacity query; without either they are unlimited. Allocations that exceed a budget throw `AlligatorException`.
+
+Novel allocation happens on the caller. Optional novel caches hold worker-zeroed allocations in bounded power-of-two size classes from 64 KiB through 1 TiB. A later claim can reuse a buffer after the worker publishes it to the cache. OS recycling remaps touched pages to obtain kernel zero-fill; custom recycling calls the supplied zero callback or zeroes the touched prefix on the worker.
+
+The worker polls memory pressure. Warning pressure reduces free-list and novel-cache retention; critical pressure clears those caches and reduces the runway target to its policy floor, within the budget. `Memory::trim` synchronously releases idle runway, free-list, and novel-cache capacity without invalidating live slices. Idle polling does not immediately rebuild explicitly trimmed reserves; subsequent slab advancement can replenish them.
 
 ```cpp
 #include <alligator.hpp>
 
 buffetalligator::Slice bytes(4096);
 auto* values = bytes.data<uint32_t>();
-```
-
-Dedicated novel buffers remain available for long-lived claims:
-
-```cpp
 buffetalligator::Slice long_lived(1024 * 1024, true);
 ```
+
+Stop claim-producing threads and release application slices before calling `BuffetMenu::shutdown()`. Shutdown is explicit, does not run from a static destructor, and replaces the former `AtomicRegistry` `stop_signal` convention. The allocator cannot be restarted after shutdown.
+
+## Memory API
+
+`Memory` is available directly from `<alligator.hpp>`; no private headers are needed. Allocation and freed totals count bytes, including both slabs and novel buffers.
+
+| Methods | Meaning |
+|---|---|
+| `total_allocations()`, `total_freed()` | Process-wide cumulative allocation and deallocation bytes |
+| `placement_allocations(p)`, `placement_freed(p)` | Per-placement cumulative totals |
+| `placement_usage(p)` | Allocated bytes minus freed bytes |
+| `placement_reserved(p)` | Free-list plus runway capacity |
+| `placement_live(p)` | Usage excluding free-list and runway reserves |
+| `placement_budget(p)`, `placement_available(p)` | Capacity ceiling and budget minus live bytes; unlimited availability is `SIZE_MAX` |
+| `set_placement_budget(p, bytes)` | Set a capacity ceiling for subsequent allocation |
+| `placement_novel_cached(p)` | Published zeroed novel-cache bytes |
+| `placement_runway_target(p)`, `placement_slab_size(p)` | Current prepared-slab target and resolved slab capacity |
+| `trim(p)`, `trim_all()` | Synchronously release idle capacity |
+| `system_physical()`, `system_available()` | Fresh system capacity and availability |
+| `system_limit()`, `system_headroom()` | Effective process ceiling and remaining system/process headroom |
+| `page_size()`, `large_page_size()` | Native page size and usable reported large-page size, or zero for none |
+| `hardware_threads()` | Hardware threads available to the process |
+| `pressure()` | `Memory::Pressure::None`, `Warn`, or `Critical` |
+
+The original `BuffetMenu::register_type(name, slab_bytes, alignment, allocate, deallocate, get_host_ptr, get_context, set_as_default)` overload remains available. The descriptor overload adds resource policy:
+
+```cpp
+buffetalligator::PlacementDescription description;
+description.name = "custom";
+description.slab_bytes = 16 * 1024 * 1024;
+description.base_alignment = 64;
+description.budget_bytes = 256 * 1024 * 1024;
+description.novel_cache_bytes = 64 * 1024 * 1024;
+description.allocate = allocate_zeroed;
+description.deallocate = release_substrate;
+description.get_host_ptr = host_pointer;
+const auto type = buffetalligator::BuffetMenu::register_type(description);
+```
+
+`get_context`, `query_available`, and `zero` are optional descriptor callbacks. `set_as_default` selects the new placement. A base alignment below 64 is rejected. Counters are live observations; query them after workload quiescence for comparisons across multiple calls.
 
 ## Build
 

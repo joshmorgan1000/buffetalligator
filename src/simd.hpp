@@ -1,7 +1,7 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- SIMD
  * @file simd.hpp
- * @brief SIMD utility functions and classes for the Buffet Alligator project.
+ * @brief SIMD utility functions and classes for the BuffetAlligator project.
  */
 #ifdef ALLIGATOR_SIMD_MODE
 #undef ALLIGATOR_SIMD_MODE
@@ -49,7 +49,7 @@ struct SIMDMisc {
         size_t i = 0;
 #if ALLIGATOR_SIMD_MODE == 1
         if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, long long>) {
-            const simd_long8 id_v = simd_make_long8(id);
+            const simd_long8 id_v = simd_long8(id);
             #pragma unroll 8
             for (; i + 8 <= size; i += 8) {
                 const simd_long8 ids_v = *reinterpret_cast<const simd_packed_long8*>(ids + i);
@@ -61,7 +61,7 @@ struct SIMDMisc {
                 }
             }
         } else if constexpr (std::is_same_v<T, uint64_t> || std::is_same_v<T, unsigned long long>) {
-            const simd_ulong8 id_v = simd_make_ulong8(static_cast<uint64_t>(id));
+            const simd_ulong8 id_v = simd_ulong8(static_cast<uint64_t>(id));
             #pragma unroll 8
             for (; i + 8 <= size; i += 8) {
                 const simd_ulong8 ids_v = *reinterpret_cast<const simd_packed_ulong8*>(ids + i);
@@ -73,7 +73,7 @@ struct SIMDMisc {
                 }
             }
         } else if constexpr (std::is_same_v<T, int32_t> || std::is_same_v<T, int>) {
-            const simd_int16 id_v = simd_make_int16(static_cast<int32_t>(id));
+            const simd_int16 id_v = simd_int16(static_cast<int32_t>(id));
             #pragma unroll 8
             for (; i + 16 <= size; i += 16) {
                 const simd_int16 ids_v = *reinterpret_cast<const simd_packed_int16*>(ids + i);
@@ -85,7 +85,7 @@ struct SIMDMisc {
                 }
             }
         } else if constexpr (std::is_same_v<T, uint32_t> || std::is_same_v<T, unsigned int>) {
-            const simd_uint16 id_v = simd_make_uint16(static_cast<uint32_t>(id));
+            const simd_uint16 id_v = simd_uint16(static_cast<uint32_t>(id));
             #pragma unroll 8
             for (; i + 16 <= size; i += 16) {
                 const simd_uint16 ids_v = *reinterpret_cast<const simd_packed_uint16*>(ids + i);
@@ -97,8 +97,8 @@ struct SIMDMisc {
                 }
             }
         } else if constexpr (std::is_same_v<T, int16_t> || std::is_same_v<T, short>) {
-            const simd_short32 id_v = simd_make_short32(static_cast<int16_t>(id));
-            const simd_short8 id_v8 = simd_make_short8(static_cast<int16_t>(id));
+            const simd_short32 id_v = simd_short32(static_cast<int16_t>(id));
+            const simd_short8 id_v8 = simd_short8(static_cast<int16_t>(id));
             #pragma unroll 8
             for (; i + 32 <= size; i += 32) {
                 const simd_short32 ids_v = *reinterpret_cast<const simd_packed_short32*>(ids + i);
@@ -117,8 +117,8 @@ struct SIMDMisc {
                 }
             }
         } else if constexpr (std::is_same_v<T, uint16_t> || std::is_same_v<T, unsigned short>) {
-            const simd_ushort32 id_v = simd_make_ushort32(static_cast<uint16_t>(id));
-            const simd_ushort8 id_v8 = simd_make_ushort8(static_cast<uint16_t>(id));
+            const simd_ushort32 id_v = simd_ushort32(static_cast<uint16_t>(id));
+            const simd_ushort8 id_v8 = simd_ushort8(static_cast<uint16_t>(id));
             #pragma unroll 8
             for (; i + 32 <= size; i += 32) {
                 const simd_ushort32 ids_v = *reinterpret_cast<const simd_packed_ushort32*>(ids + i);

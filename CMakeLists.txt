@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
-project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES CXX)
+project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES C CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed; run ./run_build.sh")
 endif()
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -26,9 +29,10 @@ if(NOT TARGET logging::logging)
 endif()
 find_package(Threads REQUIRED)
 add_library(alligator STATIC
+    src/core/ba_os.c
+    src/core/ba_core.c
+    src/core/ba_worker.c
     src/memory/slice.cpp
-    src/memory/buffet.cpp
-    src/memory/alligator.cpp
     src/memory/heapbuffet.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
@@ -41,11 +45,14 @@ target_include_directories(alligator
 )
 target_compile_features(alligator PUBLIC cxx_std_20)
 target_link_libraries(alligator PUBLIC logging::logging Threads::Threads)
+if(WIN32)
+    target_link_libraries(alligator PUBLIC onecore psapi)
+endif()
 set_target_properties(alligator PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(alligator PRIVATE -Wall -Wextra -Wpedantic)
 elseif(MSVC)
-    target_compile_options(alligator PRIVATE /W4)
+    target_compile_options(alligator PRIVATE /W4 $<$<COMPILE_LANGUAGE:C>:/std:c11> $<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
 endif()
 if(BUFFETALLIGATOR_BUILD_TESTS)
     enable_testing()

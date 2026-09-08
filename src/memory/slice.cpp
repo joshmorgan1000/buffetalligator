@@ -1,186 +1,136 @@
-/** --------------------------------------------------------------------------------------------------------- BuffetAlligator Memory
+/** --------------------------------------------------------------------------------------------------------- Slice Wrappers
  * @file slice.cpp
- * @brief Implements registered placement chains, background replenishment, and Slice lifetime.
+ * @brief Implements the public slice API over the C11 arena.
  */
 #include <alligator.hpp>
-#include <memory/alligator.hpp>
-#include <memory/buffet.hpp>
-#include <memory/slicefriend.hpp>
 #include <simd.hpp>
-#include <algorithm>
 #include <cstring>
+extern "C" {
+#include "core/ba_core.h"
+}
 
 namespace buffetalligator {
-/** ------------------------------------------------------------------------------------------- Default Placement
- * @brief Returns the default placement for slices, which is determined by the system's
- * capabilities.
- * @return The default `Placement` enum value for slices.
+/** --------------------------------------------------------------------------------------------------------- Slice Layout
+ * @brief Verifies the two-word C and C++ slice representations.
  */
-const Placemat* Slice::default_placement() {
-    return BuffetMenu::default_placement();
+struct SliceLayout {
+    static_assert(sizeof(Slice) == sizeof(ba_slice_t));
+    static_assert(alignof(Slice) == alignof(ba_slice_t));
+    static_assert(offsetof(Slice, meta_) == offsetof(ba_slice_t, meta));
+    static_assert(offsetof(Slice, cached_) == offsetof(ba_slice_t, ptr));
+};
+namespace {
+/** --------------------------------------------------------------------------------------------------------- Find Atomic IDs
+ * @brief Runs the SIMD search over acquire-loaded snapshots of concurrently published IDs.
+ */
+int64_t find_atomic_ids(const int64_t* identifiers, size_t count, int64_t needle) {
+    for (size_t start = 0; start < count; start += 8) {
+        alignas(64) std::array<int64_t, 8> snapshot;
+        const size_t length = std::min(size_t(8), count - start);
+        for (size_t index = 0; index < length; ++index) {
+            snapshot[index] = std::atomic_ref<int64_t>(const_cast<int64_t&>(identifiers[start + index]))
+                .load(std::memory_order_acquire);
+        }
+        const int64_t found = SIMDMisc::find_id(snapshot.data(), length, needle);
+        if (found >= 0) return static_cast<int64_t>(start) + found;
+    }
+    return -1;
 }
-/** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
- * guaranteed to be zero-initialized.
- * @param size The size of the slice in bytes.
+/** --------------------------------------------------------------------------------------------------------- Check Claim
+ * @brief Logs and throws a core allocation failure with its placement name.
+ */
+void check_claim(ba_status_t status, const Placemat* placement) {
+    if (status == BA_OK) return;
+    const std::string message = std::string(ba_status_name(status)) + ": " + placement->name();
+    LOG_ERROR_STREAM << message;
+    ALLIGATOR_THROW(message);
+}
+}
+/** --------------------------------------------------------------------------------------------------------- Default Placement
+ * @brief Resolves the current public default placement.
+ */
+const Placemat* Slice::default_placement() { return BuffetMenu::default_placement(); }
+/** --------------------------------------------------------------------------------------------------------- Claim Constructor
+ * @brief Claims a zeroed range from a registered placement.
  */
 Slice::Slice(size_t size, const Placemat* placement) {
-    *this = Alligator::instance().current_for_placement(placement->type())->claim(size);
+    if (!size) return;
+    check_claim(ba_claim(placement->type(), size, 0, reinterpret_cast<ba_slice_t*>(this)), placement);
 }
-/** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with the option to
- * specify whether the slice should be part of a larger slab or a novel buffer. The slice is
- * guaranteed to be zero-initialized.
- * @param size The size of the slice in bytes.
- * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
- * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
- * reduce fragmentation in the arena.
+/** --------------------------------------------------------------------------------------------------------- Novel Constructor
+ * @brief Claims a zeroed range with optional dedicated allocation.
  */
-Slice::Slice(size_t size, bool novel_buffer, const Placemat* placement) {
-    *this = Alligator::instance().current_for_placement(placement->type())->claim(size, novel_buffer);
+Slice::Slice(size_t size, bool novel, const Placemat* placement) {
+    if (!size) return;
+    check_claim(ba_claim(placement->type(), size, novel ? BA_CLAIM_NOVEL : 0, reinterpret_cast<ba_slice_t*>(this)), placement);
 }
-/** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
- * @brief Copies data from an external memory location into a new slice of memory in the buffet alligator.
- * This can be used to deep-copy a slice, or load data from an external source into the buffet alligator's
- * memory management system.
- * @param copy_from Pointer to the external memory to copy from.
- * @param size The size of the data to copy in bytes.
- * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
- * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
- * reduce fragmentation in the arena. Default is false.
+/** --------------------------------------------------------------------------------------------------------- External Constructor
+ * @brief Copies external bytes into a newly claimed range.
  */
-Slice::Slice(
-    const void* copy_from,
-    size_t size,
-    bool novel_buffer,
-    const Placemat* placement
-) {
-    if (copy_from == nullptr || size == 0) {
-        return;
-    }
-    *this = Alligator::instance().current_for_placement(placement->type())->claim(copy_from, size, novel_buffer);
+Slice::Slice(const void* source, size_t size, bool novel, const Placemat* placement) {
+    if (!source || !size) return;
+    check_claim(ba_claim(placement->type(), size, novel ? BA_CLAIM_NOVEL : 0, reinterpret_cast<ba_slice_t*>(this)), placement);
+    std::memcpy(cached_, source, size);
 }
-/** ------------------------------------------------------------------------------------------- Copy/move semantics
- * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
- * much like `std::shared_ptr` in that they share the same reference counter and underlying
- * memory. Move semantics transfer ownership without reference-counting traffic.
+/** --------------------------------------------------------------------------------------------------------- Copy Constructor
+ * @brief Retains the source plate and copies its two slice words.
  */
-Slice::Slice(const Slice& other)
-: meta_(other.meta_)
-, cached_(other.cached_) {
-    if (cached_) {
-        Alligator::instance().get(meta_ & 0x1FFFFu)->ref_count_.fetch_add(1, std::memory_order_acq_rel);
-    }
+Slice::Slice(const Slice& other) : meta_(other.meta_), cached_(other.cached_) {
+    if (meta_ != BA_NULL_META) ba_retain(reinterpret_cast<const ba_slice_t*>(&other));
 }
-/** ------------------------------------------------------------------------------------------- Copy assignment operator
- * @brief Assigns the contents of one `Slice` to another, sharing the same underlying memory
- * and reference counter.
- * @param other The `Slice` to assign from.
- * @return A reference to the assigned `Slice`.
+/** --------------------------------------------------------------------------------------------------------- Copy Assignment
+ * @brief Releases the destination and retains the source slice.
  */
 Slice& Slice::operator=(const Slice& other) {
     if (this != &other) {
         free();
-        meta_ = other.meta_;
-        cached_ = other.cached_;
-        if (cached_) {
-            uint32_t slot = meta_ & 0x1FFFFu;
-            Alligator::instance().get(slot)->ref_count_.fetch_add(1, std::memory_order_acq_rel);
-        }
+        if (other.meta_ != BA_NULL_META) ba_retain(reinterpret_cast<const ba_slice_t*>(&other));
+        meta_ = other.meta_; cached_ = other.cached_;
     }
     return *this;
 }
-/** ------------------------------------------------------------------------------------------- Move constructor
- * @brief Moves the contents of one `Slice` to another, transferring ownership of the
- * underlying memory.
- * @param other The `Slice` to move from.
+/** --------------------------------------------------------------------------------------------------------- Move Constructor
+ * @brief Transfers the two slice words and nulls the source.
  */
-Slice::Slice(Slice&& other) noexcept
-: meta_(other.meta_)
-, cached_(other.cached_) {
-    other.meta_ = UINT64_MAX;
-    other.cached_ = nullptr;
+Slice::Slice(Slice&& other) noexcept : meta_(other.meta_), cached_(other.cached_) {
+    other.meta_ = BA_NULL_META; other.cached_ = nullptr;
 }
-/** ------------------------------------------------------------------------------------------- Move assignment operator
- * @brief Moves the contents of one `Slice` to another, transferring ownership of the
- * underlying memory.
- * @param other The `Slice` to move from.
- * @return A reference to the assigned `Slice`.
+/** --------------------------------------------------------------------------------------------------------- Move Assignment
+ * @brief Releases the destination and transfers the source words.
  */
 Slice& Slice::operator=(Slice&& other) noexcept {
     if (this != &other) {
         free();
-        meta_ = other.meta_;
-        cached_ = other.cached_;
-        other.meta_ = UINT64_MAX;
-        other.cached_ = nullptr;
+        meta_ = other.meta_; cached_ = other.cached_;
+        other.meta_ = BA_NULL_META; other.cached_ = nullptr;
     }
     return *this;
 }
-/** ------------------------------------------------------------------------------------------- Placement
- * @brief Returns the memory placement type of the slice.
- * @return The `Placement` enum value representing the slice's memory placement.
+/** --------------------------------------------------------------------------------------------------------- Placement
+ * @brief Resolves the public wrapper for this slice's owning placement.
  */
 const Placemat* Slice::placement() const {
-    if (!cached_) {
-        return nullptr;
-    }
-    uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffer = Alligator::instance().get(slot);
-    return buffer ? buffer->placement() : nullptr;
+    return meta_ == BA_NULL_META ? nullptr : BuffetMenu::get(ba_slice_placement(reinterpret_cast<const ba_slice_t*>(this)));
 }
-/** ------------------------------------------------------------------------------------------- Create new view
- * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
- * view shares the same underlying memory and reference counter as the original slice. Using
- * the default parameters will create a new view that is essentially identical to the original
- * slice - a shared view that increments the reference counter and will keep the underlying
- * memory alive until all views are destroyed.
- * @param offset The offset in bytes from the start of the original slice to the start of the
- * new view.
- * @param length The length in bytes of the new view.
- * @return A new `Slice` object that is a view of the original slice.
+/** --------------------------------------------------------------------------------------------------------- View
+ * @brief Retains a checked subrange of this slice.
  */
 Slice Slice::slice(size_t offset, size_t length) const {
-    if (length == 0) {
-        return Slice();
-    }
-    if (offset == 0 && length == SIZE_MAX) {
-        return *this;
-    }
-    if (meta_ == UINT64_MAX) {
-        return Slice();
-    }
-    uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffet = Alligator::instance().get(slot);
-    if (buffet == nullptr) {
-        return Slice();
-    }
-    const size_t slice_size = size_bytes();
-    if (offset >= slice_size) {
-        ALLIGATOR_THROW("Slice::slice: offset exceeds slice size");
-    }
-    const size_t view_size = slice_size - offset;
-    if (length != SIZE_MAX && length > view_size) {
-        ALLIGATOR_THROW("Slice::slice: length exceeds slice size");
-    }
-    const size_t result_size = length == SIZE_MAX ? view_size : length;
     Slice result;
-    result.meta_ = (static_cast<uint64_t>(result_size) << 17) | (meta_ & 0x1FFFFu);
-    result.cached_ = static_cast<uint8_t*>(cached_) + offset;
-    buffet->ref_count_.fetch_add(1, std::memory_order_acq_rel);
+    const ba_status_t status = ba_view(reinterpret_cast<const ba_slice_t*>(this), offset, length, reinterpret_cast<ba_slice_t*>(&result));
+    if (status == BA_E_RANGE) {
+        const char* message = offset >= size_bytes() ? "Slice::slice: offset exceeds slice size" : "Slice::slice: length exceeds slice size";
+        LOG_ERROR_STREAM << message;
+        ALLIGATOR_THROW(message);
+    }
     return result;
 }
-/** ------------------------------------------------------------------------------------------- Resize
- * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
- * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
- * is false, the existing data will be discarded and the slice will be reallocated. This can
- * be called on a freed or null slice, in which case it will behave like a normal constructor
- * and allocate a new slice of the specified size.
- * @param new_size The new size of the slice in bytes.
- * @param preserve_data Whether to preserve existing data in the slice. Default is true.
- * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
- * Default is false.
- * @param placement The memory placement strategy to use. Default is `default_placement()`.
+/** --------------------------------------------------------------------------------------------------------- Free
+ * @brief Releases this slice and replaces it with the null representation.
+ */
+void Slice::free() { ba_release(reinterpret_cast<ba_slice_t*>(this)); }
+/** --------------------------------------------------------------------------------------------------------- Resize
+ * @brief Resizes a slice with optional preservation of its existing bytes.
  */
 void Slice::resize(
     size_t new_size,
@@ -206,30 +156,6 @@ void Slice::resize(
     }
     *this = std::move(grown);
 }
-/** ------------------------------------------------------------------------------------------- Free
- * @brief Frees the underlying memory of the slice. This is called automatically when the
- * slice is destroyed, but can be called manually to free the memory early. After calling this
- * method, the slice will be null.
- */
-void Slice::free() {
-    if (meta_ == UINT64_MAX) {
-        return;
-    }
-    uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffet = Alligator::instance().bufs[slot & 0x1FFFFu].load(std::memory_order_acquire);
-    if (buffet != nullptr) {
-        buffet->free();
-    }
-    meta_ = UINT64_MAX;
-    cached_ = nullptr;
-}
-/** ------------------------------------------------------------------------------------------- Do Something Fun
- * @brief A placeholder function for demonstration purposes.
- * @param ptr A void pointer parameter.
- */
-void SliceFriend::do_somthing_fun(void* ptr) {
-    Alligator::instance().enqueue_order(ptr);
-}
 /** --------------------------------------------------------------------------------------------------------- Find Internal
  * @brief Locates the slot index for the given ID, or -1 if not found.
  * @param id The ID to search for.
@@ -237,11 +163,11 @@ void SliceFriend::do_somthing_fun(void* ptr) {
  */
 int64_t SliceMap::find_internal(int64_t id) const {
     const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
     while (slot >= 0) {
         if (verify_slot(slot, needle)) return slot;
         const int64_t next =
-            SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+            find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
         slot = next < 0 ? -1 : next + slot + 1;
     }
     return -1;
@@ -253,11 +179,11 @@ int64_t SliceMap::find_internal(int64_t id) const {
  */
 int64_t SliceMap::find_internal(uint32_t id) const {
     const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
     while (slot >= 0) {
         if (verify_slot(slot, needle)) return slot;
         const int64_t next =
-            SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+            find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
         slot = next < 0 ? -1 : next + slot + 1;
     }
     return -1;
@@ -269,7 +195,7 @@ int64_t SliceMap::find_internal(uint32_t id) const {
  */
 Slice SliceMap::get_slice_internal(int64_t id) {
     const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
     while (slot >= 0) {
         Row* row = slot_row(slot).load(std::memory_order_acquire);
         hazard_protect(0, row);
@@ -279,7 +205,7 @@ Slice SliceMap::get_slice_internal(int64_t id) {
             return out;
         }
         hazard_clear(0);
-        const int64_t next = SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+        const int64_t next = find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
         slot = next < 0 ? -1 : next + slot + 1;
     }
     return Slice();
@@ -291,7 +217,7 @@ Slice SliceMap::get_slice_internal(int64_t id) {
  */
 Slice SliceMap::get_slice_internal(uint32_t id) {
     const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = SIMDMisc::find_id(ids(), capacity_, needle);
+    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
     while (slot >= 0) {
         Row* row = slot_row(slot).load(std::memory_order_acquire);
         hazard_protect(0, row);
@@ -301,19 +227,124 @@ Slice SliceMap::get_slice_internal(uint32_t id) {
             return out;
         }
         hazard_clear(0);
-        const int64_t next = SIMDMisc::find_id(ids() + slot + 1, capacity_ - (slot + 1), needle);
+        const int64_t next = find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
         slot = next < 0 ? -1 : next + slot + 1;
     }
     return Slice();
 }
-/** --------------------------------------------------------------------------------------------------------- Get Placemat Handle for Slice
- * @brief Retrieves the Placemat handle associated with the given slice.
- * @param slice The slice to retrieve the handle for.
- * @return The Placemat handle associated with the slice, or nullptr if not found.
+/** --------------------------------------------------------------------------------------------------------- Placement Handle
+ * @brief Resolves the underlying handle for a non-null slice.
  */
 Placemat::Handle* Placemat::get_for(const Slice* slice) {
-    uint32_t arena_id = slice->meta_ & 0x1FFFF; // Extract the arena ID from the meta_ field
-    Buffet* buffet = Alligator::instance().get(arena_id);
-    return buffet ? static_cast<Placemat::Handle*>(buffet->handle()) : nullptr;
+    if (!slice || slice->is_null()) return nullptr;
+    return reinterpret_cast<Placemat::Handle*>(ba_slice_handle(reinterpret_cast<const ba_slice_t*>(slice)));
 }
-} // namespace buffetalligator
+}
+namespace buffetalligator {
+namespace {
+/** --------------------------------------------------------------------------------------------------------- Placement Statistics
+ * @brief Reads a single placement's core counters.
+ */
+ba_stats_t memory_stats(const Placemat& placement) {
+    ba_stats_t value; ba_stats(placement.type(), &value); return value;
+}
+/** --------------------------------------------------------------------------------------------------------- System Snapshot
+ * @brief Reads a fresh operating-system memory snapshot.
+ */
+ba_sysinfo_t memory_system() {
+    ba_sysinfo_t value; ba_sysinfo(&value); return value;
+}
+}
+/** --------------------------------------------------------------------------------------------------------- total_allocations
+ * @brief Returns all slab and novel bytes obtained from placements.
+ */
+size_t Memory::total_allocations() { ba_stats_t value; ba_stats_total(&value); return value.slab_bytes_allocated + value.novel_bytes_allocated; }
+/** --------------------------------------------------------------------------------------------------------- total_freed
+ * @brief Returns all slab and novel bytes returned to placements.
+ */
+size_t Memory::total_freed() { ba_stats_t value; ba_stats_total(&value); return value.slab_bytes_freed + value.novel_bytes_freed; }
+/** --------------------------------------------------------------------------------------------------------- placement_allocations
+ * @brief Returns all bytes obtained from one placement.
+ */
+size_t Memory::placement_allocations(const Placemat& placement) { auto value = memory_stats(placement); return value.slab_bytes_allocated + value.novel_bytes_allocated; }
+/** --------------------------------------------------------------------------------------------------------- placement_freed
+ * @brief Returns all bytes returned to one placement.
+ */
+size_t Memory::placement_freed(const Placemat& placement) { auto value = memory_stats(placement); return value.slab_bytes_freed + value.novel_bytes_freed; }
+/** --------------------------------------------------------------------------------------------------------- placement_usage
+ * @brief Returns bytes currently owned by one placement.
+ */
+size_t Memory::placement_usage(const Placemat& placement) { auto value = memory_stats(placement); return value.slab_bytes_allocated + value.novel_bytes_allocated - value.slab_bytes_freed - value.novel_bytes_freed; }
+/** --------------------------------------------------------------------------------------------------------- placement_reserved
+ * @brief Returns free-list and runway capacity.
+ */
+size_t Memory::placement_reserved(const Placemat& placement) { return memory_stats(placement).reserved_bytes; }
+/** --------------------------------------------------------------------------------------------------------- placement_live
+ * @brief Returns placement usage excluding free-list and runway reserves.
+ */
+size_t Memory::placement_live(const Placemat& placement) { auto value = memory_stats(placement); const uint64_t used = value.slab_bytes_allocated + value.novel_bytes_allocated - value.slab_bytes_freed - value.novel_bytes_freed; return used > value.reserved_bytes ? used - value.reserved_bytes : 0; }
+/** --------------------------------------------------------------------------------------------------------- placement_budget
+ * @brief Returns the placement capacity budget.
+ */
+size_t Memory::placement_budget(const Placemat& placement) { return memory_stats(placement).budget_bytes; }
+/** --------------------------------------------------------------------------------------------------------- placement_available
+ * @brief Returns budget headroom excluding live ownership.
+ */
+size_t Memory::placement_available(const Placemat& placement) { const size_t budget = placement_budget(placement); if (budget == SIZE_MAX) return SIZE_MAX; const size_t live = placement_live(placement); return budget > live ? budget - live : 0; }
+/** --------------------------------------------------------------------------------------------------------- set_placement_budget
+ * @brief Sets a placement capacity ceiling.
+ */
+void Memory::set_placement_budget(const Placemat& placement, size_t bytes) { ba_budget_set(placement.type(), bytes); }
+/** --------------------------------------------------------------------------------------------------------- placement_novel_cached
+ * @brief Returns published zeroed novel-cache bytes.
+ */
+size_t Memory::placement_novel_cached(const Placemat& placement) { return memory_stats(placement).novel_cache_bytes; }
+/** --------------------------------------------------------------------------------------------------------- placement_runway_target
+ * @brief Returns the current prepared slab target.
+ */
+size_t Memory::placement_runway_target(const Placemat& placement) { return memory_stats(placement).runway_target; }
+/** --------------------------------------------------------------------------------------------------------- placement_slab_size
+ * @brief Returns the resolved slab capacity.
+ */
+size_t Memory::placement_slab_size(const Placemat& placement) { return memory_stats(placement).slab_bytes; }
+/** --------------------------------------------------------------------------------------------------------- trim
+ * @brief Synchronously releases idle placement reserves and novel caches.
+ */
+void Memory::trim(const Placemat& placement) { ba_trim(placement.type()); }
+/** --------------------------------------------------------------------------------------------------------- trim_all
+ * @brief Synchronously releases idle capacity across all placements.
+ */
+void Memory::trim_all() { ba_trim_all(); }
+/** --------------------------------------------------------------------------------------------------------- system_physical
+ * @brief Returns physical memory capacity.
+ */
+size_t Memory::system_physical() { return memory_system().physical; }
+/** --------------------------------------------------------------------------------------------------------- system_available
+ * @brief Returns available operating-system memory.
+ */
+size_t Memory::system_available() { return memory_system().available; }
+/** --------------------------------------------------------------------------------------------------------- system_limit
+ * @brief Returns the effective process memory ceiling.
+ */
+size_t Memory::system_limit() { return memory_system().limit; }
+/** --------------------------------------------------------------------------------------------------------- system_headroom
+ * @brief Returns available memory constrained by process headroom.
+ */
+size_t Memory::system_headroom() { auto value = memory_system(); const uint64_t limit = value.limit ? value.limit : value.physical; return std::min(value.available, limit > value.rss ? limit - value.rss : uint64_t(0)); }
+/** --------------------------------------------------------------------------------------------------------- page_size
+ * @brief Returns the native OS page size.
+ */
+size_t Memory::page_size() { return memory_system().page; }
+/** --------------------------------------------------------------------------------------------------------- large_page_size
+ * @brief Returns a usable reported large-page size or zero.
+ */
+size_t Memory::large_page_size() { return memory_system().large_page; }
+/** --------------------------------------------------------------------------------------------------------- hardware_threads
+ * @brief Returns hardware threads available to the process.
+ */
+unsigned Memory::hardware_threads() { return memory_system().hw_threads; }
+/** --------------------------------------------------------------------------------------------------------- pressure
+ * @brief Returns the operating-system memory pressure level.
+ */
+Memory::Pressure Memory::pressure() { return static_cast<Pressure>(ba_pressure()); }
+}

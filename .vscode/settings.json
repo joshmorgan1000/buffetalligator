@@ -134,7 +134,6 @@
         "**/build/**",
         "**/.cache/**",
         "**/.vscode/**",
-        "data/**"
     ],
     "files.watcherExclude": {
         "**/deps/**": true,

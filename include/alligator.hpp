@@ -3,6 +3,19 @@
  * @file alligator.hpp
  * @brief Unified header for the BuffetAlligator.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
+ * NOTES:
+ * - 9/8/2026 (GPT-6):
+ *     WHY: Every claimed host pointer must satisfy the 64-byte alignment guarantee.
+ *     CHANGE: Registration below 64-byte base alignment throws AlligatorException.
+ * - 9/8/2026 (GPT-6):
+ *     WHY: Slab geometry must reflect caller policy and runtime machine capacity.
+ *     CHANGE: Nonzero slab sizes are granule-rounded without a 64 MiB floor, and zero derives geometry.
+ * - 9/8/2026 (GPT-6):
+ *     WHY: Capacity failures must be observable without silently returning null claims.
+ *     CHANGE: Exhausted budgets and internal allocation failures throw AlligatorException.
+ * - 9/8/2026 (GPT-6):
+ *     WHY: Allocator shutdown must not depend on static destruction order.
+ *     CHANGE: BuffetMenu::shutdown() replaces the AtomicRegistry stop_signal key.
  */
 #include <logging.hpp>
 #include <algorithm>
@@ -28,7 +41,7 @@
 #include <vector>
 
 namespace buffetalligator {
-class Alligator; class Buffet; class BuffetMenu; class Slice; class SliceFriend; class Memory;
+class Alligator; class Buffet; class BuffetMenu; class Slice; class Memory;
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 /** --------------------------------------------------------------------------------------------------------- Placemat
@@ -83,11 +96,29 @@ private:
     uint16_t type_ = 0;
     uint16_t bump_alignment_ = 64;
     uint32_t default_slab_size_ = 0;
+    uint32_t core_type_ = 0;
     Placemat() = default;
     friend class BuffetMenu;
     friend class Buffet;
     friend class Alligator;
     friend class Memory;
+};
+/** --------------------------------------------------------------------------------------------------------- Placement Description
+ * @brief Describes a zeroed host-accessible allocator with optional resource limits and caching.
+ */
+struct PlacementDescription {
+    const char* name = nullptr; ///< Process-lifetime placement name.
+    size_t slab_bytes = 0; ///< Requested slab size or zero for runtime geometry.
+    size_t base_alignment = 64; ///< Guaranteed base alignment of every allocation.
+    size_t budget_bytes = 0; ///< Capacity ceiling or zero for derived capacity.
+    size_t novel_cache_bytes = 0; ///< Maximum zeroed novel-cache capacity.
+    bool set_as_default = false; ///< Selects this placement as the default.
+    Placemat::Handle* (*allocate)(size_t, void*) = nullptr; ///< Returns zeroed memory in a new handle.
+    void (*deallocate)(Placemat::Handle*, void*) = nullptr; ///< Frees substrate storage before framework handle deletion.
+    void* (*get_host_ptr)(Placemat::Handle*) = nullptr; ///< Resolves the writable host address.
+    void* (*get_context)() = nullptr; ///< Returns allocation context.
+    uint64_t (*query_available)(void*) = nullptr; ///< Reports custom placement capacity.
+    void (*zero)(Placemat::Handle*, uint64_t, uint64_t, void*) = nullptr; ///< Rezeros a retired range.
 };
 /** --------------------------------------------------------------------------------------------------------- BuffetTypeRegistry
  * @class BuffetTypeRegistry
@@ -95,6 +126,11 @@ private:
  */
 class BuffetMenu {
 public:
+    /** ------------------------------------------------------------------------------------------- Register Description
+     * @brief Registers a placement with explicit resource policy and optional zeroing callbacks.
+     */
+    static uint16_t register_type(const PlacementDescription& description);
+
     /** ------------------------------------------------------------------------------------------- Register Type
      * @brief Registers one process-lifetime Placemat before the first Slice is created.
      * @param placement_factory The factory instance to register.
@@ -158,12 +194,11 @@ public:
      * @brief Returns the default Placemat instance, registering the built-ins first if needed.
      * @return The default Placemat pointer.
      */
-    static const Placemat*& default_placement() {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
-        }
-        return default_placement_slot();
-    }
+    static const Placemat*& default_placement();
+    /** ------------------------------------------------------------------------------------------- Shutdown
+     * @brief Stops allocation and releases idle resources after application threads quiesce.
+     */
+    static void shutdown();
     /** ------------------------------------------------------------------------------------------- Register Change Listener
      * @brief Registers a change listener that will be called when certain events occur.
      * @param context The context pointer to be passed to the callback.
@@ -218,27 +253,7 @@ private:
         void* (*get_host_ptr)(Placemat::Handle* handle),
         void* (*get_context)(),
         bool set_as_default
-    ) {
-        if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
-        auto& inst = instance();
-        uint16_t type = static_cast<uint16_t>(inst.placements_.size());
-        auto placement = std::unique_ptr<Placemat>(new Placemat());
-        placement->name_ = name;
-        placement->alligator_ = alligator;
-        placement->default_slab_size_ = default_slab_size >> 12;
-        placement->bump_alignment_ = bump_alignment;
-        placement->deallocate_ = deallocate;
-        placement->get_host_ptr_ = get_host_ptr;
-        placement->get_context_ = get_context;
-        placement->type_ = type;
-        if (set_as_default || default_placement_slot() == nullptr) {
-            default_placement_slot() = placement.get();
-        }
-        inst.placement_indices_.emplace(name, type);
-        inst.placements_.emplace_back(std::move(placement));
-        inst.notify_change_listeners();
-        return type;
-    }
+    );
     /** ------------------------------------------------------------------------------------------- Notify Change Listeners
      * @brief Notifies all registered change listeners by invoking their callbacks with the
      * provided context.
@@ -250,10 +265,110 @@ private:
     }
     BuffetMenu() = default;
     static BuffetMenu& instance() {
-        static BuffetMenu instance;
-        return instance;
+        static BuffetMenu* instance = new BuffetMenu();
+        return *instance;
     }
     friend class Memory;
+};
+/** --------------------------------------------------------------------------------------------------------- Memory
+ * @brief Reports arena resources and controls budgets and idle capacity.
+ */
+class Memory {
+public:
+    enum class Pressure { None, Warn, Critical };
+    Memory() = delete;
+    /** ------------------------------------------------------------------------------------------- total_allocations
+     * @brief Returns all slab and novel bytes obtained from placements.
+     */
+    static size_t total_allocations();
+    /** ------------------------------------------------------------------------------------------- total_freed
+     * @brief Returns all slab and novel bytes returned to placements.
+     */
+    static size_t total_freed();
+    /** ------------------------------------------------------------------------------------------- placement_allocations
+     * @brief Returns all bytes obtained from one placement.
+     */
+    static size_t placement_allocations(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_freed
+     * @brief Returns all bytes returned to one placement.
+     */
+    static size_t placement_freed(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_usage
+     * @brief Returns bytes currently owned by one placement.
+     */
+    static size_t placement_usage(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_reserved
+     * @brief Returns free-list and runway capacity.
+     */
+    static size_t placement_reserved(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_live
+     * @brief Returns placement usage excluding free-list and runway reserves.
+     */
+    static size_t placement_live(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_budget
+     * @brief Returns the placement capacity budget.
+     */
+    static size_t placement_budget(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_available
+     * @brief Returns budget headroom excluding live ownership.
+     */
+    static size_t placement_available(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- set_placement_budget
+     * @brief Sets a placement capacity ceiling.
+     */
+    static void set_placement_budget(const Placemat& placement, size_t bytes);
+    /** ------------------------------------------------------------------------------------------- placement_novel_cached
+     * @brief Returns published zeroed novel-cache bytes.
+     */
+    static size_t placement_novel_cached(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_runway_target
+     * @brief Returns the current prepared slab target.
+     */
+    static size_t placement_runway_target(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- placement_slab_size
+     * @brief Returns the resolved slab capacity.
+     */
+    static size_t placement_slab_size(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- trim
+     * @brief Synchronously releases idle placement reserves and novel caches.
+     */
+    static void trim(const Placemat& placement);
+    /** ------------------------------------------------------------------------------------------- trim_all
+     * @brief Synchronously releases idle capacity across all placements.
+     */
+    static void trim_all();
+    /** ------------------------------------------------------------------------------------------- system_physical
+     * @brief Returns physical memory capacity.
+     */
+    static size_t system_physical();
+    /** ------------------------------------------------------------------------------------------- system_available
+     * @brief Returns available operating-system memory.
+     */
+    static size_t system_available();
+    /** ------------------------------------------------------------------------------------------- system_limit
+     * @brief Returns the effective process memory ceiling.
+     */
+    static size_t system_limit();
+    /** ------------------------------------------------------------------------------------------- system_headroom
+     * @brief Returns available memory constrained by process headroom.
+     */
+    static size_t system_headroom();
+    /** ------------------------------------------------------------------------------------------- page_size
+     * @brief Returns the native OS page size.
+     */
+    static size_t page_size();
+    /** ------------------------------------------------------------------------------------------- large_page_size
+     * @brief Returns a usable reported large-page size or zero.
+     */
+    static size_t large_page_size();
+    /** ------------------------------------------------------------------------------------------- hardware_threads
+     * @brief Returns hardware threads available to the process.
+     */
+    static unsigned hardware_threads();
+    /** ------------------------------------------------------------------------------------------- pressure
+     * @brief Returns the operating-system memory pressure level.
+     */
+    static Pressure pressure();
 };
 /** --------------------------------------------------------------------------------------------------------- SliceType Concept
  * @brief Concept to check if a type conforms to the Slice interface. The full concept which includes the
@@ -340,14 +455,14 @@ public:
      */
     Slice(size_t size, bool novel_buffer, const Placemat* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
-     * @brief Copies data from an external memory location into a new slice of memory in the buffet alligator.
-     * This can be used to deep-copy a slice, or load data from an external source into the buffet alligator's
-     * memory management system.
+     * @brief Copies data from an external memory location into a new slice of memory in the
+     * buffet alligator.
      * @param copy_from Pointer to the external memory to copy from.
      * @param size The size of the data to copy in bytes.
      * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
      * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
      * reduce fragmentation in the arena. Default is false.
+     * @param placement The memory placement type for the new slice.
      */
     Slice(
         const void* copy_from,
@@ -374,13 +489,15 @@ public:
      */
     const Placemat* placement() const;
     /** ------------------------------------------------------------------------------------------- Raw accessors
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory.
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
+     * host-writable pointer to the underlying memory.
+     * @return A pointer to the underlying memory.
      */
     void* raw() { return cached_; }
     /** ------------------------------------------------------------------------------------------- Raw accessors - const
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory, but as a read-only pointer.
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
+     * host-writable pointer to the underlying memory, but as a read-only pointer.
+     * @return A const pointer to the underlying memory.
      */
     const void* raw() const { return cached_; }
     /** ------------------------------------------------------------------------------------------- Accessor - Typed
@@ -504,6 +621,7 @@ private:
     uint64_t meta_ = UINT64_MAX;
     /// @brief Cached host pointer to the slice's first byte.
     void* cached_ = nullptr;
+    friend struct SliceLayout;
     friend class Buffet;
     friend class Placemat;
 };
@@ -586,42 +704,25 @@ public:
      * @return A reference to the underlying memory of the slice.
      */
     template<typename U = T>
-    U& get_as() {
-        if constexpr (std::is_same_v<T, U>) { 
-            if constexpr (std::is_same_v<T, std::string_view>) {
-                return std::string_view(
-                    reinterpret_cast<const char*>(slice_.raw()), slice_.size_bytes()
-                );
-            } else if constexpr (requires { typename T::value_type; }
-                && std::is_same_v<T, std::span<typename T::value_type>>) {
-                return std::span<typename T::value_type>(
-                    reinterpret_cast<typename T::value_type*>(slice_.raw()),
-                    slice_.size_bytes() / sizeof(typename T::value_type)
-                );
-            }
-        }
-        return *reinterpret_cast<U*>(slice_.raw());
-    }
+    U& get_as() { return *reinterpret_cast<U*>(slice_.raw()); }
     /** ------------------------------------------------------------------------------------------- Get as - const
      * @brief Returns a const reference to the underlying memory of the slice, cast to type U&.
      * @return A const reference to the underlying memory of the slice.
      */
     template<typename U = T>
-    const U& get_as() const {
-        if constexpr (std::is_same_v<T, U>) { 
-            if constexpr (std::is_same_v<T, std::string_view>) {
-                return std::string_view(
-                    reinterpret_cast<const char*>(slice_.raw()), slice_.size_bytes()
-                );
-            } else if constexpr (requires { typename T::value_type; }
-                && std::is_same_v<T, std::span<typename T::value_type>>) {
-                return std::span<typename T::value_type>(
-                    reinterpret_cast<const typename T::value_type*>(slice_.raw()),
-                    slice_.size_bytes() / sizeof(typename T::value_type)
-                );
-            }
+    const U& get_as() const { return *reinterpret_cast<const U*>(slice_.raw()); }
+    /** ------------------------------------------------------------------------------------------- View
+     * @brief Returns a string or span view by value over the underlying bytes.
+     */
+    template<typename U = T>
+    U view() const {
+        if constexpr (std::is_same_v<U, std::string_view>) {
+            return U(static_cast<const char*>(slice_.raw()), slice_.size_bytes());
+        } else {
+            static_assert(requires { typename U::element_type; U::extent; });
+            return U(reinterpret_cast<typename U::element_type*>(const_cast<void*>(slice_.raw())),
+                slice_.size_bytes() / sizeof(typename U::element_type));
         }
-        return *reinterpret_cast<const U*>(slice_.raw());
     }
     /** ------------------------------------------------------------------------------------------- Null check
      * @brief Checks if the slice is null.
@@ -701,8 +802,10 @@ public:
     size_t length() const {
         if constexpr (std::is_same_v<T, std::string>) {
             return slice_.size_bytes();
-        } else if constexpr(std::is_same_v<std::vector<typename T::value_type>, T>) {
-            return slice_.size_bytes() / sizeof(typename T::value_type);
+        } else if constexpr (requires { typename T::value_type; }) {
+            if constexpr (std::is_same_v<std::vector<typename T::value_type>, T>) {
+                return slice_.size_bytes() / sizeof(typename T::value_type);
+            }
         }
         return slice_.size_bytes() / sizeof(T);
     }
@@ -2408,8 +2511,8 @@ public:
  */
 class SliceMap {
 public:
+    inline static constexpr int kHazardMaxThreads = 256; ///< Legacy constant retained for source compatibility.
     inline static constexpr int kHazardPtrsPerThread = 2;    ///< Hazard slots per thread row
-    inline static constexpr int kHazardMaxThreads    = 256;  ///< Global hazard row cap
     inline static constexpr size_t kRetireBatch      = 32;   ///< Retired nodes scanned per reclamation pass
     struct HazardSlot { std::atomic<void*> ptr{nullptr}; };
     struct HazardRegistration {
@@ -2510,7 +2613,7 @@ public:
     ~SliceMap() {
         if (slots_) {
             for (size_t slot = 0; slot < capacity_; ++slot) {
-                destroy_row(slot_row(slot).exchange(nullptr, std::memory_order_acquire));
+                destroy_row(slot_row(slot).exchange(nullptr, std::memory_order_seq_cst));
             }
         }
     }
@@ -2535,7 +2638,7 @@ public:
         const size_t first = claim(count);
         size_t taken = 0;
         for (size_t slot = 0; slot < count; ++slot) {
-            Row* row = other.slot_row(slot).exchange(nullptr, std::memory_order_acquire);
+            Row* row = other.slot_row(slot).exchange(nullptr, std::memory_order_seq_cst);
             if (row == nullptr) continue;
             raws()[first + taken] = row->payload.data<void>();
             slot_row(first + taken).store(row, std::memory_order_relaxed);
@@ -2616,7 +2719,7 @@ public:
     template<typename ID>
         requires std::is_convertible_v<int64_t, ID>
     ID id(size_t index) const {
-        return static_cast<ID>(ids()[index]);
+        return static_cast<ID>(std::atomic_ref<int64_t>(const_cast<int64_t&>(ids()[index])).load(std::memory_order_acquire));
     }
     /** ------------------------------------------------------------------------------------------- Published Check
      * @brief Whether a slot's row has landed.
@@ -2670,22 +2773,22 @@ public:
         if (published_.load(std::memory_order_acquire) >= count) return;
         wait_threshold_.store(count, std::memory_order_release);
         while (published_.load(std::memory_order_acquire) < count) {
-            wait_sem_.try_acquire_for(std::chrono::microseconds(1000));
+            (void)wait_sem_.try_acquire_for(std::chrono::microseconds(1000));
         }
         wait_threshold_.store(SIZE_MAX, std::memory_order_release);
     }
     /** ------------------------------------------------------------------------------------------- Reset
      * @brief Retires every landed row and rewinds the channel for reuse; not concurrent with
-     * producers, and readers of retired rows survive through their hazard claims.0
+     * producers, and readers of retired rows survive through their hazard claims.
      */
     void reset() {
         for (size_t slot = 0; slot < capacity_; ++slot) {
-            Row* row = slot_row(slot).exchange(nullptr, std::memory_order_acquire);
+            std::atomic_ref<int64_t>(ids()[slot]).store(SENTINEL, std::memory_order_release);
+            Row* row = slot_row(slot).exchange(nullptr, std::memory_order_seq_cst);
             if (row != nullptr) [[likely]] {
                 thread_retired().retire(row);
             }
         }
-        std::memset(ids(), 0xFF, capacity_ * sizeof(int64_t));
         std::memset(raws(), 0, capacity_ * sizeof(void*));
         claimed_.store(0, std::memory_order_release);
         published_.store(0, std::memory_order_release);
@@ -2784,7 +2887,7 @@ private:
     void publish_row(const size_t& slot, const int64_t& id, Slice&& slice) {
         Row* row = new Row(id, std::move(slice));
         raws()[slot] = row->payload.data<void>();
-        slot_row(slot).store(row, std::memory_order_relaxed);
+        slot_row(slot).store(row, std::memory_order_seq_cst);
         std::atomic_ref<int64_t>(ids()[slot]).store(id, std::memory_order_release);
         if (on_publish_ != nullptr) [[unlikely]] {
             on_publish_(on_publish_context_, static_cast<void*>(this), slot);
@@ -2808,7 +2911,7 @@ private:
      * @return True when the hazard claim is held and the row matches.
      */
     bool verify_slot(size_t slot, int64_t needle) const {
-        Row* row = slot_row(slot).load(std::memory_order_acquire);
+        Row* row = slot_row(slot).load(std::memory_order_seq_cst);
         hazard_protect(0, row);
         if (verify_held(slot, needle, row)) return true;
         hazard_clear(0);
@@ -2824,50 +2927,65 @@ private:
      */
     bool verify_held(size_t slot, int64_t needle, const Row* row) const {
         return row != nullptr
-            && slot_row(slot).load(std::memory_order_acquire) == row
+            && slot_row(slot).load(std::memory_order_seq_cst) == row
             && std::atomic_ref<int64_t>(const_cast<int64_t&>(ids()[slot]))
                 .load(std::memory_order_acquire) == needle;
     }
-    static HazardSlot* hazard_pool() {
-        static HazardSlot pool[kHazardMaxThreads * kHazardPtrsPerThread];
-        return pool;
-    }
-    static std::atomic<unsigned>& hazard_fresh_row() {
-        static std::atomic<unsigned> next{1};
-        return next;
-    }
-    static std::atomic<unsigned>* hazard_free_stack() {
-        static std::atomic<unsigned> stack[kHazardMaxThreads];
-        return stack;
-    }
-    static std::atomic<unsigned>& hazard_free_head() {
-        static std::atomic<unsigned> head{0};
-        return head;
-    }
-    static unsigned hazard_claim_row() {
-        std::atomic<unsigned>* stack = hazard_free_stack();
-        unsigned row = hazard_free_head().load(std::memory_order_acquire);
-        while (row != 0) {
-            const unsigned beneath = stack[row].load(std::memory_order_acquire);
-            if (hazard_free_head().compare_exchange_weak(
-                row, beneath, std::memory_order_acq_rel, std::memory_order_acquire)) {
-                return row;
+    /** ------------------------------------------------------------------------------------------- Hazard Storage
+     * @brief Owns process-lifetime hazard rows and their exclusive registration bits.
+     */
+    struct HazardStorage {
+        size_t rows; ///< Runtime row capacity.
+        Slice pointers; ///< Hazard pointer storage.
+        Slice owners; ///< Registration bits.
+        /** --------------------------------------------------------------------------------- Constructor
+         * @brief Allocates four hazard rows per available hardware thread.
+         */
+        HazardStorage()
+        : rows(4 * Memory::hardware_threads())
+        , pointers(rows * kHazardPtrsPerThread * sizeof(HazardSlot))
+        , owners(rows * sizeof(std::atomic<bool>)) {
+            for (size_t index = 0; index < rows * kHazardPtrsPerThread; ++index) {
+                new (pointers.data<HazardSlot>() + index) HazardSlot();
+            }
+            for (size_t index = 0; index < rows; ++index) {
+                new (owners.data<std::atomic<bool>>() + index) std::atomic<bool>(false);
             }
         }
-        return hazard_fresh_row().fetch_add(1, std::memory_order_relaxed);
+    };
+    /** ------------------------------------------------------------------------------------------- Hazard Storage
+     * @brief Returns hazard storage intentionally retained for the process lifetime.
+     */
+    static HazardStorage& hazard_storage() {
+        static HazardStorage* storage = new HazardStorage();
+        return *storage;
     }
+    /** ------------------------------------------------------------------------------------------- Hazard Pool
+     * @brief Returns the dynamically sized hazard pointer array.
+     */
+    static HazardSlot* hazard_pool() { return hazard_storage().pointers.data<HazardSlot>(); }
+    /** ------------------------------------------------------------------------------------------- Claim Hazard Row
+     * @brief Exclusively registers a bounded row or reports pool exhaustion.
+     */
+    static unsigned hazard_claim_row() {
+        auto& storage = hazard_storage();
+        auto* owners = storage.owners.data<std::atomic<bool>>();
+        for (unsigned row = 1; row < storage.rows; ++row) {
+            bool expected = false;
+            if (owners[row].compare_exchange_strong(expected, true, std::memory_order_acquire,
+                std::memory_order_relaxed)) return row;
+        }
+        ALLIGATOR_THROW("SliceMap: hazard pool exhausted");
+    }
+    /** ------------------------------------------------------------------------------------------- Release Hazard Row
+     * @brief Clears a thread's hazards before making its row available for reuse.
+     */
     static void hazard_release_row(unsigned row) {
         HazardSlot* pool = hazard_pool();
         for (int slot = 0; slot < kHazardPtrsPerThread; ++slot) {
-            pool[row * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_relaxed);
+            pool[row * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_seq_cst);
         }
-        std::atomic<unsigned>* stack = hazard_free_stack();
-        unsigned beneath = hazard_free_head().load(std::memory_order_acquire);
-        stack[row].store(beneath, std::memory_order_release);
-        while (!hazard_free_head().compare_exchange_weak(
-            beneath, row, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            stack[row].store(beneath, std::memory_order_release);
-        }
+        hazard_storage().owners.data<std::atomic<bool>>()[row].store(false, std::memory_order_release);
     }
     static HazardRegistration& hazard_registration() {
         static thread_local HazardRegistration registration;
@@ -2881,16 +2999,16 @@ private:
         return registration.row;
     }
     static void hazard_protect(int slot, void* p) {
-        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(p, std::memory_order_release);
+        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(p, std::memory_order_seq_cst);
     }
     static void hazard_clear(int slot) {
-        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_release);
+        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_seq_cst);
     }
     static bool hazard_is_protected(const void* p) {
         const HazardSlot* pool = hazard_pool();
-        for (int row = 1; row < kHazardMaxThreads; ++row) {
+        for (size_t row = 1; row < hazard_storage().rows; ++row) {
             for (int slot = 0; slot < kHazardPtrsPerThread; ++slot) {
-                if (pool[row * kHazardPtrsPerThread + slot].ptr.load(std::memory_order_acquire) == p) return true;
+                if (pool[row * kHazardPtrsPerThread + slot].ptr.load(std::memory_order_seq_cst) == p) return true;
             }
         }
         return false;
@@ -2998,7 +3116,7 @@ public:
      * @param size The size of the memory block in bytes.
      * @param unused A boolean parameter to differentiate this constructor.
      */
-    WeakSlice(size_t size, bool) {
+    WeakSlice(size_t, bool) {
         ALLIGATOR_THROW("WeakSlice: cannot allocate memory for non-owning slice.");
     }
     /** ----------------------------------------------------------------------------------------- Constructor - Copy
@@ -3113,7 +3231,7 @@ public:
             size = span_.size() - offset;
         }
         Slice new_slice(size);
-        std::memcpy(new_slice.data<uint8_t>() + offset, span_.data() + offset, size);
+        std::memcpy(new_slice.data<uint8_t>(), span_.data() + offset, size);
         return new_slice;
     }
 };
