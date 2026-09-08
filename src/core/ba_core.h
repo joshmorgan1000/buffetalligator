@@ -14,7 +14,7 @@
 #define BA_SLOT_MASK ((1ull << BA_SLOT_BITS) - 1ull)
 #define BA_NULL_META UINT64_MAX
 #define BA_PLATE_COUNT (1u << BA_SLOT_BITS)
-#define BA_MAX_PLACEMENTS 256u
+#define BA_MAX_PLACEMENTS 32768u
 #define BA_BALANCE_BIAS (1ull << 31)
 #define BA_SEALED_BIT (1ull << 63)
 #if defined(__cplusplus)

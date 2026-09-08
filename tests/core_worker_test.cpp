@@ -166,12 +166,21 @@ int main() {
     descriptor.alloc = allocate;
     uint32_t budget_type;
     require(ba_placement_register(&descriptor, &budget_type) == BA_OK, "budget registration failed");
-    ba_budget_set(budget_type, 2 * descriptor.slab_bytes);
-    ba_slice_t held[2];
-    require(ba_claim(budget_type, descriptor.slab_bytes / 2 + 64, 0, &held[0]) == BA_OK, "first budgeted claim failed");
-    require(ba_claim(budget_type, descriptor.slab_bytes / 2 + 64, 0, &held[1]) == BA_OK, "second budgeted claim failed");
-    require(ba_claim(budget_type, descriptor.slab_bytes / 2 + 64, 0, &novel) == BA_E_BUDGET, "third slab exceeded budget");
-    ba_release(&held[0]); ba_release(&held[1]);
+    ba_stats(budget_type, &statistics);
+    const uint64_t base = (1ull + statistics.runway_target) * descriptor.slab_bytes;
+    ba_budget_set(budget_type, base + 2 * descriptor.slab_bytes);
+    ba_slice_t held[3];
+    require(ba_claim(budget_type, descriptor.slab_bytes, BA_CLAIM_NOVEL, &held[0]) == BA_OK, "first budgeted allocation failed");
+    require(ba_claim(budget_type, descriptor.slab_bytes, BA_CLAIM_NOVEL, &held[1]) == BA_OK, "second budgeted allocation failed");
+    require(ba_claim(budget_type, descriptor.slab_bytes, BA_CLAIM_NOVEL, &held[2]) == BA_E_BUDGET, "third allocation exceeded budget");
+    require(ba_claim(budget_type, descriptor.slab_bytes / 2, 0, &novel) == BA_OK, "budget denied an existing-slab claim");
+    ba_release(&held[0]);
+    const uint64_t previously_freed = statistics.novel_bytes_freed;
+    const uint64_t restore_deadline = ba_os_now_ns() + 10000000000ull;
+    do { ba_stats(budget_type, &statistics); ba_os_yield(); }
+    while (statistics.novel_bytes_freed < previously_freed + descriptor.slab_bytes && ba_os_now_ns() < restore_deadline);
+    require(ba_claim(budget_type, descriptor.slab_bytes, BA_CLAIM_NOVEL, &held[2]) == BA_OK, "released capacity was not reusable");
+    ba_release(&held[1]); ba_release(&held[2]); ba_release(&novel);
     require(ba_pressure() <= BA_PRESSURE_CRITICAL, "invalid pressure result");
     const uint64_t stop_begin = ba_os_now_ns();
     ba_shutdown();

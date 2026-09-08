@@ -85,12 +85,10 @@ void sizes(uint32_t type) {
     require(ba_claim(type, 64, 0, &after) == BA_OK, "after direct failed");
     require((direct.meta & BA_SLOT_MASK) != (before.meta & BA_SLOT_MASK), "direct reused thread plate");
     require(static_cast<char*>(after.ptr) - static_cast<char*>(before.ptr) == 64, "direct changed thread cursor");
-    ba_slice_t novel;
-    const unsigned allocations = caller_allocations;
-    require(ba_claim(type, statistics.slab_bytes, 0, &novel) == BA_OK, "novel failed");
-    require(ba_slice_handle(&novel) != ba_slice_handle(&after), "novel reused slab handle");
-    if (type == 2) require(caller_allocations == allocations + 1, "novel did not allocate on caller");
-    ba_release(&before); ba_release(&direct); ba_release(&after); ba_release(&novel);
+    ba_slice_t whole;
+    require(ba_claim(type, statistics.slab_bytes, 0, &whole) == BA_OK, "slab-sized claim failed");
+    require(ba_slice_handle(&whole) != ba_slice_handle(&after), "slab-sized claim reused slab handle");
+    ba_release(&before); ba_release(&direct); ba_release(&after); ba_release(&whole);
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Claims
  * @brief Exercises plate turnover with thread-exit sealing under contention.

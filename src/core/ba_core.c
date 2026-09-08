@@ -232,8 +232,8 @@ void ba_novel_dispose(ba_placement_t* placement, ba_handle_t* handle, uint8_t* b
         placement->descriptor.free(handle, placement->context);
         if (placement->descriptor.destroy_handle) placement->descriptor.destroy_handle(handle);
     }
-    atomic_fetch_add_explicit(&placement->novel_freed, bytes, memory_order_release);
     ba_uncharge(placement, bytes);
+    atomic_fetch_add_explicit(&placement->novel_freed, bytes, memory_order_release);
 }
 /** --------------------------------------------------------------------------------------------------------- Novel Release
  * @brief Releases a novel allocation and its retired registry entry.
@@ -413,7 +413,7 @@ static BA_COLD ba_status_t ba_claim_slow(uint32_t type, size_t bytes, size_t rou
     ba_placement_t* placement = &g_placements[type];
     const uint32_t fault = atomic_load_explicit(&placement->fault, memory_order_relaxed);
     if (fault) return (ba_status_t)fault;
-    if ((flags & BA_CLAIM_NOVEL) || rounded >= placement->slab_bytes) return ba_claim_novel(placement, bytes, rounded, out);
+    if ((flags & BA_CLAIM_NOVEL) || rounded > placement->slab_bytes) return ba_claim_novel(placement, bytes, rounded, out);
     const uint64_t plate_bytes = atomic_load_explicit(&placement->plate_bytes, memory_order_relaxed);
     uint32_t slot;
     if (rounded > plate_bytes) {
