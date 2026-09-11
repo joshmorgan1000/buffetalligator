@@ -3,19 +3,6 @@
  * @file alligator.hpp
  * @brief Unified header for the BuffetAlligator.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
- * NOTES:
- * - 9/8/2026 (GPT-6):
- *     WHY: Every claimed host pointer must satisfy the 64-byte alignment guarantee.
- *     CHANGE: Registration below 64-byte base alignment throws AlligatorException.
- * - 9/8/2026 (GPT-6):
- *     WHY: Slab geometry must reflect caller policy and runtime machine capacity.
- *     CHANGE: Nonzero slab sizes are granule-rounded without a 64 MiB floor, and zero derives geometry.
- * - 9/8/2026 (GPT-6):
- *     WHY: Capacity failures must be observable without silently returning null claims.
- *     CHANGE: Exhausted budgets and internal allocation failures throw AlligatorException.
- * - 9/8/2026 (GPT-6):
- *     WHY: Allocator shutdown must not depend on static destruction order.
- *     CHANGE: BuffetMenu::shutdown() replaces the AtomicRegistry stop_signal key.
  */
 #include <logging.hpp>
 #include <algorithm>
@@ -2849,12 +2836,26 @@ private:
     const int64_t* ids() const { return ids_.template data<int64_t>(); }
     void** raws() { return raws_.template data<void*>(); }
     Row** row_base() { return reinterpret_cast<Row**>(slots_.template data<void*>()); }
+    /** ------------------------------------------------------------------------------------------- Row Base Access
+     * @brief Provides access to the base row pointers.
+     * @return A pointer to the array of row pointers.
+     */
     const Row* const* row_base() const {
         return reinterpret_cast<const Row* const*>(slots_.template data<void*>());
     }
+    /** ------------------------------------------------------------------------------------------- Slot Row Access
+     * @brief Provides atomic access to the row at the specified slot.
+     * @param index The slot index of the row to access.
+     * @return An atomic reference to the row at the specified slot.
+     */
     std::atomic_ref<Row*> slot_row(size_t index) {
         return std::atomic_ref<Row*>(row_base()[index]);
     }
+    /** ------------------------------------------------------------------------------------------- Slot Row Access
+     * @brief Provides atomic access to the row at the specified slot.
+     * @param index The slot index of the row to access.
+     * @return An atomic reference to the row at the specified slot.
+     */
     std::atomic_ref<Row*> slot_row(size_t index) const {
         return std::atomic_ref<Row*>(const_cast<Row*&>(row_base()[index]));
     }
@@ -2933,6 +2934,7 @@ private:
                 .load(std::memory_order_acquire) == needle;
     }
     /** ------------------------------------------------------------------------------------------- Hazard Storage
+     * @struct HazardStorage
      * @brief Owns process-lifetime hazard rows and their exclusive registration bits.
      */
     struct HazardStorage {
@@ -2956,6 +2958,7 @@ private:
     };
     /** ------------------------------------------------------------------------------------------- Hazard Storage
      * @brief Returns hazard storage intentionally retained for the process lifetime.
+     * @note The returned storage is intended to live for the entire process lifetime.
      */
     static HazardStorage& hazard_storage() {
         static HazardStorage* storage = new HazardStorage();
@@ -2963,10 +2966,12 @@ private:
     }
     /** ------------------------------------------------------------------------------------------- Hazard Pool
      * @brief Returns the dynamically sized hazard pointer array.
+     * @return A pointer to the first hazard slot in the pool.
      */
     static HazardSlot* hazard_pool() { return hazard_storage().pointers.data<HazardSlot>(); }
     /** ------------------------------------------------------------------------------------------- Claim Hazard Row
      * @brief Exclusively registers a bounded row or reports pool exhaustion.
+     * @return The row index of the claimed hazard row.
      */
     static unsigned hazard_claim_row() {
         auto& storage = hazard_storage();
@@ -2980,6 +2985,7 @@ private:
     }
     /** ------------------------------------------------------------------------------------------- Release Hazard Row
      * @brief Clears a thread's hazards before making its row available for reuse.
+     * @param row The row index of the hazard pointers to release.
      */
     static void hazard_release_row(unsigned row) {
         HazardSlot* pool = hazard_pool();
@@ -2988,10 +2994,19 @@ private:
         }
         hazard_storage().owners.data<std::atomic<bool>>()[row].store(false, std::memory_order_release);
     }
+    /** ------------------------------------------------------------------------------------------- Hazard Registration
+     * @brief Returns the hazard registration for the current thread.
+     * @return A reference to the current thread's hazard registration.
+     */
     static HazardRegistration& hazard_registration() {
         static thread_local HazardRegistration registration;
         return registration;
     }
+    /** ------------------------------------------------------------------------------------------- Hazard Mine
+     * @brief Returns the row index of the current thread's hazard registration, claiming a row if
+     * necessary.
+     * @return The row index of the current thread's hazard registration.
+     */
     static unsigned hazard_mine() {
         HazardRegistration& registration = hazard_registration();
         if (registration.row == 0) [[unlikely]] {
@@ -2999,12 +3014,26 @@ private:
         }
         return registration.row;
     }
+    /** ------------------------------------------------------------------------------------------- Hazard Protect
+     * @brief Sets the hazard pointer at the specified slot for the current thread.
+     * @param slot The slot index of the hazard pointer to set.
+     * @param p Pointer to the node to protect.
+     */
     static void hazard_protect(int slot, void* p) {
         hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(p, std::memory_order_seq_cst);
     }
+    /** ------------------------------------------------------------------------------------------- Hazard Clear
+     * @brief Clears the hazard pointer at the specified slot for the current thread.
+     * @param slot The slot index of the hazard pointer to clear.
+     */
     static void hazard_clear(int slot) {
         hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_seq_cst);
     }
+    /** ------------------------------------------------------------------------------------------- Hazard Is Protected
+     * @brief Checks if a pointer is currently protected by any hazard pointer.
+     * @param p Pointer to the node to check.
+     * @return True if the pointer is protected, false otherwise.
+     */
     static bool hazard_is_protected(const void* p) {
         const HazardSlot* pool = hazard_pool();
         for (size_t row = 1; row < hazard_storage().rows; ++row) {
@@ -3014,10 +3043,18 @@ private:
         }
         return false;
     }
+    /** ------------------------------------------------------------------------------------------- Orphan Top
+     * @brief Returns the top of the orphan stack.
+     * @return A reference to the atomic pointer representing the top of the orphan stack.
+     */
     static std::atomic<OrphanBatch*>& orphan_top() {
         static std::atomic<OrphanBatch*> top{nullptr};
         return top;
     }
+    /** ------------------------------------------------------------------------------------------- Orphan Push
+     * @brief Pushes a node onto the orphan stack for later reclamation.
+     * @param p Pointer to the node to be orphaned.
+     */
     static void orphan_push(void* p) {
         OrphanBatch* batch = new OrphanBatch();
         batch->nodes[batch->count++] = p;
@@ -3025,12 +3062,20 @@ private:
         while (!orphan_top().compare_exchange_weak(
             batch->next, batch, std::memory_order_release, std::memory_order_relaxed)) {}
     }
+    /** ------------------------------------------------------------------------------------------- Destroy Row
+     * @brief Destroys a row and deallocates its memory.
+     * @param p Pointer to the row to be destroyed.
+     */
     static void destroy_row(void* p) {
         if (p != nullptr) {
             static_cast<Row*>(p)->~Row();
             operator delete(p);
         }
     }
+    /** ------------------------------------------------------------------------------------------- Thread Retired List
+     * @brief Returns the retired list for the current thread.
+     * @return A reference to the current thread's retired list.
+     */
     static RetiredList& thread_retired() {
         static thread_local RetiredList retired;
         return retired;

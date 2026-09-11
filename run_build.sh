@@ -91,15 +91,15 @@ mkdir -p "${BUILD_DIR}" "${DEPS_SOURCE_DIR}"
 : > "${LOG_FILE}"
 if [[ ! -d "${LOGGER_DIR}/.git" ]]; then
     printf '%s\n' "${CYAN}Fetching threadsafe-logger...${NC}"
-    if ! git clone "${LOGGER_URL}" "${LOGGER_DIR}" >>"${LOG_FILE}" 2>&1; then
+    if ! git clone "${LOGGER_URL}" "${LOGGER_DIR}" 2>&1 | tee -a "${LOG_FILE}"; then
         printf '%s\n' "${RED}Could not fetch ${LOGGER_URL}.${NC}" "Check network access, then rerun ./run_build.sh." "Details: ${LOG_FILE}"
         exit 1
     fi
 fi
-if git -C "${LOGGER_DIR}" remote get-url origin >>"${LOG_FILE}" 2>&1; then
+if git -C "${LOGGER_DIR}" remote get-url origin 2>&1 | tee -a "${LOG_FILE}"; then
     printf '%s\n' "${CYAN}Updating threadsafe-logger to the latest main...${NC}"
-    if ! git -C "${LOGGER_DIR}" fetch origin main >>"${LOG_FILE}" 2>&1 ||
-       ! git -C "${LOGGER_DIR}" checkout --detach FETCH_HEAD >>"${LOG_FILE}" 2>&1; then
+    if ! git -C "${LOGGER_DIR}" fetch origin main 2>&1 | tee -a "${LOG_FILE}" ||
+       ! git -C "${LOGGER_DIR}" checkout --detach FETCH_HEAD 2>&1 | tee -a "${LOG_FILE}"; then
         printf '%s\n' "${RED}Could not update threadsafe-logger.${NC}" "Check network access, then rerun ./run_build.sh." "Details: ${LOG_FILE}"
         exit 1
     fi
@@ -111,20 +111,20 @@ if command -v ninja >/dev/null 2>&1; then
     GENERATOR_ARGS=(-G Ninja)
 fi
 printf '%s\n' "${CYAN}Configuring BuffetAlligator...${NC}"
-if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib -DBUFFETALLIGATOR_BUILD_TESTS="$([[ "${RUN_TESTS}" == true ]] && echo ON || echo OFF)" -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" >>"${LOG_FILE}" 2>&1; then
+if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib -DBUFFETALLIGATOR_BUILD_TESTS="$([[ "${RUN_TESTS}" == true ]] && echo ON || echo OFF)" -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" 2>&1 | tee -a "${LOG_FILE}"; then
     printf '%s\n' "${RED}Configuration failed.${NC}" "The last diagnostics were:"
     tail -n 30 "${LOG_FILE}"
     exit 1
 fi
 printf '%s\n' "${CYAN}Building the library and its static dependencies...${NC}"
-if ! cmake --build "${BUILD_DIR}" --parallel >>"${LOG_FILE}" 2>&1; then
+if ! cmake --build "${BUILD_DIR}" --parallel 2>&1 | tee -a "${LOG_FILE}"; then
     printf '%s\n' "${RED}Build failed.${NC}" "The last diagnostics were:"
     tail -n 30 "${LOG_FILE}"
     exit 1
 fi
 if [[ "${RUN_TESTS}" == true ]]; then
     printf '%s\n' "${CYAN}Running the memory contract tests...${NC}"
-    if ! ctest --test-dir "${BUILD_DIR}" --output-on-failure >>"${LOG_FILE}" 2>&1; then
+    if ! ctest --test-dir "${BUILD_DIR}" --output-on-failure 2>&1 | tee -a "${LOG_FILE}"; then
         printf '%s\n' "${RED}Tests failed.${NC}" "The last diagnostics were:"
         tail -n 40 "${LOG_FILE}"
         exit 1
@@ -133,7 +133,7 @@ else
     printf '%s\n' "${DIM}Skipping the test suite (--skip-tests).${NC}"
 fi
 printf '%s\n' "${CYAN}Installing the library...${NC}"
-if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" >>"${LOG_FILE}" 2>&1; then
+if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" 2>&1 | tee -a "${LOG_FILE}"; then
     printf '%s\n' "${RED}Installation failed.${NC}" "The last diagnostics were:"
     tail -n 30 "${LOG_FILE}"
     exit 1
