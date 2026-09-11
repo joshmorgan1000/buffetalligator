@@ -32,3 +32,8 @@ add_test(NAME buffetalligator_header_fixes_test COMMAND buffetalligator_header_f
 add_executable(buffetalligator_resource_test resource_test.cpp)
 target_link_libraries(buffetalligator_resource_test PRIVATE alligator::alligator)
 add_test(NAME buffetalligator_resource_test COMMAND buffetalligator_resource_test)
+
+add_executable(buffetalligator_novel_recycle_test novel_recycle_test.cpp)
+target_include_directories(buffetalligator_novel_recycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(buffetalligator_novel_recycle_test PRIVATE alligator::alligator)
+add_test(NAME buffetalligator_novel_recycle_test COMMAND buffetalligator_novel_recycle_test)

@@ -9,8 +9,9 @@
 #include <stdatomic.h>
 #endif
 #include "ba_os.h"
+#include <alligator_layout.h>
 
-#define BA_SLOT_BITS 17u
+#define BA_SLOT_BITS ALLIGATOR_SLOT_BITS
 #define BA_SLOT_MASK ((1ull << BA_SLOT_BITS) - 1ull)
 #define BA_NULL_META UINT64_MAX
 #define BA_PLATE_COUNT (1u << BA_SLOT_BITS)

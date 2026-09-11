@@ -356,7 +356,11 @@ static ba_status_t ba_carve(ba_placement_t* placement, uint64_t bytes, uint32_t 
  * @brief Allocates a dedicated region on the caller thread.
  */
 static ba_status_t ba_claim_novel(ba_placement_t* placement, size_t bytes, size_t rounded, ba_slice_t* out) {
-    uint64_t capacity = (placement->descriptor.flags & BA_PLACEMENT_OS_PAGES) ? ba_round(rounded, g_sys.granule) : rounded;
+    const int use_large_pages = (placement->descriptor.flags & BA_PLACEMENT_LARGE_PAGES)
+        && g_sys.large_page && rounded >= g_sys.large_page;
+    const uint64_t novel_granule = use_large_pages ? g_sys.large_page : g_sys.page;
+    uint64_t capacity = (placement->descriptor.flags & BA_PLACEMENT_OS_PAGES)
+        ? ba_round(rounded, novel_granule) : rounded;
     if (placement->descriptor.novel_cache_bytes && capacity <= (1ull << 40)) {
         capacity = ba_pow2_ceil(capacity < 65536 ? 65536 : capacity);
         ba_handle_t* handle;
@@ -383,7 +387,7 @@ static ba_status_t ba_claim_novel(ba_placement_t* placement, size_t bytes, size_
         ba_slab_t* record = ba_header_pop();
         if (!record) { ba_slot_push(slot); ba_uncharge(placement, capacity); return BA_E_ALLOC; }
         plate->handle = &((ba_slab_record_t*)record)->handle;
-        plate->base = ba_os_map(capacity, g_sys.granule, (placement->descriptor.flags & BA_PLACEMENT_LARGE_PAGES) && g_sys.large_page);
+        plate->base = ba_os_map(capacity, novel_granule, use_large_pages);
         *plate->handle = (ba_handle_t){plate->base, placement->context};
         if (!plate->base) ba_header_push(record);
     } else {

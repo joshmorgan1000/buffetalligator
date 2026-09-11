@@ -20,6 +20,8 @@ Registration waits for the worker to prepare the first current slab and runway. 
 
 OS-page placements share a global capacity ceiling derived from three quarters of startup headroom. Each placement also has its own budget. Custom placements can supply a budget or a capacity query; without either they are unlimited. Allocations that exceed a budget throw `AlligatorException`.
 
+Small OS-backed novel allocations round to the base page size; eligible requests at least one large page retain large-page backing. Slab geometry is unchanged. The shared Slice layout provides 2,097,151 reusable backing slots per process, covering simultaneously live regions rather than total claims or stored rows. Copies and sub-slices share a slot, and worker retirement returns it for reuse. The layout changed from 17 to 21 slot bits; rebuild the library and all consumers together.
+
 Novel allocation happens on the caller. Optional novel caches hold worker-zeroed allocations in bounded power-of-two size classes from 64 KiB through 1 TiB. A later claim can reuse a buffer after the worker publishes it to the cache. OS recycling remaps touched pages to obtain kernel zero-fill; custom recycling calls the supplied zero callback or zeroes the touched prefix on the worker.
 
 The worker polls memory pressure. Warning pressure reduces free-list and novel-cache retention; critical pressure clears those caches and reduces the runway target to its policy floor, within the budget. `Memory::trim` synchronously releases idle runway, free-list, and novel-cache capacity without invalidating live slices. Idle polling does not immediately rebuild explicitly trimmed reserves; subsequent slab advancement can replenish them.

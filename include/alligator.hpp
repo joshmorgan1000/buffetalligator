@@ -2,9 +2,12 @@
 /** --------------------------------------------------------------------------------------------------------- Slice
  * @file alligator.hpp
  * @brief Unified header for the BuffetAlligator.
+ * NOTES: 2026-09-11 (Codex) WHY: The C core and public size accessor must share the slot width.
+ * CHANGE: The packed Slice layout uses 21 slot bits; rebuild all linked consumers with this header.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
  */
 #include <logging.hpp>
+#include <alligator_layout.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -520,7 +523,7 @@ public:
      * @return The size of the slice in bytes.
      */
     size_t size_bytes() const {
-        return meta_ == SIZE_MAX ? 0 : (meta_ >> 17) & SIZE_MAX;
+        return meta_ == SIZE_MAX ? 0 : (meta_ >> ALLIGATOR_SLOT_BITS) & SIZE_MAX;
     }
     /** ------------------------------------------------------------------------------------------- Size in elements
      * @brief Returns the size of the slice in elements of type T.
