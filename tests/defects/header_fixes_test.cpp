@@ -2,6 +2,7 @@
  * @file header_fixes_test.cpp
  * @brief Verifies bounded weak copies, typed views, and runtime-sized hazard registration.
  */
+#include "../test_support.hpp"
 #include <alligator.hpp>
 #include <array>
 #include <atomic>
@@ -12,10 +13,6 @@
 #include <vector>
 
 namespace {
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Fails a public-header regression assertion.
- */
-void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Map
  * @brief Publishes eight rows while all registered threads concurrently search the map.
  */
@@ -29,7 +26,7 @@ void concurrent_map(buffetalligator::SliceMap* map, unsigned thread, std::barrie
     for (unsigned iteration = 0; iteration < 1000; ++iteration) {
         for (int64_t identifier = 0; identifier < 8; ++identifier) {
             auto payload = map->get_slice(identifier);
-            if (payload) require(payload.get_as<uint64_t>() == static_cast<uint64_t>(identifier + 17), "wrong concurrent payload");
+            if (payload) TEST_EQUAL(payload.get_as<uint64_t>(), static_cast<uint64_t>(identifier + 17), "wrong concurrent payload");
         }
     }
 }
@@ -40,7 +37,7 @@ void reset_reader(buffetalligator::SliceMap* map, std::atomic<bool>* running) {
     while (running->load(std::memory_order_acquire)) {
         for (int64_t identifier = 0; identifier < 8; ++identifier) {
             auto payload = map->get_slice(identifier);
-            if (payload) require(payload.get_as<uint64_t>() == static_cast<uint64_t>(identifier + 17), "reset reclaimed a live reader");
+            if (payload) TEST_EQUAL(payload.get_as<uint64_t>(), static_cast<uint64_t>(identifier + 17), "reset reclaimed a live reader");
         }
     }
 }
@@ -49,6 +46,7 @@ void reset_reader(buffetalligator::SliceMap* map, std::atomic<bool>* running) {
  * @brief Exercises each header regression and hazard-row reuse across thread waves.
  */
 int main() {
+    test_support::start(__FILE__);
     using namespace buffetalligator;
     std::array<uint8_t, 256> source;
     for (size_t index = 0; index < source.size(); ++index) source[index] = static_cast<uint8_t>(index);
@@ -57,17 +55,17 @@ int main() {
     WeakSlice weak(source.data(), source.size());
     Slice copy = weak.slice(64, 128);
     Slice sibling_after(256);
-    require(copy.size_bytes() == 128 && std::memcmp(copy.raw(), source.data() + 64, 128) == 0, "weak copy offset");
+    TEST_REQUIRE(copy.size_bytes() == 128 && std::memcmp(copy.raw(), source.data() + 64, 128) == 0, "weak copy offset");
     for (size_t index = 0; index < 256; ++index) {
-        require(sibling_before.data<uint8_t>()[index] == 0xe4, "weak copy damaged previous sibling");
-        require(sibling_after.data<uint8_t>()[index] == 0, "weak copy overran destination");
+        TEST_EQUAL(sibling_before.data<uint8_t>()[index], 0xe4, "weak copy damaged previous sibling");
+        TEST_EQUAL(sibling_after.data<uint8_t>()[index], 0, "weak copy overran destination");
     }
     SliceT<int> numbers(Slice(16));
-    require(numbers.length() == 4, "primitive typed length");
+    TEST_EQUAL(numbers.length(), 4, "primitive typed length");
     SliceT<std::string_view> text(Slice(32));
-    require(text.view().size() == 32, "string view length");
+    TEST_EQUAL(text.view().size(), 32, "string view length");
     SliceT<std::span<int>> span(Slice(32));
-    require(span.view().size() == 8, "span view length");
+    TEST_EQUAL(span.view().size(), 8, "span view length");
     {
         SliceMap map(8);
         std::atomic<bool> running{true};
@@ -95,7 +93,7 @@ int main() {
         std::vector<std::thread> workers;
         for (unsigned thread = 0; thread < threads; ++thread) workers.emplace_back(concurrent_map, &map, thread, &start);
         for (auto& worker : workers) worker.join();
-        require(map.size() == 8, "missing published rows");
-        for (int64_t identifier = 0; identifier < 8; ++identifier) require(map.find(identifier) >= 0, "missing map ID");
+        TEST_EQUAL(map.size(), 8, "missing published rows");
+        for (int64_t identifier = 0; identifier < 8; ++identifier) TEST_REQUIRE(map.find(identifier) >= 0, "missing map ID");
     }
 }

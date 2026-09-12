@@ -1,0 +1,706 @@
+UpdateCTestConfiguration  from :/Users/joshmorgan/manifoldb/buffetalligator/build/current/DartConfiguration.tcl
+Test project /Users/joshmorgan/manifoldb/buffetalligator/build/current
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 1
+      Start  1: test_logging
+
+1: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/deps/threadsafe-logger/tests/test_logging
+1: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/deps/threadsafe-logger/tests
+1: Test timeout computed to be: 9999879
+1: [38;2;0;0;0m⠂[38;2;8;8;10m⠒[38;2;16;16;20m⠶[38;2;24;24;30m⣶[38;2;32;32;40m⣿ [38;2;32;32;40m𝔰[38;2;31;31;44m𝔦[38;2;30;31;55m𝔪[38;2;27;29;72m𝔭[38;2;25;28;92m𝔩[38;2;22;27;116m𝔢[38;2;19;25;141m [38;2;16;24;165m𝔱[38;2;13;22;187m𝔥[38;2;10;21;206m𝔯[38;2;9;20;221m𝔢[38;2;8;20;228m𝔞[38;2;8;20;228m𝔡[38;2;9;20;221m𝔰[38;2;10;21;206m𝔞[38;2;13;22;187m𝔣[38;2;16;24;165m𝔢[38;2;19;25;141m [38;2;22;27;116m𝔩[38;2;25;28;92m𝔬[38;2;27;29;72m𝔤[38;2;30;31;55m𝔤[38;2;31;31;44m𝔢[38;2;32;32;40m𝔯 [38;2;32;32;40m⣿[38;2;24;24;30m⣶[38;2;16;16;20m⠶[38;2;8;8;10m⠒[38;2;0;0;0m⠂[0m
+ 1/31 Test  #1: test_logging ...........................   Passed    0.01 sec
+test 2
+      Start  2: test_utilities
+
+2: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/deps/threadsafe-logger/tests/test_utilities
+2: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/deps/threadsafe-logger/tests
+2: Test timeout computed to be: 9999879
+ 2/31 Test  #2: test_utilities .........................   Passed    0.00 sec
+test 3
+      Start  3: buffetalligator_memory_test
+
+3: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_memory_test
+3: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+3: Test timeout computed to be: 9999879
+ 3/31 Test  #3: buffetalligator_memory_test ............   Passed    0.03 sec
+test 4
+      Start  4: buffetalligator_slice_test
+
+4: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slice_test
+4: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+4: Test timeout computed to be: 9999879
+4: [38;2;0;0;0m⠂[38;2;8;8;10m⠒[38;2;16;16;20m⠶[38;2;24;24;30m⣶[38;2;32;32;40m⣿ [38;2;32;32;40m𝔰[38;2;31;31;44m𝔦[38;2;30;31;55m𝔪[38;2;27;29;72m𝔭[38;2;25;28;92m𝔩[38;2;22;27;116m𝔢[38;2;19;25;141m [38;2;16;24;165m𝔱[38;2;13;22;187m𝔥[38;2;10;21;206m𝔯[38;2;9;20;221m𝔢[38;2;8;20;228m𝔞[38;2;8;20;228m𝔡[38;2;9;20;221m𝔰[38;2;10;21;206m𝔞[38;2;13;22;187m𝔣[38;2;16;24;165m𝔢[38;2;19;25;141m [38;2;22;27;116m𝔩[38;2;25;28;92m𝔬[38;2;27;29;72m𝔤[38;2;30;31;55m𝔤[38;2;31;31;44m𝔢[38;2;32;32;40m𝔯 [38;2;32;32;40m⣿[38;2;24;24;30m⣶[38;2;16;16;20m⠶[38;2;8;8;10m⠒[38;2;0;0;0m⠂[0m
+4: 2026-09-12 10:40:23.527 [ERROR] Slice::slice: offset exceeds slice size
+4: 2026-09-12 10:40:23.527 [ERROR] Slice::slice: length exceeds slice size
+ 4/31 Test  #4: buffetalligator_slice_test .............   Passed    0.01 sec
+test 5
+      Start  5: buffetalligator_slice_queue_test
+
+5: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slice_queue_test
+5: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+5: Test timeout computed to be: 120
+ 5/31 Test  #5: buffetalligator_slice_queue_test .......   Passed    0.03 sec
+test 6
+      Start  6: buffetalligator_builtin_default_test
+
+6: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_builtin_default_test
+6: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+6: Test timeout computed to be: 9999879
+ 6/31 Test  #6: buffetalligator_builtin_default_test ...   Passed    0.01 sec
+test 7
+      Start  7: buffetalligator_slicemap_test
+
+7: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_test
+7: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+7: Test timeout computed to be: 120
+ 7/31 Test  #7: buffetalligator_slicemap_test ..........   Passed    0.02 sec
+test 8
+      Start  8: buffetalligator_slab_lifecycle_test
+
+8: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slab_lifecycle_test
+8: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+8: Test timeout computed to be: 9999879
+ 8/31 Test  #8: buffetalligator_slab_lifecycle_test ....   Passed    0.01 sec
+test 9
+      Start  9: buffetalligator_os_layer_test
+
+9: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_os_layer_test
+9: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+9: Test timeout computed to be: 9999879
+9: effective process limit: 137438953472
+ 9/31 Test  #9: buffetalligator_os_layer_test ..........   Passed    0.01 sec
+test 10
+      Start 10: buffetalligator_core_claim_test
+
+10: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_core_claim_test
+10: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+10: Test timeout computed to be: 9999879
+10/31 Test #10: buffetalligator_core_claim_test ........   Passed    0.69 sec
+test 11
+      Start 11: buffetalligator_core_worker_test
+
+11: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_core_worker_test
+11: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+11: Test timeout computed to be: 9999879
+11/31 Test #11: buffetalligator_core_worker_test .......   Passed    3.05 sec
+test 12
+      Start 12: buffetalligator_header_fixes_test
+
+12: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_header_fixes_test
+12: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+12: Test timeout computed to be: 9999876
+12/31 Test #12: buffetalligator_header_fixes_test ......   Passed    0.02 sec
+test 13
+      Start 13: buffetalligator_resource_test
+
+13: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_resource_test
+13: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+13: Test timeout computed to be: 9999876
+13: [38;2;0;0;0m⠂[38;2;8;8;10m⠒[38;2;16;16;20m⠶[38;2;24;24;30m⣶[38;2;32;32;40m⣿ [38;2;32;32;40m𝔰[38;2;31;31;44m𝔦[38;2;30;31;55m𝔪[38;2;27;29;72m𝔭[38;2;25;28;92m𝔩[38;2;22;27;116m𝔢[38;2;19;25;141m [38;2;16;24;165m𝔱[38;2;13;22;187m𝔥[38;2;10;21;206m𝔯[38;2;9;20;221m𝔢[38;2;8;20;228m𝔞[38;2;8;20;228m𝔡[38;2;9;20;221m𝔰[38;2;10;21;206m𝔞[38;2;13;22;187m𝔣[38;2;16;24;165m𝔢[38;2;19;25;141m [38;2;22;27;116m𝔩[38;2;25;28;92m𝔬[38;2;27;29;72m𝔤[38;2;30;31;55m𝔤[38;2;31;31;44m𝔢[38;2;32;32;40m𝔯 [38;2;32;32;40m⣿[38;2;24;24;30m⣶[38;2;16;16;20m⠶[38;2;8;8;10m⠒[38;2;0;0;0m⠂[0m
+13: 2026-09-12 10:40:27.374 [ERROR] BA_E_BUDGET: resources
+13: 2026-09-12 10:40:27.374 [ERROR] BA_E_ALIGNMENT: invalid_alignment
+13/31 Test #13: buffetalligator_resource_test ..........   Passed    0.01 sec
+test 14
+      Start 14: buffetalligator_novel_recycle_test
+
+14: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_novel_recycle_test
+14: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+14: Test timeout computed to be: 9999876
+14: [38;2;0;0;0m⠂[38;2;8;8;10m⠒[38;2;16;16;20m⠶[38;2;24;24;30m⣶[38;2;32;32;40m⣿ [38;2;32;32;40m𝔰[38;2;31;31;44m𝔦[38;2;30;31;55m𝔪[38;2;27;29;72m𝔭[38;2;25;28;92m𝔩[38;2;22;27;116m𝔢[38;2;19;25;141m [38;2;16;24;165m𝔱[38;2;13;22;187m𝔥[38;2;10;21;206m𝔯[38;2;9;20;221m𝔢[38;2;8;20;228m𝔞[38;2;8;20;228m𝔡[38;2;9;20;221m𝔰[38;2;10;21;206m𝔞[38;2;13;22;187m𝔣[38;2;16;24;165m𝔢[38;2;19;25;141m [38;2;22;27;116m𝔩[38;2;25;28;92m𝔬[38;2;27;29;72m𝔤[38;2;30;31;55m𝔤[38;2;31;31;44m𝔢[38;2;32;32;40m𝔯 [38;2;32;32;40m⣿[38;2;24;24;30m⣶[38;2;16;16;20m⠶[38;2;8;8;10m⠒[38;2;0;0;0m⠂[0m
+14: 2026-09-12 10:40:36.755 [INFO]  PASS novel recycling: bytes=6144 backing=16384 recycled_claims=3000000 workers=4 slot_bits=24
+14/31 Test #14: buffetalligator_novel_recycle_test .....   Passed    9.38 sec
+test 15
+      Start 15: buffetalligator_registry_growth_test
+
+15: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_registry_growth_test
+15: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+15: Test timeout computed to be: 9999866
+15: registry growth passed: threads=32 slots=131071 commits=13 views=3772345
+15/31 Test #15: buffetalligator_registry_growth_test ...   Passed    0.07 sec
+test 16
+      Start 16: buffetalligator_queue_test
+
+16: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench "--verify"
+16: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+16: Test timeout computed to be: 120
+16: verify 1/1 batch=1 C
+16: verify 1/1 batch=1 direct
+16: verify 1/1 batch=1 buffered
+16: verify 1/1 batch=32 C
+16: verify 1/1 batch=32 direct
+16: verify 1/1 batch=32 buffered
+16: verify 1/1 batch=256 C
+16: verify 1/1 batch=256 direct
+16: verify 1/1 batch=256 buffered
+16: verify 1/8 batch=1 C
+16: verify 1/8 batch=1 direct
+16: verify 1/8 batch=1 buffered
+16: verify 1/8 batch=32 C
+16: verify 1/8 batch=32 direct
+16: verify 1/8 batch=32 buffered
+16: verify 1/8 batch=256 C
+16: verify 1/8 batch=256 direct
+16: verify 1/8 batch=256 buffered
+16: verify 8/1 batch=1 C
+16: verify 8/1 batch=1 direct
+16: verify 8/1 batch=1 buffered
+16: verify 8/1 batch=32 C
+16: verify 8/1 batch=32 direct
+16: verify 8/1 batch=32 buffered
+16: verify 8/1 batch=256 C
+16: verify 8/1 batch=256 direct
+16: verify 8/1 batch=256 buffered
+16: verify 8/8 batch=1 C
+16: verify 8/8 batch=1 direct
+16: verify 8/8 batch=1 buffered
+16: verify 8/8 batch=32 C
+16: verify 8/8 batch=32 direct
+16: verify 8/8 batch=32 buffered
+16: verify 8/8 batch=256 C
+16: verify 8/8 batch=256 direct
+16: verify 8/8 batch=256 buffered
+16: verify 24/24 batch=1 C
+16: verify 24/24 batch=1 direct
+16: verify 24/24 batch=1 buffered
+16: verify 24/24 batch=32 C
+16: verify 24/24 batch=32 direct
+16: verify 24/24 batch=32 buffered
+16: verify 24/24 batch=256 C
+16: verify 24/24 batch=256 direct
+16: verify 24/24 batch=256 buffered
+16: Queue checks passed: partial flush, close/wakeups, reuse, visibility, exactly-once delivery, 48 workers.
+16/31 Test #16: buffetalligator_queue_test .............   Passed    0.28 sec
+test 17
+      Start 17: buffetalligator_slicemap_queue_test
+
+17: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench "--verify" "--slicemap"
+17: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+17: Test timeout computed to be: 120
+17: verify 1/1 batch=1 SliceMap
+17: verify 1/1 batch=32 SliceMap
+17: verify 1/1 batch=256 SliceMap
+17: verify 1/8 batch=1 SliceMap
+17: verify 1/8 batch=32 SliceMap
+17: verify 1/8 batch=256 SliceMap
+17: verify 8/1 batch=1 SliceMap
+17: verify 8/1 batch=32 SliceMap
+17: verify 8/1 batch=256 SliceMap
+17: verify 8/8 batch=1 SliceMap
+17: verify 8/8 batch=32 SliceMap
+17: verify 8/8 batch=256 SliceMap
+17: verify 24/24 batch=1 SliceMap
+17: verify 24/24 batch=32 SliceMap
+17: verify 24/24 batch=256 SliceMap
+17: SliceMap checks passed: sequence matching, partial batches, reset/reuse, visibility, exactly-once delivery, 48 workers.
+17/31 Test #17: buffetalligator_slicemap_queue_test ....   Passed    0.10 sec
+test 18
+      Start 18: buffetalligator_network_test
+
+18: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_network_test
+18: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+18: Environment variables: 
+18:  FI_PROVIDER=tcp
+18: Test timeout computed to be: 120
+18: Testing protocol 0 across processes on port 49767
+18: Testing protocol 1 across processes on port 49803
+18: Testing protocol 128 across processes on port 49804
+18: Testing protocol 129 across processes on port 49840
+18: Testing protocol 2 across processes on port 49841
+18: Testing protocol 130 across processes on port 49878
+18: Network contracts passed
+18/31 Test #18: buffetalligator_network_test ...........   Passed    0.27 sec
+test 19
+      Start 19: buffetalligator_vulkan_test
+
+19: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_vulkan_test
+19: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests
+19: Test timeout computed to be: 120
+19: [mvk-info] MoltenVK version 1.4.1, supporting Vulkan version 1.4.334.
+19: 	The following 153 Vulkan extensions are supported:
+19: 	VK_KHR_16bit_storage v1
+19: 	VK_KHR_8bit_storage v1
+19: 	VK_KHR_bind_memory2 v1
+19: 	VK_KHR_buffer_device_address v1
+19: 	VK_KHR_calibrated_timestamps v1
+19: 	VK_KHR_copy_commands2 v1
+19: 	VK_KHR_create_renderpass2 v1
+19: 	VK_KHR_dedicated_allocation v3
+19: 	VK_KHR_deferred_host_operations v4
+19: 	VK_KHR_depth_stencil_resolve v1
+19: 	VK_KHR_descriptor_update_template v1
+19: 	VK_KHR_device_group v4
+19: 	VK_KHR_device_group_creation v1
+19: 	VK_KHR_driver_properties v1
+19: 	VK_KHR_dynamic_rendering v1
+19: 	VK_KHR_dynamic_rendering_local_read v1
+19: 	VK_KHR_external_fence v1
+19: 	VK_KHR_external_fence_capabilities v1
+19: 	VK_KHR_external_memory v1
+19: 	VK_KHR_external_memory_capabilities v1
+19: 	VK_KHR_external_semaphore v1
+19: 	VK_KHR_external_semaphore_capabilities v1
+19: 	VK_KHR_format_feature_flags2 v2
+19: 	VK_KHR_fragment_shader_barycentric v1
+19: 	VK_KHR_get_memory_requirements2 v1
+19: 	VK_KHR_get_physical_device_properties2 v2
+19: 	VK_KHR_get_surface_capabilities2 v1
+19: 	VK_KHR_global_priority v1
+19: 	VK_KHR_image_format_list v1
+19: 	VK_KHR_imageless_framebuffer v1
+19: 	VK_KHR_incremental_present v2
+19: 	VK_KHR_index_type_uint8 v1
+19: 	VK_KHR_line_rasterization v1
+19: 	VK_KHR_load_store_op_none v1
+19: 	VK_KHR_maintenance1 v2
+19: 	VK_KHR_maintenance2 v1
+19: 	VK_KHR_maintenance3 v1
+19: 	VK_KHR_maintenance4 v2
+19: 	VK_KHR_maintenance5 v1
+19: 	VK_KHR_maintenance6 v1
+19: 	VK_KHR_maintenance7 v1
+19: 	VK_KHR_maintenance8 v1
+19: 	VK_KHR_maintenance9 v1
+19: 	VK_KHR_map_memory2 v1
+19: 	VK_KHR_multiview v1
+19: 	VK_KHR_portability_subset v1
+19: 	VK_KHR_present_id v1
+19: 	VK_KHR_present_id2 v1
+19: 	VK_KHR_present_wait v1
+19: 	VK_KHR_present_wait2 v1
+19: 	VK_KHR_push_descriptor v2
+19: 	VK_KHR_relaxed_block_layout v1
+19: 	VK_KHR_robustness2 v1
+19: 	VK_KHR_sampler_mirror_clamp_to_edge v3
+19: 	VK_KHR_sampler_ycbcr_conversion v14
+19: 	VK_KHR_separate_depth_stencil_layouts v1
+19: 	VK_KHR_shader_draw_parameters v1
+19: 	VK_KHR_shader_expect_assume v1
+19: 	VK_KHR_shader_float_controls v4
+19: 	VK_KHR_shader_float_controls2 v1
+19: 	VK_KHR_shader_float16_int8 v1
+19: 	VK_KHR_shader_fma v1
+19: 	VK_KHR_shader_integer_dot_product v1
+19: 	VK_KHR_shader_maximal_reconvergence v1
+19: 	VK_KHR_shader_non_semantic_info v1
+19: 	VK_KHR_shader_quad_control v1
+19: 	VK_KHR_shader_relaxed_extended_instruction v1
+19: 	VK_KHR_shader_subgroup_extended_types v1
+19: 	VK_KHR_shader_subgroup_rotate v2
+19: 	VK_KHR_shader_subgroup_uniform_control_flow v1
+19: 	VK_KHR_shader_terminate_invocation v1
+19: 	VK_KHR_spirv_1_4 v1
+19: 	VK_KHR_storage_buffer_storage_class v1
+19: 	VK_KHR_surface v25
+19: 	VK_KHR_surface_maintenance1 v1
+19: 	VK_KHR_surface_protected_capabilities v1
+19: 	VK_KHR_swapchain v70
+19: 	VK_KHR_swapchain_maintenance1 v1
+19: 	VK_KHR_swapchain_mutable_format v1
+19: 	VK_KHR_synchronization2 v1
+19: 	VK_KHR_timeline_semaphore v2
+19: 	VK_KHR_uniform_buffer_standard_layout v1
+19: 	VK_KHR_variable_pointers v1
+19: 	VK_KHR_vertex_attribute_divisor v1
+19: 	VK_KHR_vulkan_memory_model v3
+19: 	VK_KHR_zero_initialize_workgroup_memory v1
+19: 	VK_EXT_4444_formats v1
+19: 	VK_EXT_buffer_device_address v2
+19: 	VK_EXT_calibrated_timestamps v2
+19: 	VK_EXT_debug_marker v4
+19: 	VK_EXT_debug_report v10
+19: 	VK_EXT_debug_utils v2
+19: 	VK_EXT_depth_clip_control v1
+19: 	VK_EXT_descriptor_indexing v2
+19: 	VK_EXT_extended_dynamic_state v1
+19: 	VK_EXT_extended_dynamic_state2 v1
+19: 	VK_EXT_extended_dynamic_state3 v2
+19: 	VK_EXT_external_memory_host v1
+19: 	VK_EXT_external_memory_metal v1
+19: 	VK_EXT_fragment_shader_interlock v1
+19: 	VK_EXT_global_priority v2
+19: 	VK_EXT_global_priority_query v1
+19: 	VK_EXT_hdr_metadata v3
+19: 	VK_EXT_headless_surface v1
+19: 	VK_EXT_host_image_copy v1
+19: 	VK_EXT_host_query_reset v1
+19: 	VK_EXT_image_2d_view_of_3d v1
+19: 	VK_EXT_image_robustness v1
+19: 	VK_EXT_index_type_uint8 v1
+19: 	VK_EXT_inline_uniform_block v1
+19: 	VK_EXT_layer_settings v2
+19: 	VK_EXT_legacy_dithering v2
+19: 	VK_EXT_line_rasterization v1
+19: 	VK_EXT_load_store_op_none v1
+19: 	VK_EXT_memory_budget v1
+19: 	VK_EXT_metal_objects v2
+19: 	VK_EXT_metal_surface v1
+19: 	VK_EXT_non_seamless_cube_map v1
+19: 	VK_EXT_pipeline_creation_cache_control v3
+19: 	VK_EXT_pipeline_creation_feedback v1
+19: 	VK_EXT_pipeline_robustness v1
+19: 	VK_EXT_post_depth_coverage v1
+19: 	VK_EXT_primitive_topology_list_restart v1
+19: 	VK_EXT_private_data v1
+19: 	VK_EXT_provoking_vertex v1
+19: 	VK_EXT_robustness2 v1
+19: 	VK_EXT_sample_locations v1
+19: 	VK_EXT_scalar_block_layout v1
+19: 	VK_EXT_separate_stencil_usage v1
+19: 	VK_EXT_shader_atomic_float v1
+19: 	VK_EXT_shader_demote_to_helper_invocation v1
+19: 	VK_EXT_shader_stencil_export v1
+19: 	VK_EXT_shader_subgroup_ballot v1
+19: 	VK_EXT_shader_subgroup_vote v1
+19: 	VK_EXT_shader_viewport_index_layer v1
+19: 	VK_EXT_subgroup_size_control v2
+19: 	VK_EXT_surface_maintenance1 v1
+19: 	VK_EXT_swapchain_colorspace v5
+19: 	VK_EXT_swapchain_maintenance1 v1
+19: 	VK_EXT_texel_buffer_alignment v1
+19: 	VK_EXT_texture_compression_astc_hdr v1
+19: 	VK_EXT_tooling_info v1
+19: 	VK_EXT_vertex_attribute_divisor v3
+19: 	VK_AMD_gpu_shader_half_float v2
+19: 	VK_AMD_negative_viewport_height v1
+19: 	VK_AMD_shader_image_load_store_lod v1
+19: 	VK_AMD_shader_trinary_minmax v1
+19: 	VK_GOOGLE_display_timing v1
+19: 	VK_IMG_format_pvrtc v1
+19: 	VK_INTEL_shader_integer_functions2 v1
+19: 	VK_MVK_macos_surface v3
+19: 	VK_MVK_moltenvk v37
+19: 	VK_NV_fragment_shader_barycentric v1
+19: [mvk-info] GPU device:
+19: 	model: Apple M4 Max
+19: 	type: Integrated
+19: 	vendorID: 0x106b
+19: 	deviceID: 0x1a060209
+19: 	pipelineCacheUUID: DB445FF2-1A06-0209-0000-000100000000
+19: 	GPU memory available: 110100 MB
+19: 	GPU memory used: 0 MB
+19: 	Metal Shading Language 4.0
+19: 	supports the following GPU Features:
+19: 		GPU Family Metal 4
+19: 		GPU Family Apple 9
+19: 		GPU Family Mac 2
+19: 		Read-Write Texture Tier 2
+19: [mvk-info] Created VkInstance for Vulkan version 1.1.334, as requested by app, with the following 0 Vulkan extensions enabled:
+19: [mvk-info] Vulkan semaphores using MTLEvent.
+19: [mvk-info] Descriptor sets binding resources using Metal3 argument buffers.
+19: [mvk-info] Created VkDevice to run on GPU Apple M4 Max with the following 1 Vulkan extensions enabled:
+19: 	VK_KHR_portability_subset v1
+19: [mvk-info] MoltenVK version 1.4.1, supporting Vulkan version 1.4.334.
+19: 	The following 153 Vulkan extensions are supported:
+19: 	VK_KHR_16bit_storage v1
+19: 	VK_KHR_8bit_storage v1
+19: 	VK_KHR_bind_memory2 v1
+19: 	VK_KHR_buffer_device_address v1
+19: 	VK_KHR_calibrated_timestamps v1
+19: 	VK_KHR_copy_commands2 v1
+19: 	VK_KHR_create_renderpass2 v1
+19: 	VK_KHR_dedicated_allocation v3
+19: 	VK_KHR_deferred_host_operations v4
+19: 	VK_KHR_depth_stencil_resolve v1
+19: 	VK_KHR_descriptor_update_template v1
+19: 	VK_KHR_device_group v4
+19: 	VK_KHR_device_group_creation v1
+19: 	VK_KHR_driver_properties v1
+19: 	VK_KHR_dynamic_rendering v1
+19: 	VK_KHR_dynamic_rendering_local_read v1
+19: 	VK_KHR_external_fence v1
+19: 	VK_KHR_external_fence_capabilities v1
+19: 	VK_KHR_external_memory v1
+19: 	VK_KHR_external_memory_capabilities v1
+19: 	VK_KHR_external_semaphore v1
+19: 	VK_KHR_external_semaphore_capabilities v1
+19: 	VK_KHR_format_feature_flags2 v2
+19: 	VK_KHR_fragment_shader_barycentric v1
+19: 	VK_KHR_get_memory_requirements2 v1
+19: 	VK_KHR_get_physical_device_properties2 v2
+19: 	VK_KHR_get_surface_capabilities2 v1
+19: 	VK_KHR_global_priority v1
+19: 	VK_KHR_image_format_list v1
+19: 	VK_KHR_imageless_framebuffer v1
+19: 	VK_KHR_incremental_present v2
+19: 	VK_KHR_index_type_uint8 v1
+19: 	VK_KHR_line_rasterization v1
+19: 	VK_KHR_load_store_op_none v1
+19: 	VK_KHR_maintenance1 v2
+19: 	VK_KHR_maintenance2 v1
+19: 	VK_KHR_maintenance3 v1
+19: 	VK_KHR_maintenance4 v2
+19: 	VK_KHR_maintenance5 v1
+19: 	VK_KHR_maintenance6 v1
+19: 	VK_KHR_maintenance7 v1
+19: 	VK_KHR_maintenance8 v1
+19: 	VK_KHR_maintenance9 v1
+19: 	VK_KHR_map_memory2 v1
+19: 	VK_KHR_multiview v1
+19: 	VK_KHR_portability_subset v1
+19: 	VK_KHR_present_id v1
+19: 	VK_KHR_present_id2 v1
+19: 	VK_KHR_present_wait v1
+19: 	VK_KHR_present_wait2 v1
+19: 	VK_KHR_push_descriptor v2
+19: 	VK_KHR_relaxed_block_layout v1
+19: 	VK_KHR_robustness2 v1
+19: 	VK_KHR_sampler_mirror_clamp_to_edge v3
+19: 	VK_KHR_sampler_ycbcr_conversion v14
+19: 	VK_KHR_separate_depth_stencil_layouts v1
+19: 	VK_KHR_shader_draw_parameters v1
+19: 	VK_KHR_shader_expect_assume v1
+19: 	VK_KHR_shader_float_controls v4
+19: 	VK_KHR_shader_float_controls2 v1
+19: 	VK_KHR_shader_float16_int8 v1
+19: 	VK_KHR_shader_fma v1
+19: 	VK_KHR_shader_integer_dot_product v1
+19: 	VK_KHR_shader_maximal_reconvergence v1
+19: 	VK_KHR_shader_non_semantic_info v1
+19: 	VK_KHR_shader_quad_control v1
+19: 	VK_KHR_shader_relaxed_extended_instruction v1
+19: 	VK_KHR_shader_subgroup_extended_types v1
+19: 	VK_KHR_shader_subgroup_rotate v2
+19: 	VK_KHR_shader_subgroup_uniform_control_flow v1
+19: 	VK_KHR_shader_terminate_invocation v1
+19: 	VK_KHR_spirv_1_4 v1
+19: 	VK_KHR_storage_buffer_storage_class v1
+19: 	VK_KHR_surface v25
+19: 	VK_KHR_surface_maintenance1 v1
+19: 	VK_KHR_surface_protected_capabilities v1
+19: 	VK_KHR_swapchain v70
+19: 	VK_KHR_swapchain_maintenance1 v1
+19: 	VK_KHR_swapchain_mutable_format v1
+19: 	VK_KHR_synchronization2 v1
+19: 	VK_KHR_timeline_semaphore v2
+19: 	VK_KHR_uniform_buffer_standard_layout v1
+19: 	VK_KHR_variable_pointers v1
+19: 	VK_KHR_vertex_attribute_divisor v1
+19: 	VK_KHR_vulkan_memory_model v3
+19: 	VK_KHR_zero_initialize_workgroup_memory v1
+19: 	VK_EXT_4444_formats v1
+19: 	VK_EXT_buffer_device_address v2
+19: 	VK_EXT_calibrated_timestamps v2
+19: 	VK_EXT_debug_marker v4
+19: 	VK_EXT_debug_report v10
+19: 	VK_EXT_debug_utils v2
+19: 	VK_EXT_depth_clip_control v1
+19: 	VK_EXT_descriptor_indexing v2
+19: 	VK_EXT_extended_dynamic_state v1
+19: 	VK_EXT_extended_dynamic_state2 v1
+19: 	VK_EXT_extended_dynamic_state3 v2
+19: 	VK_EXT_external_memory_host v1
+19: 	VK_EXT_external_memory_metal v1
+19: 	VK_EXT_fragment_shader_interlock v1
+19: 	VK_EXT_global_priority v2
+19: 	VK_EXT_global_priority_query v1
+19: 	VK_EXT_hdr_metadata v3
+19: 	VK_EXT_headless_surface v1
+19: 	VK_EXT_host_image_copy v1
+19: 	VK_EXT_host_query_reset v1
+19: 	VK_EXT_image_2d_view_of_3d v1
+19: 	VK_EXT_image_robustness v1
+19: 	VK_EXT_index_type_uint8 v1
+19: 	VK_EXT_inline_uniform_block v1
+19: 	VK_EXT_layer_settings v2
+19: 	VK_EXT_legacy_dithering v2
+19: 	VK_EXT_line_rasterization v1
+19: 	VK_EXT_load_store_op_none v1
+19: 	VK_EXT_memory_budget v1
+19: 	VK_EXT_metal_objects v2
+19: 	VK_EXT_metal_surface v1
+19: 	VK_EXT_non_seamless_cube_map v1
+19: 	VK_EXT_pipeline_creation_cache_control v3
+19: 	VK_EXT_pipeline_creation_feedback v1
+19: 	VK_EXT_pipeline_robustness v1
+19: 	VK_EXT_post_depth_coverage v1
+19: 	VK_EXT_primitive_topology_list_restart v1
+19: 	VK_EXT_private_data v1
+19: 	VK_EXT_provoking_vertex v1
+19: 	VK_EXT_robustness2 v1
+19: 	VK_EXT_sample_locations v1
+19: 	VK_EXT_scalar_block_layout v1
+19: 	VK_EXT_separate_stencil_usage v1
+19: 	VK_EXT_shader_atomic_float v1
+19: 	VK_EXT_shader_demote_to_helper_invocation v1
+19: 	VK_EXT_shader_stencil_export v1
+19: 	VK_EXT_shader_subgroup_ballot v1
+19: 	VK_EXT_shader_subgroup_vote v1
+19: 	VK_EXT_shader_viewport_index_layer v1
+19: 	VK_EXT_subgroup_size_control v2
+19: 	VK_EXT_surface_maintenance1 v1
+19: 	VK_EXT_swapchain_colorspace v5
+19: 	VK_EXT_swapchain_maintenance1 v1
+19: 	VK_EXT_texel_buffer_alignment v1
+19: 	VK_EXT_texture_compression_astc_hdr v1
+19: 	VK_EXT_tooling_info v1
+19: 	VK_EXT_vertex_attribute_divisor v3
+19: 	VK_AMD_gpu_shader_half_float v2
+19: 	VK_AMD_negative_viewport_height v1
+19: 	VK_AMD_shader_image_load_store_lod v1
+19: 	VK_AMD_shader_trinary_minmax v1
+19: 	VK_GOOGLE_display_timing v1
+19: 	VK_IMG_format_pvrtc v1
+19: 	VK_INTEL_shader_integer_functions2 v1
+19: 	VK_MVK_macos_surface v3
+19: 	VK_MVK_moltenvk v37
+19: 	VK_NV_fragment_shader_barycentric v1
+19: [mvk-info] GPU device:
+19: 	model: Apple M4 Max
+19: 	type: Integrated
+19: 	vendorID: 0x106b
+19: 	deviceID: 0x1a060209
+19: 	pipelineCacheUUID: DB445FF2-1A06-0209-0000-000100000000
+19: 	GPU memory available: 110100 MB
+19: 	GPU memory used: 0 MB
+19: 	Metal Shading Language 4.0
+19: 	supports the following GPU Features:
+19: 		GPU Family Metal 4
+19: 		GPU Family Apple 9
+19: 		GPU Family Mac 2
+19: 		Read-Write Texture Tier 2
+19: [mvk-info] Created VkInstance for Vulkan version 1.1.334, as requested by app, with the following 0 Vulkan extensions enabled:
+19: [mvk-info] Vulkan semaphores using MTLEvent.
+19: [mvk-info] Descriptor sets binding resources using Metal3 argument buffers.
+19: [mvk-info] Created VkDevice to run on GPU Apple M4 Max with the following 1 Vulkan extensions enabled:
+19: 	VK_KHR_portability_subset v1
+19: Testing Vulkan memory properties 1
+19: Testing Vulkan memory properties 2
+19: Testing Vulkan memory properties 6
+19: Testing Vulkan memory properties 14
+19: Vulkan network contracts passed
+19/31 Test #19: buffetalligator_vulkan_test ............   Passed    0.08 sec
+test 20
+      Start 20: audit_layout
+
+20: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "layout"
+20: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+20: Test timeout computed to be: 60
+20: sizeof(Slice)=16 sizeof(uint32_t)=4
+20: FAIL layout: Slice is not one 32-bit arena index
+20/31 Test #20: audit_layout ...........................***Failed    0.42 sec
+test 21
+      Start 21: audit_references
+
+21: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "references"
+21: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+21: Test timeout computed to be: 60
+21: first_index=2 second_index=2 different_ranges=1
+21: FAIL references: Distinct Slice ranges share an index that cannot identify either range alone
+21/31 Test #21: audit_references .......................***Failed    0.01 sec
+test 22
+      Start 22: audit_prepared_claims
+
+22: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "prepared_claims"
+22: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+22: Test timeout computed to be: 60
+22: prepared_claims=2046
+22: prepared malloc=0 calloc=0 realloc=0 aligned=0 map=0 commit=0 requested_bytes=0
+22: PASS prepared_claims
+22/31 Test #22: audit_prepared_claims ..................   Passed    0.01 sec
+test 23
+      Start 23: audit_prepared_chain
+
+23: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "prepared_chain"
+23: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+23: Test timeout computed to be: 60
+23: initial_slabs=2 expected_at_least=4
+23: FAIL prepared_chain: Current slab does not have three preallocated successors
+23/31 Test #23: audit_prepared_chain ...................***Failed    0.01 sec
+test 24
+      Start 24: audit_alignment
+
+24: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "alignment"
+24: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+24: Test timeout computed to be: 60
+24: misaligned_registration_status=BA_OK
+24: returned_address_mod_64=1
+24: FAIL alignment: Misaligned placement storage was accepted
+24/31 Test #24: audit_alignment ........................***Failed    0.01 sec
+test 25
+      Start 25: audit_registry_commitment
+
+25: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "registry_commitment"
+25: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+25: Test timeout computed to be: 60
+25: registry_before=16384 registry_after=49152 claims=16400
+25: registry malloc=0 calloc=0 realloc=0 aligned=0 map=0 commit=2 requested_bytes=2097152
+25: FAIL registry_commitment: Claim committed additional registry pages
+25/31 Test #25: audit_registry_commitment ..............***Failed    0.01 sec
+test 26
+      Start 26: audit_cross_thread_lifetime
+
+26: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "cross_thread_lifetime"
+26: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+26: Test timeout computed to be: 60
+26: verified_disjoint_ranges=32768 threads=8 bytes=256
+26: PASS cross_thread_lifetime
+26/31 Test #26: audit_cross_thread_lifetime ............   Passed    0.01 sec
+test 27
+      Start 27: audit_plain_wire
+
+27: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "plain_wire"
+27: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+27: Test timeout computed to be: 60
+27: plain_wire_1000 malloc=0 calloc=1000 realloc=0 aligned=0 map=0 commit=0 requested_bytes=1100000
+27: FAIL plain_wire: Wire encode/decode allocates per message
+27/31 Test #27: audit_plain_wire .......................***Failed    0.01 sec
+test 28
+      Start 28: audit_encrypted_wire
+
+28: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "encrypted_wire"
+28: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+28: Test timeout computed to be: 60
+28: encrypted_wire_1000 malloc=1000 calloc=1000 realloc=0 aligned=0 map=0 commit=0 requested_bytes=2152000
+28: FAIL encrypted_wire: Wire encode/decode allocates per message
+28/31 Test #28: audit_encrypted_wire ...................***Failed    0.01 sec
+test 29
+      Start 29: audit_channel_allocations
+
+29: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "channel_allocations"
+29: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+29: Test timeout computed to be: 60
+29: tcp_round_trips_100 malloc=400 calloc=600 realloc=0 aligned=0 map=0 commit=0 requested_bytes=13848000
+29: FAIL channel_allocations: TCP exchange allocates per message after warmup
+29/31 Test #29: audit_channel_allocations ..............***Failed    0.03 sec
+test 30
+      Start 30: audit_queue_identity
+
+30: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "queue_identity"
+30: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+30: Test timeout computed to be: 60
+30: queue_8192 malloc=0 calloc=0 realloc=0 aligned=0 map=0 commit=0 requested_bytes=0
+30: PASS queue_identity
+30/31 Test #30: audit_queue_identity ...................   Passed    0.00 sec
+test 31
+      Start 31: audit_typed_count
+
+31: Test command: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit/buffetalligator_audit_contracts "typed_count"
+31: Working Directory: /Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/audit
+31: Test timeout computed to be: 60
+31: PASS typed_count
+31/31 Test #31: audit_typed_count ......................   Passed    0.00 sec
+
+74% tests passed, 8 tests failed out of 31
+
+Label Time Summary:
+arena_audit    =   0.52 sec*proc (12 tests)
+
+Total Test time (real) =  14.60 sec
+
+The following tests FAILED:
+	 20 - audit_layout (Failed)                             arena_audit
+	 21 - audit_references (Failed)                         arena_audit
+	 23 - audit_prepared_chain (Failed)                     arena_audit
+	 24 - audit_alignment (Failed)                          arena_audit
+	 25 - audit_registry_commitment (Failed)                arena_audit
+	 27 - audit_plain_wire (Failed)                         arena_audit
+	 28 - audit_encrypted_wire (Failed)                     arena_audit
+	 29 - audit_channel_allocations (Failed)                arena_audit
+Errors while running CTest
+Output from these tests are in: /Users/joshmorgan/manifoldb/buffetalligator/build/current/Testing/Temporary/LastTest.log
+Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.

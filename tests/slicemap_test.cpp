@@ -2,6 +2,7 @@
  * @file slicemap_test.cpp
  * @brief Exercises row publication, duplicate lookup, merge, and reclamation during reuse.
  */
+#include "test_support.hpp"
 #include <alligator.hpp>
 #include <array>
 #include <atomic>
@@ -14,12 +15,6 @@
 namespace {
 using buffetalligator::Slice;
 using buffetalligator::SliceMap;
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Stops a failed map contract check in every build configuration.
- */
-void require(bool condition, const char* message) {
-    if (!condition) { std::fprintf(stderr, "%s\n", message); std::abort(); }
-}
 /** --------------------------------------------------------------------------------------------------------- Payload
  * @brief Builds a row whose bytes identify both its key and publication generation.
  */
@@ -35,39 +30,39 @@ Slice payload(int64_t identifier, uint64_t generation) {
 void contracts() {
     alignas(SliceMap::Row) std::byte row_storage[sizeof(SliceMap::Row)];
     auto* placed = new (row_storage) SliceMap::Row(17, payload(17, 1));
-    require(placed->payload.data<int64_t>()[0] == 17, "row placement construction failed");
+    TEST_EQUAL(placed->payload.data<int64_t>()[0], 17, "row placement construction failed");
     placed->~Row();
     SliceMap empty(0);
-    require(empty.find(int64_t(17)) == -1 && !empty.get_slice(int64_t(17)), "empty lookup");
+    TEST_REQUIRE(empty.find(int64_t(17)) == -1 && !empty.get_slice(int64_t(17)), "empty lookup");
     SliceMap map(8);
     const std::array<int64_t, 5> identifiers{0, INT64_MIN, UINT32_MAX, INT64_MAX, 0};
     for (size_t index = 0; index < identifiers.size(); ++index) {
         map.add_slice(identifiers[index], payload(identifiers[index], index));
     }
-    require(map.find(int64_t(0)) == 0, "duplicate ID did not select the first slot");
-    require(map.get_slice(uint32_t(UINT32_MAX)).data<int64_t>()[0] == UINT32_MAX, "32-bit ID mismatch");
-    require(!map.get_slice(int64_t(-1)) && map.find(int64_t(-1)) == -1, "sentinel matched a row");
+    TEST_EQUAL(map.find(int64_t(0)), 0, "duplicate ID did not select the first slot");
+    TEST_EQUAL(map.get_slice(uint32_t(UINT32_MAX)).data<int64_t>()[0], UINT32_MAX, "32-bit ID mismatch");
+    TEST_REQUIRE(!map.get_slice(int64_t(-1)) && map.find(int64_t(-1)) == -1, "sentinel matched a row");
     for (size_t index = 0; index < 4; ++index) {
-        require(map.find(identifiers[index]) == static_cast<int64_t>(index), "slot order changed");
+        TEST_EQUAL(map.find(identifiers[index]), static_cast<int64_t>(index), "slot order changed");
         auto result = map.get_slice(identifiers[index]);
-        require(result && result.data<int64_t>()[0] == identifiers[index], "key lookup mismatch");
+        TEST_REQUIRE(result && result.data<int64_t>()[0] == identifiers[index], "key lookup mismatch");
     }
     Slice retained = map.get_slice(int64_t(0));
     SliceMap moved(std::move(map));
-    require(moved.size() == identifiers.size(), "move lost rows");
+    TEST_EQUAL(moved.size(), identifiers.size(), "move lost rows");
     map.reset();
-    require(map.size() == 0 && map.find(int64_t(0)) == -1, "moved-from reset failed");
+    TEST_REQUIRE(map.size() == 0 && map.find(int64_t(0)) == -1, "moved-from reset failed");
     moved.merge(map);
     SliceMap destination(16);
     destination.add_slice(int64_t(101), payload(101, 1));
     destination.merge(moved);
-    require(destination.size() == 6 && moved.size() == 0, "merge lost rows");
-    require(destination.find(int64_t(0)) == 1, "merge changed row order");
+    TEST_REQUIRE(destination.size() == 6 && moved.size() == 0, "merge lost rows");
+    TEST_EQUAL(destination.find(int64_t(0)), 1, "merge changed row order");
     destination.add_slice(int64_t(202), payload(202, 2));
-    require(destination.find(int64_t(202)) == 6, "partial merge left unclaimed slot holes");
+    TEST_EQUAL(destination.find(int64_t(202)), 6, "partial merge left unclaimed slot holes");
     destination.reset();
-    require(retained.data<uint64_t>()[1] == 0, "reset invalidated a copied Slice");
-    require(destination.size() == 0 && destination.find(int64_t(0)) == -1, "reset retained ID");
+    TEST_EQUAL(retained.data<uint64_t>()[1], 0, "reset invalidated a copied Slice");
+    TEST_REQUIRE(destination.size() == 0 && destination.find(int64_t(0)) == -1, "reset retained ID");
 }
 /** --------------------------------------------------------------------------------------------------------- Identifier For Hash
  * @brief Constructs keys that force fingerprint collisions without a probabilistic search.
@@ -95,9 +90,9 @@ void collisions() {
     const int64_t missing = identifier_for_hash(0x100e);
     fingerprints.add_slice(first, payload(first, 0));
     fingerprints.add_slice(second, payload(second, 1));
-    require(fingerprints.find(missing) == -1 && !fingerprints.get_slice(missing), "fingerprint false hit");
+    TEST_REQUIRE(fingerprints.find(missing) == -1 && !fingerprints.get_slice(missing), "fingerprint false hit");
     fingerprints.add_slice(missing, payload(missing, 2));
-    require(fingerprints.find(missing) == 2, "fingerprint collision lost insertion");
+    TEST_EQUAL(fingerprints.find(missing), 2, "fingerprint collision lost insertion");
     SliceMap map(64);
     std::vector<int64_t> identifiers;
     for (uint64_t candidate = 0; identifiers.size() < map.capacity(); ++candidate) {
@@ -108,8 +103,8 @@ void collisions() {
         map.add_slice(static_cast<int64_t>(candidate), payload(candidate, identifiers.size()));
     }
     for (size_t index = 0; index < identifiers.size(); ++index) {
-        require(map.find(identifiers[index]) == static_cast<int64_t>(index), "collision lost a slot");
-        require(map.get_slice(identifiers[index]).data<int64_t>()[0] == identifiers[index], "collision mismatch");
+        TEST_EQUAL(map.find(identifiers[index]), static_cast<int64_t>(index), "collision lost a slot");
+        TEST_EQUAL(map.get_slice(identifiers[index]).data<int64_t>()[0], identifiers[index], "collision mismatch");
     }
     map.reset();
     std::barrier start(8);
@@ -121,17 +116,17 @@ void collisions() {
         });
     }
     for (auto& worker : workers) worker.join();
-    require(map.size() == 64 && map.find(int64_t(11)) == 0, "duplicate publication changed first slot");
-    require(map.get_slice(int64_t(11)).raw() == map.slice_at(0).raw(), "duplicate selected wrong payload");
+    TEST_REQUIRE(map.size() == 64 && map.find(int64_t(11)) == 0, "duplicate publication changed first slot");
+    TEST_EQUAL(map.get_slice(int64_t(11)).raw(), map.slice_at(0).raw(), "duplicate selected wrong payload");
 }
 /** --------------------------------------------------------------------------------------------------------- Publish Hook
  * @brief Verifies slot publication and records hook completion before the landed count advances.
  */
 void publish_hook(void* context, void* pointer, const size_t& slot) {
     auto& map = *static_cast<SliceMap*>(pointer);
-    require(map.published(slot), "hook ran before publication");
+    TEST_REQUIRE(map.published(slot), "hook ran before publication");
     auto result = map.slice_at(slot);
-    require(result.data<int64_t>()[0] == map.id<int64_t>(slot), "hook saw uninitialized payload");
+    TEST_EQUAL(result.data<int64_t>()[0], map.id<int64_t>(slot), "hook saw uninitialized payload");
     static_cast<std::atomic<size_t>*>(context)->fetch_add(1, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Publish
@@ -158,17 +153,17 @@ void publish(size_t threads) {
             for (size_t index = worker; index < total; index += threads) {
                 Slice result;
                 while (!(result = map.get_slice(static_cast<int64_t>(index)))) std::this_thread::yield();
-                require(result.data<int64_t>()[0] == static_cast<int64_t>(index), "wrong published key");
-                require(result.data<uint64_t>()[1] == (index ^ 0x91), "payload visibility failure");
+                TEST_EQUAL(result.data<int64_t>()[0], static_cast<int64_t>(index), "wrong published key");
+                TEST_EQUAL(result.data<uint64_t>()[1], (index ^ 0x91), "payload visibility failure");
             }
         });
     }
     start.arrive_and_wait();
     map.wait_until_full(total / 2);
     map.wait();
-    require(hooks.load(std::memory_order_relaxed) == total, "wait returned before hooks");
+    TEST_EQUAL(hooks.load(std::memory_order_relaxed), total, "wait returned before hooks");
     for (auto& worker : workers) worker.join();
-    require(map.size() == total, "concurrent append lost a row");
+    TEST_EQUAL(map.size(), total, "concurrent append lost a row");
 }
 /** --------------------------------------------------------------------------------------------------------- Reuse
  * @brief Changes every key during reset while readers retain and validate reclaimed generations.
@@ -189,9 +184,9 @@ void reuse() {
                 auto result = map.get_slice(needle);
                 if (!result) continue;
                 std::this_thread::yield();
-                require(result.data<int64_t>()[0] == needle, "reset returned another row's key");
+                TEST_EQUAL(result.data<int64_t>()[0], needle, "reset returned another row's key");
                 const uint64_t generation = result.data<uint64_t>()[1];
-                require(static_cast<size_t>(needle) / capacity == generation % 2, "reset corrupted generation");
+                TEST_EQUAL(static_cast<size_t>(needle) / capacity, generation % 2, "reset corrupted generation");
             }
         });
     }
@@ -213,6 +208,7 @@ void reuse() {
  * @brief Runs map contracts and concurrent publication and reclamation stress.
  */
 int main() {
+    test_support::start(__FILE__);
     contracts();
     collisions();
     const size_t maximum = size_t(2) * buffetalligator::Memory::hardware_threads();

@@ -2,6 +2,7 @@
  * @file vulkan_test.cpp
  * @brief Verifies Vulkan property preservation and byte-exact views against a separately initialized receiver.
  */
+#include "test_support.hpp"
 #include <alligator.hpp>
 #include <cstdio>
 #include <cstdlib>
@@ -20,12 +21,6 @@ namespace {
 uint16_t port;
 Slice received;
 std::binary_semaphore completed{0};
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Checks GPU and network contracts in optimized builds.
- */
-void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 /** --------------------------------------------------------------------------------------------------------- Response
  * @brief Publishes the received ownership before waking the test thread.
  */
@@ -37,7 +32,7 @@ void response(Slice slice) {
  * @brief Confirms device storage exists before replying from the received host view.
  */
 void receive(Slice slice) {
-    require(slice.vulkan_buffer().buffer != VK_NULL_HANDLE, "receiver has no Vulkan buffer");
+    TEST_REQUIRE(slice.vulkan_buffer().buffer != VK_NULL_HANDLE, "receiver has no Vulkan buffer");
     slice.data<unsigned char>()[slice.size_bytes() - 1] ^= 0xA5;
     slice.vulkan_sync(true);
     SliceChannel::send(std::move(slice), "", port, SliceChannel::Protocol::TCP);
@@ -47,20 +42,21 @@ void receive(Slice slice) {
  */
 uint16_t unused_port() {
     int descriptor = socket(AF_INET, SOCK_STREAM, 0);
-    require(descriptor >= 0, "test socket failed");
+    TEST_REQUIRE(descriptor >= 0, "test socket failed");
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    require(!bind(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)),
+    TEST_REQUIRE(!bind(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)),
             "test bind failed");
     socklen_t length = sizeof(address);
-    require(!getsockname(descriptor, reinterpret_cast<sockaddr*>(&address), &length),
+    TEST_REQUIRE(!getsockname(descriptor, reinterpret_cast<sockaddr*>(&address), &length),
             "test name failed");
     ::close(descriptor);
     return ntohs(address.sin_port);
 }
 } // namespace
 int main(int count, char** arguments) {
+    test_support::start(__FILE__);
     try {
         if (count == 5) {
             port = static_cast<uint16_t>(std::stoi(arguments[2]));
@@ -80,12 +76,12 @@ int main(int count, char** arguments) {
         }
         port = unused_port();
         int ready[2], commands[2];
-        require(!pipe(ready) && !pipe(commands), "test pipes failed");
+        TEST_REQUIRE(!pipe(ready) && !pipe(commands), "test pipes failed");
         const std::string service = std::to_string(port);
         const std::string notification = std::to_string(ready[1]);
         const std::string control = std::to_string(commands[0]);
         pid_t child = fork();
-        require(child >= 0, "test fork failed");
+        TEST_REQUIRE(child >= 0, "test fork failed");
         if (!child) {
             ::close(ready[0]);
             ::close(commands[1]);
@@ -96,7 +92,7 @@ int main(int count, char** arguments) {
         ::close(ready[1]);
         ::close(commands[0]);
         char notification_byte;
-        require(read(ready[0], &notification_byte, 1) == 1, "receiver failed to start");
+        TEST_EQUAL(read(ready[0], &notification_byte, 1), 1, "receiver failed to start");
         ::close(ready[0]);
         try {
             for (uint32_t properties : {1u, 2u, 6u, 14u}) {
@@ -109,25 +105,25 @@ int main(int count, char** arguments) {
                 Slice backing(original, sizeof(original), true, placement);
                 Slice view = backing.slice(3, 1025);
                 const auto buffer = view.vulkan_buffer();
-                require(buffer.buffer == backing.vulkan_buffer().buffer && buffer.offset == 3 &&
+                TEST_REQUIRE(buffer.buffer == backing.vulkan_buffer().buffer && buffer.offset == 3 &&
                             buffer.range == 1025,
                         "Vulkan view lost its original buffer offset");
                 view.vulkan_sync(false);
-                require(!std::memcmp(view.raw(), original + 3, 1025),
+                TEST_REQUIRE(!std::memcmp(view.raw(), original + 3, 1025),
                         "Vulkan upload/readback changed bytes");
                 SliceChannel::send(std::move(view), "127.0.0.1", port, SliceChannel::Protocol::TCP,
                                    response);
-                require(completed.try_acquire_for(std::chrono::seconds(30)),
+                TEST_REQUIRE(completed.try_acquire_for(std::chrono::seconds(30)),
                         "Vulkan response did not arrive");
-                require(received && received.size_bytes() == 1025, "Vulkan receive failed");
-                require(received.placement() == placement,
+                TEST_REQUIRE(received && received.size_bytes() == 1025, "Vulkan receive failed");
+                TEST_EQUAL(received.placement(), placement,
                         "Vulkan properties changed across the network");
-                require(received.vulkan_buffer().buffer != VK_NULL_HANDLE,
+                TEST_REQUIRE(received.vulkan_buffer().buffer != VK_NULL_HANDLE,
                         "Vulkan response has no device buffer");
                 received.vulkan_sync(false);
-                require(!std::memcmp(received.raw(), original + 3, 1024),
+                TEST_REQUIRE(!std::memcmp(received.raw(), original + 3, 1024),
                         "Vulkan response bytes differ");
-                require(received.data<unsigned char>()[1024] == (original[1027] ^ 0xA5),
+                TEST_EQUAL(received.data<unsigned char>()[1024], (original[1027] ^ 0xA5),
                         "Vulkan reply was not uploaded");
                 received.free();
             }
@@ -139,11 +135,11 @@ int main(int count, char** arguments) {
         ::close(commands[1]);
         int status;
         waitpid(child, &status, 0);
-        require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "Vulkan receiver failed");
+        TEST_REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0, "Vulkan receiver failed");
         BuffetMenu::shutdown();
         std::puts("Vulkan network contracts passed");
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "Vulkan test failed: %s\n", error.what());
-        return 1;
+        test_support::fail("Unexpected exception; source is the last test checkpoint",
+            test_support::last_operation, "successful completion", error.what(), test_support::last_location);
     }
 }

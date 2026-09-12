@@ -1,0 +1,11 @@
+Arena benchmark: hardware_threads=16 page=16384 cache_line=128 Slice_bytes=16 repetitions=3
+Measuring arena repetition 1/3
+Rollover slab_bytes=268435456 budget_bytes=27858345984 allocated_bytes=8321499136 freed_bytes=7516192768
+Rollover failed after 116 completed claims: BA_E_BUDGET
+Measuring arena repetition 2/3
+Rollover slab_bytes=268435456 budget_bytes=27858345984 allocated_bytes=41607495680 freed_bytes=40802189312
+Rollover failed after 118 completed claims: BA_E_BUDGET
+Measuring arena repetition 3/3
+Rollover slab_bytes=268435456 budget_bytes=27858345984 allocated_bytes=75430363136 freed_bytes=74625056768
+Rollover failed after 116 completed claims: BA_E_BUDGET
+Arena benchmark complete: checksum=3529948128

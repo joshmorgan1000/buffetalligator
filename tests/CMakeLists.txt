@@ -1,3 +1,9 @@
+add_executable(buffetalligator_memory_contracts memory_contracts.cpp)
+target_link_libraries(buffetalligator_memory_contracts PRIVATE alligator::alligator)
+foreach(memory_contract alignment_and_zeroing prepared_claims typed_sizes views_across_rollover)
+    add_test(NAME memory_${memory_contract} COMMAND buffetalligator_memory_contracts ${memory_contract})
+    set_tests_properties(memory_${memory_contract} PROPERTIES LABELS "public_memory_contract" TIMEOUT 60)
+endforeach()
 add_executable(buffetalligator_memory_test memory_test.cpp)
 target_link_libraries(buffetalligator_memory_test PRIVATE alligator::alligator)
 add_test(NAME buffetalligator_memory_test COMMAND buffetalligator_memory_test)
@@ -103,3 +109,24 @@ target_link_libraries(buffetalligator_vulkan_test PRIVATE alligator::alligator a
 target_include_directories(buffetalligator_vulkan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME buffetalligator_vulkan_test COMMAND buffetalligator_vulkan_test)
 set_tests_properties(buffetalligator_vulkan_test PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+if(UNIX)
+    add_subdirectory(audit)
+    add_executable(buffetalligator_diagnostic_fixtures diagnostics_test.cpp)
+    target_link_libraries(buffetalligator_diagnostic_fixtures PRIVATE Threads::Threads)
+    target_compile_options(buffetalligator_diagnostic_fixtures PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME buffetalligator_test_runner_test COMMAND ${CMAKE_COMMAND}
+        -DFIXTURE_PROGRAM=$<TARGET_FILE:buffetalligator_diagnostic_fixtures>
+        -DFIXTURE_DIR=${CMAKE_CURRENT_BINARY_DIR}/runner-fixtures
+        -DTEST_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/run_tests.sh
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/verify_runner.cmake)
+    set_tests_properties(buffetalligator_test_runner_test PROPERTIES TIMEOUT 45)
+endif()
+get_property(unit_tests DIRECTORY PROPERTY TESTS)
+foreach(unit_test IN LISTS unit_tests)
+    set_property(TEST ${unit_test} APPEND PROPERTY ENVIRONMENT
+        "BUFFETALLIGATOR_TEST_NAME=${unit_test}")
+    get_property(unit_timeout TEST ${unit_test} PROPERTY TIMEOUT)
+    if(NOT unit_timeout)
+        set_tests_properties(${unit_test} PROPERTIES TIMEOUT 120)
+    endif()
+endforeach()

@@ -2,6 +2,7 @@
  * @file network_test.cpp
  * @brief Verifies public Slice channels across processes and rejects malformed or forged private frames.
  */
+#include "test_support.hpp"
 #include <alligator.hpp>
 #include <atomic>
 #include <cstdio>
@@ -26,12 +27,6 @@ Protocol protocol;
 std::counting_semaphore<4096> completed{0};
 std::mutex results_mutex;
 std::vector<Slice> results;
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Reports a failed contract independently of release-mode assertions.
- */
-void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 /** --------------------------------------------------------------------------------------------------------- Allocate Test Placement
  * @brief Supplies genuine registered storage whose type differs between the two processes.
  */
@@ -95,14 +90,14 @@ void idle(Slice) {}
  */
 uint16_t unused_port() {
     int descriptor = socket(AF_INET, SOCK_STREAM, 0);
-    require(descriptor >= 0, "test socket creation failed");
+    TEST_REQUIRE(descriptor >= 0, "test socket creation failed");
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    require(bind(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0,
+    TEST_EQUAL(bind(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0,
             "test bind failed");
     socklen_t length = sizeof(address);
-    require(getsockname(descriptor, reinterpret_cast<sockaddr*>(&address), &length) == 0,
+    TEST_EQUAL(getsockname(descriptor, reinterpret_cast<sockaddr*>(&address), &length), 0,
             "test name failed");
     ::close(descriptor);
     return ntohs(address.sin_port);
@@ -115,13 +110,13 @@ struct Child {
     int control;
     Child(const char* executable, Protocol selected, uint16_t number) {
         int ready[2], commands[2];
-        require(pipe(ready) == 0 && pipe(commands) == 0, "test pipes failed");
+        TEST_REQUIRE(pipe(ready) == 0 && pipe(commands) == 0, "test pipes failed");
         std::string protocol_text = std::to_string(static_cast<unsigned>(selected));
         std::string port_text = std::to_string(number);
         std::string ready_text = std::to_string(ready[1]);
         std::string command_text = std::to_string(commands[0]);
         process = fork();
-        require(process >= 0, "test fork failed");
+        TEST_REQUIRE(process >= 0, "test fork failed");
         if (!process) {
             ::close(ready[0]);
             ::close(commands[1]);
@@ -164,21 +159,21 @@ void round_trips(const char* executable, Protocol selected) {
             view.data<unsigned char>()[index] = index % 251;
         SliceChannel::send(std::move(view), "127.0.0.1", number, selected, response);
         backing.free();
-        require(completed.try_acquire_for(std::chrono::seconds(15)), "response did not arrive");
+        TEST_REQUIRE(completed.try_acquire_for(std::chrono::seconds(15)), "response did not arrive");
         Slice result;
         {
             std::lock_guard lock(results_mutex);
             result = std::move(results.back());
             results.pop_back();
         }
-        require(result && result.size_bytes() == bytes, "response length changed");
-        require(result.is_novel(), "novel backing was lost");
-        require(std::strcmp(result.placement()->name(), "NetworkTest") == 0,
+        TEST_REQUIRE(result && result.size_bytes() == bytes, "response length changed");
+        TEST_REQUIRE(result.is_novel(), "novel backing was lost");
+        TEST_EQUAL(std::strcmp(result.placement()->name(), "NetworkTest"), 0,
                 "placement was not preserved by name");
         for (size_t index = 0; index < bytes; ++index) {
             unsigned expected = index % 251;
             if (index + 1 == bytes) expected ^= 0xA5;
-            require(result.data<unsigned char>()[index] == expected,
+            TEST_EQUAL(result.data<unsigned char>()[index], expected,
                     "payload changed across the wire");
         }
     }
@@ -193,14 +188,14 @@ void round_trips(const char* executable, Protocol selected) {
         });
     for (auto& worker : workers) worker.join();
     for (unsigned index = 0; index < 32; ++index)
-        require(completed.try_acquire_for(std::chrono::seconds(15)),
+        TEST_REQUIRE(completed.try_acquire_for(std::chrono::seconds(15)),
                 "concurrent response did not arrive");
     {
         std::lock_guard lock(results_mutex);
-        require(results.size() == 32, "response callback count changed");
+        TEST_EQUAL(results.size(), 32, "response callback count changed");
         for (const Slice& slice : results) {
-            require(slice && slice.size_bytes() == 1024, "concurrent exchange failed");
-            require((slice.data<unsigned char>()[1023] ^ 0xA5) == slice.data<unsigned char>()[0],
+            TEST_REQUIRE(slice && slice.size_bytes() == 1024, "concurrent exchange failed");
+            TEST_EQUAL((slice.data<unsigned char>()[1023] ^ 0xA5), slice.data<unsigned char>()[0],
                     "concurrent response corruption");
         }
         results.clear();
@@ -212,32 +207,32 @@ void round_trips(const char* executable, Protocol selected) {
  */
 void wire_validation() {
     unsigned char key[32], token[16]{};
-    require(!ba_net_key(key), "test key invalid");
+    TEST_REQUIRE(!ba_net_key(key), "test key invalid");
     Slice source(123);
     std::memset(source.raw(), 0x42, source.size_bytes());
     ba_net_frame frame{};
-    require(!ba_net_encode(reinterpret_cast<const ba_slice_t*>(&source), BA_NET_SECURE, token, key,
+    TEST_REQUIRE(!ba_net_encode(reinterpret_cast<const ba_slice_t*>(&source), BA_NET_SECURE, token, key,
                            &frame),
             "frame encoding failed");
     ba_slice_t decoded;
-    require(!ba_net_decode(frame.data, frame.size, 128, key, &decoded),
+    TEST_REQUIRE(!ba_net_decode(frame.data, frame.size, 128, key, &decoded),
             "authenticated frame rejected");
-    require(std::memcmp(decoded.ptr, source.raw(), source.size_bytes()) == 0,
+    TEST_EQUAL(std::memcmp(decoded.ptr, source.raw(), source.size_bytes()), 0,
             "decoded bytes differ");
     ba_release(&decoded);
     frame.data[frame.size - 1] ^= 1;
-    require(ba_net_decode(frame.data, frame.size, 128, key, &decoded) == UV_EACCES,
+    TEST_EQUAL(ba_net_decode(frame.data, frame.size, 128, key, &decoded), UV_EACCES,
             "forged tag accepted");
     frame.data[frame.size - 1] ^= 1;
-    require(ba_net_decode(frame.data, frame.size, 0, key, &decoded) == UV_EACCES,
+    TEST_EQUAL(ba_net_decode(frame.data, frame.size, 0, key, &decoded), UV_EACCES,
             "encryption downgrade accepted");
     frame.data[16] ^= 1;
-    require(ba_net_decode(frame.data, frame.size, 128, key, &decoded) == UV_EACCES,
+    TEST_EQUAL(ba_net_decode(frame.data, frame.size, 128, key, &decoded), UV_EACCES,
             "forged request identifier accepted");
     frame.data[16] ^= 1;
     frame.data[8] = 0xFF;
     size_t bytes;
-    require(ba_net_frame_size(frame.data, &bytes) == UV_EMSGSIZE, "oversized length accepted");
+    TEST_EQUAL(ba_net_frame_size(frame.data, &bytes), UV_EMSGSIZE, "oversized length accepted");
     free(frame.data);
 }
 /** --------------------------------------------------------------------------------------------------------- Failure Contracts
@@ -250,7 +245,7 @@ void failures() {
     } catch (const std::exception&) {
         rejected = true;
     }
-    require(rejected, "empty address accepted outside receive callback");
+    TEST_REQUIRE(rejected, "empty address accepted outside receive callback");
     port = unused_port();
     protocol = Protocol::UDP;
     SliceChannel::listen(port, protocol, idle);
@@ -260,21 +255,21 @@ void failures() {
     } catch (const std::exception&) {
         rejected = true;
     }
-    require(rejected, "duplicate listener accepted");
+    TEST_REQUIRE(rejected, "duplicate listener accepted");
     rejected = false;
     try {
         SliceChannel::send(Slice(65507), "127.0.0.1", port, protocol);
     } catch (const std::exception&) {
         rejected = true;
     }
-    require(rejected, "oversized datagram accepted");
+    TEST_REQUIRE(rejected, "oversized datagram accepted");
     SliceChannel::send(Slice(100), "127.0.0.1", port, protocol, response);
     SliceChannel::close(port, protocol);
-    require(completed.try_acquire_for(std::chrono::seconds(5)),
+    TEST_REQUIRE(completed.try_acquire_for(std::chrono::seconds(5)),
             "close did not cancel pending response");
     {
         std::lock_guard lock(results_mutex);
-        require(results.size() == 1 && !results[0],
+        TEST_REQUIRE(results.size() == 1 && !results[0],
                 "canceled response did not report null exactly once");
         results.clear();
     }
@@ -284,11 +279,12 @@ void failures() {
     port = unused_port();
     SliceChannel::listen(port, protocol, receive_oneway);
     SliceChannel::send(Slice(100), "127.0.0.1", port, protocol);
-    require(completed.try_acquire_for(std::chrono::seconds(5)), "one-way receive callback failed");
+    TEST_REQUIRE(completed.try_acquire_for(std::chrono::seconds(5)), "one-way receive callback failed");
     SliceChannel::close(port, protocol);
 }
 } // namespace
 int main(int count, char** arguments) {
+    test_support::start(__FILE__);
     try {
         setenv("ALLIGATOR_NETWORK_KEY",
                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", 1);
@@ -299,7 +295,7 @@ int main(int count, char** arguments) {
             register_placement("NetworkTest");
             SliceChannel::listen(port, protocol, receive);
             const char ready = 'R';
-            require(write(std::stoi(arguments[4]), &ready, 1) == 1, "ready signal failed");
+            TEST_EQUAL(write(std::stoi(arguments[4]), &ready, 1), 1, "ready signal failed");
             ::close(std::stoi(arguments[4]));
             char command;
             (void)read(std::stoi(arguments[5]), &command, 1);
@@ -309,7 +305,7 @@ int main(int count, char** arguments) {
         }
         register_placement("NetworkTest");
         SliceT<uint64_t> typed(size_t{19});
-        require(typed.size_bytes() == sizeof(uint64_t) * 19,
+        TEST_EQUAL(typed.size_bytes(), sizeof(uint64_t) * 19,
                 "SliceT count constructor allocated wrong size");
         wire_validation();
         for (Protocol selected : {Protocol::TCP, Protocol::UDP, Protocol::EncryptedTCP,
@@ -319,7 +315,7 @@ int main(int count, char** arguments) {
         BuffetMenu::shutdown();
         std::puts("Network contracts passed");
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "Network test failed: %s\n", error.what());
-        return 1;
+        test_support::fail("Unexpected exception; source is the last test checkpoint",
+            test_support::last_operation, "successful completion", error.what(), test_support::last_location);
     }
 }

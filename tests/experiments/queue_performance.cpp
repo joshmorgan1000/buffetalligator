@@ -2,6 +2,7 @@
  * @file bench_queue.cpp
  * @brief Compares Slice handoffs through C TLS blocks, moodycamel, and sequence-keyed SliceMap rows.
  */
+#include "../test_support.hpp"
 extern "C" {
 #include "core/ba_queue.h"
 }
@@ -27,15 +28,6 @@ constexpr size_t lane_capacity = 4096;
 constexpr size_t maximum_batch = BA_QUEUE_BATCH_SIZE;
 constexpr uint64_t checksum_salt = 0x59a73bc48fe206d1ull;
 static_assert(sizeof(ba_slice_t) == 16);
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Stops immediately on a failed benchmark invariant.
- */
-void require(bool condition, const char* message) {
-    if (!condition) {
-        std::fprintf(stderr, "%s\n", message);
-        std::abort();
-    }
-}
 /** --------------------------------------------------------------------------------------------------------- Nanoseconds
  * @brief Returns a steady timestamp for optional delivery sampling.
  */
@@ -59,12 +51,12 @@ struct Fixture {
     std::vector<ba_slice_t> input;
     size_t per_producer;
     Fixture(size_t producers, size_t items) : input(producers * items), per_producer(items) {
-        require(ba_claim(0, input.size() * sizeof(Payload), BA_CLAIM_NOVEL, &backing) == BA_OK,
+        TEST_EQUAL(ba_claim(0, input.size() * sizeof(Payload), BA_CLAIM_NOVEL, &backing), BA_OK,
             "payload backing allocation failed");
         auto* payloads = static_cast<Payload*>(backing.ptr);
         for (size_t index = 0; index < input.size(); ++index) {
             std::construct_at(payloads + index, Payload{index + 1, 0, 0});
-            require(ba_view(&backing, index * sizeof(Payload), sizeof(Payload), &input[index]) == BA_OK,
+            TEST_EQUAL(ba_view(&backing, index * sizeof(Payload), sizeof(Payload), &input[index]), BA_OK,
                 "payload view creation failed");
         }
     }
@@ -81,7 +73,7 @@ struct Fixture {
 struct CQueue {
     struct Local {
         ba_queue_local_t* state;
-        explicit Local(ba_queue_local_t* local) : state(local) { require(state != nullptr, "queue bind failed"); }
+        explicit Local(ba_queue_local_t* local) : state(local) { TEST_REQUIRE(state != nullptr, "queue bind failed"); }
         Local(const Local&) = delete;
         Local& operator=(const Local&) = delete;
         ~Local() { ba_queue_unbind(state); }
@@ -90,7 +82,7 @@ struct CQueue {
     ba_queue_t* queue;
     CQueue(size_t producers, size_t readers, size_t capacity)
     : queue(ba_queue_create(producers, readers, capacity)) {
-        require(queue != nullptr, "C queue creation failed");
+        TEST_REQUIRE(queue != nullptr, "C queue creation failed");
     }
     ~CQueue() { ba_queue_destroy(queue); }
     Local bind_producer(size_t producer) { return Local(ba_queue_bind_producer(queue, producer)); }
@@ -134,15 +126,15 @@ struct MoodyQueue {
     : queue(writers * (lane_capacity + 2 * MoodyTraits::BLOCK_SIZE)) {
         for (size_t writer = 0; writer < writers; ++writer) {
             producers.emplace_back(std::make_unique<moodycamel::ProducerToken>(queue));
-            require(producers.back()->valid(), "moodycamel producer token allocation failed");
+            TEST_REQUIRE(producers.back()->valid(), "moodycamel producer token allocation failed");
         }
         for (size_t reader = 0; reader < readers; ++reader) {
             consumers.emplace_back(std::make_unique<Consumer>(queue));
         }
         std::vector<ba_slice_t> warm(lane_capacity);
         for (const auto& producer : producers) {
-            require(queue.try_enqueue_bulk(*producer, warm.data(), warm.size()), "moodycamel prefill failed");
-            require(queue.try_dequeue_bulk_from_producer(*producer, warm.data(), warm.size()) == warm.size(),
+            TEST_REQUIRE(queue.try_enqueue_bulk(*producer, warm.data(), warm.size()), "moodycamel prefill failed");
+            TEST_EQUAL(queue.try_dequeue_bulk_from_producer(*producer, warm.data(), warm.size()), warm.size(),
                 "moodycamel prefill drain failed");
         }
     }
@@ -182,15 +174,15 @@ struct BufferedMoodyQueue {
     : queue(writers * (lane_capacity + 2 * MoodyTraits::BLOCK_SIZE)) {
         for (size_t writer = 0; writer < writers; ++writer) {
             producers.emplace_back(std::make_unique<moodycamel::ProducerToken>(queue));
-            require(producers.back()->valid(), "buffered moodycamel producer token failed");
+            TEST_REQUIRE(producers.back()->valid(), "buffered moodycamel producer token failed");
         }
         for (size_t reader = 0; reader < readers; ++reader) {
             consumers.emplace_back(std::make_unique<moodycamel::ConsumerToken>(queue));
         }
         std::vector<ba_slice_t> warm(lane_capacity);
         for (const auto& producer : producers) {
-            require(queue.try_enqueue_bulk(*producer, warm.data(), warm.size()), "buffered prefill failed");
-            require(queue.try_dequeue_bulk(warm.data(), warm.size()) == warm.size(), "buffered prefill drain failed");
+            TEST_REQUIRE(queue.try_enqueue_bulk(*producer, warm.data(), warm.size()), "buffered prefill failed");
+            TEST_EQUAL(queue.try_dequeue_bulk(warm.data(), warm.size()), warm.size(), "buffered prefill drain failed");
         }
     }
     Local* bind_producer(size_t producer) {
@@ -210,7 +202,7 @@ struct BufferedMoodyQueue {
             const auto deadline = Clock::now() + std::chrono::seconds(60);
             do {
                 std::this_thread::yield();
-                require(Clock::now() < deadline, "buffered moodycamel enqueue stalled");
+                TEST_REQUIRE(Clock::now() < deadline, "buffered moodycamel enqueue stalled");
             } while (!queue.try_enqueue_bulk(*producers[local->index], local->values.data(), local->count));
         }
         local->count = 0;
@@ -272,9 +264,9 @@ struct SliceMapAdapter {
         producer_order.store(0, std::memory_order_relaxed);
         consumer_order.store(0, std::memory_order_relaxed);
         for (size_t index = 0; index < staged.size(); ++index) {
-            require(!staged[index], "SliceMap did not publish every staged input");
-            require(ba_view(&fixture.input[index], 0, sizeof(Payload),
-                reinterpret_cast<ba_slice_t*>(&staged[index])) == BA_OK, "SliceMap staging failed");
+            TEST_REQUIRE(!staged[index], "SliceMap did not publish every staged input");
+            TEST_EQUAL(ba_view(&fixture.input[index], 0, sizeof(Payload),
+                reinterpret_cast<ba_slice_t*>(&staged[index])), BA_OK, "SliceMap staging failed");
         }
     }
     /** --------------------------------------------------------------------------------------------- Push
@@ -317,10 +309,10 @@ struct SliceMapAdapter {
             if (!slice) break;
             if (!expected_orders.empty()) {
                 const auto* payload = slice.template data<Payload>();
-                require(payload->identifier && payload->identifier <= expected_orders.size(),
+                TEST_REQUIRE(payload->identifier && payload->identifier <= expected_orders.size(),
                     "SliceMap returned an invalid payload ID");
                 const size_t order = indexed ? map.id<size_t>(local.pending) : local.pending;
-                require(expected_orders[payload->identifier - 1] == order,
+                TEST_EQUAL(expected_orders[payload->identifier - 1], order,
                     "SliceMap delivered the wrong message sequence");
             }
             std::memcpy(output + delivered, &slice, sizeof(ba_slice_t));
@@ -366,7 +358,7 @@ struct alignas(128) Completion {
  */
 void backoff(uint64_t misses, Clock::time_point deadline) {
     if ((misses & 63) == 0) std::this_thread::yield();
-    if ((misses & 65535) == 0) require(Clock::now() < deadline, "queue run exceeded sixty seconds");
+    if ((misses & 65535) == 0) TEST_REQUIRE(Clock::now() < deadline, "queue run exceeded sixty seconds");
 }
 /** --------------------------------------------------------------------------------------------------------- Result
  * @brief Reports elapsed handoff time and optional sampled delivery percentiles.
@@ -474,12 +466,12 @@ Result run(Fixture& fixture, const Configuration& configuration) {
                         record.sum += identifier;
                         record.checksum ^= identifier;
                         if (configuration.verify) {
-                            require(identifier && identifier <= total, "invalid payload ID");
-                            require(output[index].meta == fixture.input[identifier - 1].meta,
+                            TEST_REQUIRE(identifier && identifier <= total, "invalid payload ID");
+                            TEST_EQUAL(output[index].meta, fixture.input[identifier - 1].meta,
                                 "corrupt Slice metadata");
-                            require(payload->generation == ((round + 1) ^ checksum_salt),
+                            TEST_EQUAL(payload->generation, ((round + 1) ^ checksum_salt),
                                 "payload publication was not visible");
-                            require(seen[identifier - 1].fetch_add(1, std::memory_order_relaxed) == 0,
+                            TEST_EQUAL(seen[identifier - 1].fetch_add(1, std::memory_order_relaxed), 0,
                                 "duplicate queue delivery");
                         }
                         if (configuration.latency && (identifier & 1023) == 1) {
@@ -529,11 +521,11 @@ Result run(Fixture& fixture, const Configuration& configuration) {
             std::fprintf(stderr, "round=%zu count=%llu expected=%zu sum=%llu xor=%llu\n", round,
                 (unsigned long long)count, total, (unsigned long long)sum, (unsigned long long)checksum);
         }
-        require(count == total && sum == uint64_t(total) * (total + 1) / 2 && checksum == expected_xor,
+        TEST_REQUIRE(count == total && sum == uint64_t(total) * (total + 1) / 2 && checksum == expected_xor,
             "queue delivery count or checksum mismatch");
         if (configuration.verify) {
             for (size_t index = 0; index < total; ++index) {
-                require(seen[index].load(std::memory_order_relaxed) == 1, "missing queue delivery");
+                TEST_EQUAL(seen[index].load(std::memory_order_relaxed), 1, "missing queue delivery");
             }
         }
         if (round) {
@@ -546,7 +538,7 @@ Result run(Fixture& fixture, const Configuration& configuration) {
         }
     }
     for (auto& worker : workers) worker.join();
-    require(result.allocations == 0, "moodycamel allocated during timed handoffs");
+    TEST_EQUAL(result.allocations, 0, "moodycamel allocated during timed handoffs");
     std::sort(result.latencies.begin(), result.latencies.end());
     return result;
 }
@@ -565,15 +557,15 @@ void boundary_test() {
             const size_t count = queue.pop(local, output.data(), 17);
             if (!count) break;
             for (size_t index = 0; index < count; ++index) {
-                require(output[index].ptr == fixture.input[delivered++].ptr, "buffered ordering changed");
+                TEST_EQUAL(output[index].ptr, fixture.input[delivered++].ptr, "buffered ordering changed");
             }
         }
-        require(delivered == 275, "partial flush or wakeup lost items");
-        require(queue.pop(local, output.data(), 1) == 0, "closed consumer did not stay closed");
+        TEST_EQUAL(delivered, 275, "partial flush or wakeup lost items");
+        TEST_EQUAL(queue.pop(local, output.data(), 1), 0, "closed consumer did not stay closed");
     });
     auto local = queue.bind_producer(0);
     queue.start(local);
-    require(queue.push(local, fixture.input.data(), fixture.input.size()) == fixture.input.size(),
+    TEST_EQUAL(queue.push(local, fixture.input.data(), fixture.input.size()), fixture.input.size(),
         "buffered push failed");
     queue.flush(local);
     queue.close();
@@ -587,7 +579,7 @@ void boundary_test() {
             empty.start(token);
             start.arrive_and_wait();
             ba_slice_t output;
-            require(empty.pop(token, &output, 1) == 0, "empty close lost a wakeup");
+            TEST_EQUAL(empty.pop(token, &output, 1), 0, "empty close lost a wakeup");
         });
     }
     start.arrive_and_wait();
@@ -617,6 +609,7 @@ void print(const char* engine, size_t repeat, const Configuration& configuration
  * @brief Runs correctness stress or alternating paired throughput and sampled-latency comparisons.
  */
 int main(int argument_count, char** arguments) {
+    test_support::start(__FILE__);
     bool verify = false, latency = false, skew = false, slicemap = false;
     size_t items = 1048576, rounds = 4, repeats = 5;
     size_t selected_producers = 0, selected_consumers = 0, selected_batch = 0;
@@ -628,10 +621,10 @@ int main(int argument_count, char** arguments) {
         else if (option == "--slicemap") slicemap = true;
         else if (option == "--items" || option == "--rounds" || option == "--repeats"
             || option == "--producers" || option == "--consumers" || option == "--batch") {
-            require(argument + 1 < argument_count, "missing numeric argument");
+            TEST_REQUIRE(argument + 1 < argument_count, "missing numeric argument");
             char* end = nullptr;
             const auto number = std::strtoull(arguments[++argument], &end, 10);
-            require(end && *end == '\0' && number > 0 && number <= (1ull << 24), "invalid numeric argument");
+            TEST_REQUIRE(end && *end == '\0' && number > 0 && number <= (1ull << 24), "invalid numeric argument");
             if (option == "--items") items = number;
             else if (option == "--rounds") rounds = number;
             else if (option == "--repeats") repeats = number;
@@ -644,8 +637,8 @@ int main(int argument_count, char** arguments) {
             return 2;
         }
     }
-    require((selected_producers == 0) == (selected_consumers == 0), "select both worker counts");
-    require(!selected_batch || selected_batch == 1 || selected_batch == 32 || selected_batch == 256,
+    TEST_EQUAL((selected_producers == 0), (selected_consumers == 0), "select both worker counts");
+    TEST_REQUIRE(!selected_batch || selected_batch == 1 || selected_batch == 32 || selected_batch == 256,
         "batch must be 1, 32, or 256");
     ba_init();
     if (verify) {

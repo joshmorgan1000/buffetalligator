@@ -2,6 +2,7 @@
  * @file slice_queue_test.cpp
  * @brief Checks public queue ownership, flushes, closure, reuse, and concurrent exact-once delivery.
  */
+#include "test_support.hpp"
 #include <alligator.hpp>
 extern "C" {
 #include "core/ba_core.h"
@@ -18,12 +19,6 @@ extern "C" {
 
 using buffetalligator::Slice;
 using buffetalligator::SliceQueue;
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Stops the test on a violated public contract.
- */
-static void require(bool condition, const char* message) {
-    if (!condition) { std::fprintf(stderr, "%s\n", message); std::abort(); }
-}
 /** --------------------------------------------------------------------------------------------------------- Undelivered
  * @brief Checks that destroying an unused queue releases its remaining owned Slices.
  */
@@ -35,13 +30,13 @@ static void undelivered() {
         auto producer = queue.producer(0);
         Slice payload(64, true);
         producer.push(std::move(payload));
-        require(!payload, "push did not move ownership");
+        TEST_REQUIRE(!payload, "push did not move ownership");
         ba_stats(ba_placement_default(), &allocated);
     }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     do {
         ba_stats(ba_placement_default(), &current);
-        require(std::chrono::steady_clock::now() < deadline, "queue leaked undelivered novel backing");
+        TEST_REQUIRE(std::chrono::steady_clock::now() < deadline, "queue leaked undelivered novel backing");
         std::this_thread::yield();
     } while (current.novel_bytes_freed - before.novel_bytes_freed
         < allocated.novel_bytes_allocated - before.novel_bytes_allocated);
@@ -58,7 +53,7 @@ static void boundaries() {
                 Slice payload(sizeof(uint64_t), index % 2 == 0);
                 payload.get_as<uint64_t>() = index;
                 producer.push(std::move(payload));
-                require(payload.is_null(), "single push retained its source");
+                TEST_REQUIRE(payload.is_null(), "single push retained its source");
             }
             Slice empty;
             producer.push(std::move(empty));
@@ -68,14 +63,14 @@ static void boundaries() {
             auto consumer = queue.consumer(0);
             Slice output(64);
             for (size_t index = 0; index < 275; ++index) {
-                require(consumer.pop(output), "closed queue lost a published message");
-                require(output.get_as<uint64_t>() == index, "single-producer ordering changed");
-                require(output.is_novel() == (index % 2 == 0), "handoff changed backing identity");
+                TEST_REQUIRE(consumer.pop(output), "closed queue lost a published message");
+                TEST_EQUAL(output.get_as<uint64_t>(), index, "single-producer ordering changed");
+                TEST_EQUAL(output.is_novel(), (index % 2 == 0), "handoff changed backing identity");
             }
-            require(consumer.pop(output) && output.is_null(), "null payload was confused with closure");
+            TEST_REQUIRE(consumer.pop(output) && output.is_null(), "null payload was confused with closure");
             output = Slice(64);
             const void* retained = output.raw();
-            require(!consumer.pop(output) && output.raw() == retained, "closed pop modified its destination");
+            TEST_REQUIRE(!consumer.pop(output) && output.raw() == retained, "closed pop modified its destination");
         }
         queue.reset();
     }
@@ -86,26 +81,26 @@ static void boundaries() {
 static void bindings() {
     bool rejected = false;
     try { SliceQueue invalid(0, 1); } catch (const std::exception&) { rejected = true; }
-    require(rejected, "zero producers were accepted");
+    TEST_REQUIRE(rejected, "zero producers were accepted");
     rejected = false;
     try { SliceQueue invalid(1, 1, 257); } catch (const std::exception&) { rejected = true; }
-    require(rejected, "partial block capacity was accepted");
+    TEST_REQUIRE(rejected, "partial block capacity was accepted");
     SliceQueue queue(1, 1);
     {
         auto producer = queue.producer(0);
         rejected = false;
         try { auto duplicate = queue.producer(0); } catch (const std::exception&) { rejected = true; }
-        require(rejected, "duplicate producer binding was accepted");
+        TEST_REQUIRE(rejected, "duplicate producer binding was accepted");
     }
     rejected = false;
     try { auto invalid = queue.consumer(1); } catch (const std::exception&) { rejected = true; }
-    require(rejected, "out-of-range consumer binding was accepted");
+    TEST_REQUIRE(rejected, "out-of-range consumer binding was accepted");
     {
         auto consumer = queue.consumer(0);
         rejected = false;
         try { auto duplicate = queue.consumer(0); } catch (const std::exception&) { rejected = true; }
-        require(rejected, "duplicate consumer binding was accepted");
-        require(consumer.pop(std::span<Slice>{}) == 0, "an empty output span blocked");
+        TEST_REQUIRE(rejected, "duplicate consumer binding was accepted");
+        TEST_EQUAL(consumer.pop(std::span<Slice>{}), 0, "an empty output span blocked");
     }
     queue.close();
 }
@@ -129,10 +124,10 @@ static void concurrent(size_t producers, size_t consumers, bool bulk) {
                 if (!count) break;
                 for (size_t index = 0; index < count; ++index) {
                     const size_t identifier = output[index].get_as<uint64_t>();
-                    require(identifier < total, "queue returned an invalid message");
-                    require(seen[identifier].fetch_add(1, std::memory_order_relaxed) == 0,
+                    TEST_REQUIRE(identifier < total, "queue returned an invalid message");
+                    TEST_EQUAL(seen[identifier].fetch_add(1, std::memory_order_relaxed), 0,
                         "queue duplicated a message");
-                    require(output[index].size_bytes() == 64, "queue changed Slice metadata");
+                    TEST_EQUAL(output[index].size_bytes(), 64, "queue changed Slice metadata");
                 }
                 std::this_thread::yield();
             }
@@ -151,7 +146,7 @@ static void concurrent(size_t producers, size_t consumers, bool bulk) {
                 }
                 if (bulk) writer.push(std::span<Slice>(input.data(), count));
                 else writer.push(std::move(input[0]));
-                for (size_t index = 0; index < count; ++index) require(!input[index], "bulk push retained input");
+                for (size_t index = 0; index < count; ++index) TEST_REQUIRE(!input[index], "bulk push retained input");
                 offset += count;
                 if (offset % 37 == 0) writer.flush();
             }
@@ -161,13 +156,14 @@ static void concurrent(size_t producers, size_t consumers, bool bulk) {
     queue.close();
     for (auto& reader : readers) reader.join();
     for (size_t index = 0; index < total; ++index) {
-        require(seen[index].load(std::memory_order_relaxed) == 1, "queue omitted a message");
+        TEST_EQUAL(seen[index].load(std::memory_order_relaxed), 1, "queue omitted a message");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Runs the public queue contract without a moodycamel dependency.
  */
 int main() {
+    test_support::start(__FILE__);
     static_assert(sizeof(Slice) == 16);
     static_assert(!std::is_copy_constructible_v<SliceQueue::Producer>);
     static_assert(!std::is_move_constructible_v<SliceQueue::Consumer>);

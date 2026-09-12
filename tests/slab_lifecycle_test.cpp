@@ -2,6 +2,7 @@
  * @file slab_lifecycle_test.cpp
  * @brief Verifies bounded slab ownership after repeated rollovers and thread-exit sealing.
  */
+#include "test_support.hpp"
 #include <alligator.hpp>
 #include <chrono>
 #include <cstdio>
@@ -21,6 +22,7 @@ void rollovers(const buffetalligator::Placemat* placement, size_t slab_bytes) {
  * @brief Checks current and prepared slab ownership after the worker settles.
  */
 int main() {
+    test_support::start(__FILE__);
     using namespace buffetalligator;
     const Placemat* placement = Slice::default_placement();
     const size_t slab_bytes = Memory::placement_slab_size(*placement);
@@ -35,5 +37,7 @@ int main() {
     }
     std::fprintf(stderr, "Slabs retained: allocated %zu, freed %zu, slab %zu\n",
         Memory::placement_allocations(*placement), Memory::placement_freed(*placement), slab_bytes);
-    return 1;
+    test_support::fail("Released slabs remained above the reported reserve bound after 10 seconds",
+        "allocated - freed <= (reserve_target + 1) * slab_bytes", "retained bytes within bound",
+        "retained bytes exceed bound; allocation counters are printed above");
 }

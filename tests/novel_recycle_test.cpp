@@ -2,6 +2,7 @@
  * @file novel_recycle_test.cpp
  * @brief Checks novel backing geometry, shared lifetime, and bounded concurrent slot reuse.
  */
+#include "test_support.hpp"
 #include <alligator.hpp>
 extern "C" {
 #include "core/ba_core.h"
@@ -15,12 +16,6 @@ extern "C" {
 
 using buffetalligator::Slice;
 static constexpr size_t claim_bytes = 6144;
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Fails a memory contract assertion.
- */
-static void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 /** --------------------------------------------------------------------------------------------------------- Settle
  * @brief Waits for the worker to return released novel backing.
  */
@@ -30,7 +25,7 @@ static void settle(uint32_t placement, uint64_t expected) {
         ba_stats_t stats;
         ba_stats(placement, &stats);
         if (stats.novel_bytes_allocated - stats.novel_bytes_freed == expected) return;
-        require(std::chrono::steady_clock::now() < deadline, "Novel retirement did not settle");
+        TEST_REQUIRE(std::chrono::steady_clock::now() < deadline, "Novel retirement did not settle");
         std::this_thread::yield();
     }
 }
@@ -44,8 +39,8 @@ static void recycle(std::exception_ptr* failure) {
             const size_t count = std::min(live.size(), size_t(750000) - offset);
             for (size_t index = 0; index < count; ++index) {
                 live[index] = Slice(claim_bytes, true);
-                require(live[index].size_bytes() == claim_bytes, "Public Slice size decoder disagrees");
-                require(live[index].data()[0] == 0 && live[index].data()[claim_bytes - 1] == 0,
+                TEST_EQUAL(live[index].size_bytes(), claim_bytes, "Public Slice size decoder disagrees");
+                TEST_REQUIRE(live[index].data()[0] == 0 && live[index].data()[claim_bytes - 1] == 0,
                     "New backing is not zeroed");
                 live[index].data()[0] = 0x5a;
                 live[index].data()[claim_bytes - 1] = 0x6b;
@@ -73,10 +68,10 @@ static void geometry(uint32_t placement) {
         ba_stats(placement, &before);
         Slice slice(bytes, true, owner);
         ba_stats(placement, &after);
-        require(slice.size_bytes() == bytes, "Slice size mismatch at page boundary");
-        require(after.novel_bytes_allocated - before.novel_bytes_allocated == expected,
+        TEST_EQUAL(slice.size_bytes(), bytes, "Slice size mismatch at page boundary");
+        TEST_EQUAL(after.novel_bytes_allocated - before.novel_bytes_allocated, expected,
             "Novel backing geometry mismatch");
-        require(reinterpret_cast<uintptr_t>(slice.raw()) % granule == 0, "Novel mapping alignment mismatch");
+        TEST_EQUAL(reinterpret_cast<uintptr_t>(slice.raw()) % granule, 0, "Novel mapping alignment mismatch");
         slice.free();
         settle(placement, 0);
     }
@@ -85,6 +80,7 @@ static void geometry(uint32_t placement) {
  * @brief Checks capacity beyond the former ceiling and more claims than the current slot count.
  */
 int main() {
+    test_support::start(__FILE__);
     geometry(0);
     geometry(1);
     const uint32_t placement = ba_placement_default();
@@ -95,7 +91,7 @@ int main() {
     owner.data()[0] = 0x7c;
     Slice retained = owner.slice(0, 64);
     owner.free();
-    require(retained.size_bytes() == 64 && retained.data()[0] == 0x7c,
+    TEST_REQUIRE(retained.size_bytes() == 64 && retained.data()[0] == 0x7c,
         "Sub-slice did not retain novel backing");
     std::vector<Slice> held;
     held.reserve(150000);
@@ -109,7 +105,7 @@ int main() {
     for (auto& worker : workers) worker.join();
     for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
     settle(placement, expected);
-    require(retained.data()[0] == 0x7c, "Recycling changed retained backing");
+    TEST_EQUAL(retained.data()[0], 0x7c, "Recycling changed retained backing");
     retained.free();
     settle(placement, 0);
     LOG_INFO_STREAM << "PASS novel recycling: bytes=" << claim_bytes << " backing=" << expected

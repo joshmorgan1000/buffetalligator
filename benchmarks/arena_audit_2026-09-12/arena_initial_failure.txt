@@ -1,0 +1,3 @@
+Arena benchmark: hardware_threads=16 page=16384 cache_line=128 Slice_bytes=16 repetitions=3
+Measuring arena repetition 1/3
+Benchmark failed: BA_E_BUDGET: aligned_heap
