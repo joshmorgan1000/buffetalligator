@@ -21,9 +21,10 @@ Buffet::Buffet(
     bool is_novel
 ) : cold_(
     new Entree{
+        .next = nullptr,
         .placement = placement,
-        .context = context,
         .handle = placement->alligator_(size, context),
+        .context = context,
     }
 ), host_(placement->get_host_ptr_(cold_->handle)) {
     size_ = size << 17;

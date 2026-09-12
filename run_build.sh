@@ -237,11 +237,11 @@ build_abseil_from_source() {
         local CURRENT_TAG
         CURRENT_TAG=$(git -C "${ABSEIL_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${ABSEIL_VERSION}" ]]; then
-            pushd "${ABSEIL_SRC}" > /dev/null
-            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${ABSEIL_VERSION}" 2>/dev/null \
+            pushd "${ABSEIL_SRC}"
+            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${ABSEIL_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${ABSEIL_VERSION}"
-            popd > /dev/null
+            popd
         fi
     fi
     echo "Building Abseil (${ABSEIL_VERSION})..."
@@ -264,9 +264,9 @@ build_abseil_from_source() {
         -DABSL_BUILD_TESTING=OFF \
         -DABSL_ENABLE_INSTALL=ON \
         -DABSL_PROPAGATE_CXX_STD=ON \
-        -DBUILD_SHARED_LIBS=OFF > /dev/null
+        -DBUILD_SHARED_LIBS=OFF
     "${CMAKE_CMD}" --build "${ABSEIL_BUILD}" -j "${ABSEIL_NPROC}"
-    "${CMAKE_CMD}" --install "${ABSEIL_BUILD}" > /dev/null
+    "${CMAKE_CMD}" --install "${ABSEIL_BUILD}"
     ABSEIL_CONFIG=$(find "${ABSEIL_DEPS}" -path '*/cmake/absl/abslConfig.cmake' -print -quit 2>/dev/null)
     ABSEIL_MAP_LIB=$(find "${ABSEIL_DEPS}" \( -name 'libabsl_raw_hash_set.a' -o \
         -name 'absl_raw_hash_set.lib' \) -print -quit 2>/dev/null)
@@ -297,18 +297,18 @@ build_libfabric_from_source() {
         local CURRENT_TAG
         CURRENT_TAG=$(git -C "${LIBFABRIC_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${LIBFABRIC_VERSION}" ]]; then
-            pushd "${LIBFABRIC_SRC}" > /dev/null
-            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${LIBFABRIC_VERSION}" 2>/dev/null \
+            pushd "${LIBFABRIC_SRC}"
+            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${LIBFABRIC_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${LIBFABRIC_VERSION}"
-            popd > /dev/null
+            popd
         fi
     fi
     if [[ "${REBUILD_VENDORED}" == true && -f "${LIBFABRIC_SRC}/Makefile" ]]; then
         make -C "${LIBFABRIC_SRC}" clean
     fi
     echo "Building libfabric (${LIBFABRIC_VERSION})..."
-    (cd "${LIBFABRIC_SRC}" && ./autogen.sh -s) > /dev/null
+    (cd "${LIBFABRIC_SRC}" && ./autogen.sh -s)
     local F_NPROC=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
     local FABRIC_HMEM_FLAGS=()
     if echo '#include <cuda.h>' | ${CC:-cc} -E -x c - > /dev/null 2>&1; then
@@ -323,9 +323,9 @@ build_libfabric_from_source() {
             --disable-shared \
             --enable-static \
             --enable-pic \
-            "${FABRIC_HMEM_FLAGS[@]+"${FABRIC_HMEM_FLAGS[@]}"}") > /dev/null
+            "${FABRIC_HMEM_FLAGS[@]+"${FABRIC_HMEM_FLAGS[@]}"}")
     make -C "${LIBFABRIC_SRC}" -j "${F_NPROC}"
-    make -C "${LIBFABRIC_SRC}" install > /dev/null
+    make -C "${LIBFABRIC_SRC}" install
     if [[ ! -f "${LIBFABRIC_DEPS}/lib/libfabric.a" ]]; then
         echo "Error: ${LIBFABRIC_DEPS}/lib/libfabric.a not produced" >&2
         exit 1
@@ -364,11 +364,11 @@ build_moodycamel_from_source() {
             local CURRENT_TAG
             CURRENT_TAG=$(git -C "${repo_dir}" describe --tags --exact-match 2>/dev/null || echo "")
             if [[ "${CURRENT_TAG}" != "${version}" ]]; then
-                pushd "${repo_dir}" > /dev/null
-                GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${version}" 2>/dev/null \
+                pushd "${repo_dir}"
+                GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${version}" \
                     || GIT_TERMINAL_PROMPT=0 git fetch origin
                 git checkout "${version}"
-                popd > /dev/null
+                popd
             fi
         fi
     done
@@ -408,11 +408,11 @@ build_libsodium_from_source() {
         local CURRENT_TAG
         CURRENT_TAG=$(git -C "${LIBSODIUM_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${LIBSODIUM_VERSION}" ]]; then
-            pushd "${LIBSODIUM_SRC}" > /dev/null
-            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${LIBSODIUM_VERSION}" 2>/dev/null \
+            pushd "${LIBSODIUM_SRC}"
+            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${LIBSODIUM_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${LIBSODIUM_VERSION}"
-            popd > /dev/null
+            popd
         fi
     fi
     # Release tags are cut from the stable branch and ship a generated configure; regenerate otherwise.
@@ -421,25 +421,25 @@ build_libsodium_from_source() {
             echo "Error: libsodium checkout has no configure script and autoconf/automake/libtool are not installed" >&2
             exit 1
         fi
-        pushd "${LIBSODIUM_SRC}" > /dev/null
+        pushd "${LIBSODIUM_SRC}"
         ./autogen.sh -s
-        popd > /dev/null
+        popd
     fi
     echo "Building libsodium (${LIBSODIUM_VERSION})..."
     local SODIUM_BUILD="${LIBSODIUM_SRC}/build"
     rm -rf "${SODIUM_BUILD}" "${LIBSODIUM_DEPS}"
     mkdir -p "${SODIUM_BUILD}" "${LIBSODIUM_DEPS}"
     local S_NPROC=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-    pushd "${SODIUM_BUILD}" > /dev/null
+    pushd "${SODIUM_BUILD}"
     "${LIBSODIUM_SRC}/configure" \
         --prefix="${LIBSODIUM_DEPS}" \
         --disable-shared \
         --enable-static \
         --with-pic \
-        --disable-dependency-tracking > /dev/null
-    make -j "${S_NPROC}" > /dev/null
-    make install > /dev/null
-    popd > /dev/null
+        --disable-dependency-tracking
+    make -j "${S_NPROC}"
+    make install
+    popd
     if [[ ! -f "${LIBSODIUM_DEPS}/lib/libsodium.a" ]] || [[ ! -f "${LIBSODIUM_DEPS}/include/sodium.h" ]]; then
         echo "Error: libsodium install is incomplete at ${LIBSODIUM_DEPS}" >&2
         exit 1
@@ -460,7 +460,7 @@ build_curl_from_source() {
         CURRENT_TAG=$(git -C "${CURL_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${CURL_VERSION}" ]]; then
             pushd "${CURL_SRC}"
-            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${CURL_VERSION}" 2>/dev/null \
+            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${CURL_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${CURL_VERSION}"
             popd
@@ -565,11 +565,11 @@ build_shaderc_from_source() {
         local CURRENT_TAG
         CURRENT_TAG=$(git -C "${SHADERC_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${SHADERC_VERSION}" ]]; then
-            pushd "${SHADERC_SRC}" > /dev/null
+            pushd "${SHADERC_SRC}"
             GIT_TERMINAL_PROMPT=0 git fetch origin tag "${SHADERC_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${SHADERC_VERSION}"
-            popd > /dev/null
+            popd
         fi
     fi
     local SHADERC_HEAD
@@ -646,7 +646,7 @@ build_simdjson_from_source() {
         CURRENT_TAG=$(git -C "${SIMDJSON_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${SIMDJSON_VERSION}" ]]; then
             pushd "${SIMDJSON_SRC}"
-            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${SIMDJSON_VERSION}" 2>/dev/null \
+            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${SIMDJSON_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${SIMDJSON_VERSION}"
             popd
@@ -688,7 +688,7 @@ build_vulkan_loader_from_source() {
         CURRENT_TAG=$(git -C "${VULKAN_LOADER_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${VULKAN_LOADER_VERSION}" ]]; then
             pushd "${VULKAN_LOADER_SRC}"
-            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${VULKAN_LOADER_VERSION}" 2>/dev/null \
+            GIT_TERMINAL_PROMPT=0 git fetch --depth 1 origin tag "${VULKAN_LOADER_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${VULKAN_LOADER_VERSION}"
             popd
@@ -739,7 +739,7 @@ build_moltenvk_from_source() {
         CURRENT_TAG=$(git -C "${MOLTENVK_SRC}" describe --tags --exact-match 2>/dev/null || echo "")
         if [[ "${CURRENT_TAG}" != "${MOLTENVK_VERSION}" ]]; then
             pushd "${MOLTENVK_SRC}"
-            GIT_TERMINAL_PROMPT=0 git fetch origin tag "${MOLTENVK_VERSION}" 2>/dev/null \
+            GIT_TERMINAL_PROMPT=0 git fetch origin tag "${MOLTENVK_VERSION}" \
                 || GIT_TERMINAL_PROMPT=0 git fetch origin
             git checkout "${MOLTENVK_VERSION}"
             popd

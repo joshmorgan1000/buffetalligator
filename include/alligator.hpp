@@ -3024,7 +3024,7 @@ public:
      * @param size The size of the memory block in bytes.
      * @param unused A boolean parameter to differentiate this constructor.
      */
-    WeakSlice(size_t size, bool) {
+    WeakSlice([[maybe_unused]] size_t size, bool) {
         ALLIGATOR_THROW("WeakSlice: cannot allocate memory for non-owning slice.");
     }
     /** ----------------------------------------------------------------------------------------- Constructor - Copy
