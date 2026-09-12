@@ -20,7 +20,11 @@ Registration waits for the worker to prepare the first current slab and runway. 
 
 OS-page placements share a global capacity ceiling derived from three quarters of startup headroom. Each placement also has its own budget. Custom placements can supply a budget or a capacity query; without either they are unlimited. Allocations that exceed a budget throw `AlligatorException`.
 
-Small OS-backed novel allocations round to the base page size; eligible requests at least one large page retain large-page backing. Slab geometry is unchanged. The shared Slice layout provides 2,097,151 reusable backing slots per process, covering simultaneously live regions rather than total claims or stored rows. Copies and sub-slices share a slot, and worker retirement returns it for reuse. The layout changed from 17 to 21 slot bits; rebuild the library and all consumers together.
+Small OS-backed novel allocations round to the base page size; eligible requests at least one large page retain large-page backing. Slab geometry is unchanged. The shared Slice layout defaults to 24 slot bits, allowing 16,777,215 reusable backing slots per process and slice sizes below 1 TiB. Slots cover simultaneously live regions rather than total claims or stored rows; copies and sub-slices share a slot, and worker retirement returns it for reuse.
+
+The backing registry reserves stable virtual addresses and starts with 1 MiB writable, extending in 1 MiB chunks as fresh slot IDs need storage. Growth never moves live reference counters. Only fresh-slot acquisition checks capacity; ordinary thread-plate claims and recycled-slot acquisition do not. Failed commitment reports `BA_E_ALLOC` without consuming a slot, while reaching the encoded ceiling reports `BA_E_SLOTS`. The registry remains available for process lifetime so live slices can be released after shutdown.
+
+The default slot width changed from 21 to 24; rebuild the library and all consumers together when changing this setting. Registry growth does not change the encoding at runtime.
 
 Novel allocation happens on the caller. Optional novel caches hold worker-zeroed allocations in bounded power-of-two size classes from 64 KiB through 1 TiB. A later claim can reuse a buffer after the worker publishes it to the cache. OS recycling remaps touched pages to obtain kernel zero-fill; custom recycling calls the supplied zero callback or zeroes the touched prefix on the worker.
 
@@ -83,7 +87,76 @@ BuffetAlligator requires a C++20 compiler, CMake 3.20 or newer, Git, and a platf
 ./run_build.sh
 ```
 
+Override the slot width with the `ALLIGATOR_SLOT_BITS` CMake cache setting (default `24`, integer range `1` through `31`):
+
+```sh
+./run_build.sh -DALLIGATOR_SLOT_BITS=20
+```
+
+Direct CMake configuration accepts the same `-DALLIGATOR_SLOT_BITS=20` option. The `alligator::alligator` target propagates the selected definition to consumers, including installed packages. Each additional slot bit doubles the registry's reserved address range and halves the maximum representable slice size; writable storage still grows on demand. Existing CMake caches retain their selected width; use `-DALLIGATOR_SLOT_BITS=24` to adopt the new default in an existing build.
+
 The script checks out [threadsafe-logger](https://github.com/joshmorgan1000/threadsafe-logger) at commit `52588cec8fda78ffa5af31b8479b4e97a9417de8` under `deps/src`, builds both libraries statically, and runs the contract tests. The dependency is MIT-licensed; see `THIRD_PARTY_NOTICES.md`.
+
+The standalone registry benchmark compares fixed capacity, atomic page growth, and shared-lock access on macOS and Linux:
+
+```sh
+build/current/tests/buffetalligator_registry_bench --verify
+build/current/tests/buffetalligator_registry_bench > registry.csv
+```
+
+See [registry growth measurements](benchmarks/registry_growth.md) for results, methodology, and limitations.
+
+The [integrated growth report](benchmarks/integrated_growth.md) covers the allocator implementation, failure tests, and before/after claim measurements.
+
+The optional [queue comparison](benchmarks/queue_tls_comparison.md) benchmarks the C TLS queue against native and equally buffered moodycamel queues, including throughput, delivery latency, and correctness checks.
+The [SliceMap follow-up](benchmarks/queue_slicemap_comparison.md) adds atomic message sequences and compares ID lookup with direct-slot consumption through the existing map API.
+
+## SliceMap
+
+`SliceMap` keeps fixed-capacity rows in append order and uses a preallocated hash index for ID lookups. Duplicate IDs resolve to the earliest published slot. Rows use the TLS Slice allocator; producer counters and each thread's hazard records occupy separate cache lines. `get_slice()` retains its payload inside the hazard-protected window, including when another thread resets the map.
+
+Reset must not overlap producers, and merge/move/destruction require quiescence as before. The index stays at or below 50% occupancy and adds 16–32 bytes per capacity slot on a 64-bit target, depending on power-of-two rounding. It trades additional publication work and storage for expected constant-time lookup. The `SliceMap` layout changed, so rebuild applications against the updated header and library; `Slice` remains 16 bytes.
+
+See the [SliceMap performance report](benchmarks/slicemap_performance.md) for before/after measurements and synchronization details.
+
+## SliceQueue
+
+`SliceQueue` is available from `<alligator.hpp>` and built into `alligator::alligator` without a moodycamel dependency. Its C backend transfers thread-local blocks of 256 Slices through sharded mailboxes and semaphore wakeups. Moving a Slice through the queue adds no reference-count operation; replacing an occupied consumer destination releases that destination's previous Slice normally.
+
+```cpp
+#include <alligator.hpp>
+#include <thread>
+
+buffetalligator::SliceQueue queue(1, 1);
+std::thread consumer([&] {
+    auto reader = queue.consumer(0);
+    buffetalligator::Slice message;
+    while (reader.pop(message)) {
+        // Process the owned message.
+    }
+});
+{
+    auto writer = queue.producer(0);
+    writer.push(buffetalligator::Slice(128, true));
+    writer.flush();
+}
+queue.close();
+consumer.join();
+```
+
+The constructor takes producer count, consumer count, and optional **capacity per producer** (default 4,096, a positive multiple of 256). Each worker binds a unique index in its role. Handles stay on their creating thread and cannot be copied or moved; each thread may hold one producer binding and one consumer binding at a time, across all queues. All configured consumers must participate until the queue is drained.
+
+`push(Slice&&)` transfers ownership and nulls its source. `push(std::span<Slice>)` does the same for every input. Full blocks publish automatically; call `flush()` at a burst boundary to expose partial blocks promptly. Destroying a producer handle flushes its last partial block. Push blocks when its producer pool has no free block.
+
+`pop(Slice&)` waits for work and replaces its destination only on success. It returns false after closure when that consumer has no available work, preserving the destination; a successfully received null Slice still returns true. `pop(std::span<Slice>)` fills up to one block and returns the number received, leaving unused destinations unchanged. An empty span returns zero immediately. Consume until closure and drain all locally held blocks before destroying a consumer handle; abandoning a partly consumed local block is a contract violation.
+
+Call `close()` only after every producer has finished and flushed, and do not push afterward. Join consumers before destroying the queue. Destruction requires all handles to be gone and releases any remaining queued ownership. `reset()` reopens a fully drained queue only while every worker is quiescent. The queue preserves order within each block; blocks may reorder even within a producer, and there is no global FIFO guarantee.
+
+## Novel backing
+
+`bool Slice::is_novel() const noexcept` reports whether the Slice's backing is a dedicated novel allocation. It reads the existing backing registry without adding a field or changing the 16-byte Slice layout, packed size range, alignment, null representation, or ownership rules.
+
+The method returns false for null/released/moved-from Slices and slab-backed claims, including direct plates carved from a slab. Explicit novel allocations and oversized allocations automatically routed to novel backing return true. Copies and subviews report their shared backing's kind; this does not imply exclusive ownership. A preserving shrink keeps that identity, while a resize that allocates new backing reports the new backing's kind.
 
 ## Install
 

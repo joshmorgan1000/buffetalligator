@@ -1,0 +1,23 @@
+shape,unix_time,other_cpu_percent,largest_other_cpu_percent,largest_other_command
+4,1789157943.153574,67.5,16.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+4,1789157945.18502,69.8,14.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+4,1789157947.221081,37.0,7.6,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+4,1789157949.253567,38.3,11.6,/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+4,1789157951.285046,22.5,5.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+4,1789157953.321057,24.5,4.4,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+4,1789157955.3565938,22.1,4.9,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+4,1789157957.39151,25.099999999999998,4.8,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+4,1789157959.426991,33.3,12.0,/usr/libexec/sysmond
+8,1789157961.484542,26.0,8.2,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,1789157963.514923,29.6,7.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,1789157965.549206,52.4,14.6,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+8,1789157967.5868568,157.3,113.5,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)
+8,1789157969.6265721,104.1,23.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+8,1789157971.662171,74.8,30.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,1789157973.696585,67.0,16.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,1789157975.730479,66.3,19.2,/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+8,1789157977.762387,30.3,4.0,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,1789157979.798,46.6,16.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+8,1789157981.831559,36.3,7.9,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+8,1789157983.865236,27.3,3.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,1789157985.902493,68.3,13.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer

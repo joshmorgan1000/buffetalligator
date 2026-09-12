@@ -10,6 +10,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(ALLIGATOR_SLOT_BITS 24 CACHE STRING "Bits reserved for backing slots in packed Slice metadata")
+if(NOT ALLIGATOR_SLOT_BITS MATCHES "^[1-9][0-9]*$" OR ALLIGATOR_SLOT_BITS GREATER 31)
+    message(FATAL_ERROR "ALLIGATOR_SLOT_BITS must be an integer between 1 and 31")
+endif()
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     set(BUFFETALLIGATOR_BUILD_TESTS_DEFAULT ON)
 else()
@@ -27,12 +31,18 @@ if(NOT TARGET logging::logging)
     add_subdirectory("${THREADSAFE_LOGGER_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/deps/threadsafe-logger")
     set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
 endif()
+find_package(OpenSSL REQUIRED)
+if(NOT OpenSSL_FOUND)
+    message(FATAL_ERROR "OpenSSL is required by BuffetAlligator and not vendored. Please install OpenSSL and try again.")
+endif()
 find_package(Threads REQUIRED)
 add_library(alligator STATIC
     src/core/ba_os.c
     src/core/ba_core.c
     src/core/ba_worker.c
+    src/core/ba_queue.c
     src/memory/slice.cpp
+    src/memory/slice_queue.cpp
     src/memory/heapbuffet.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
@@ -44,6 +54,7 @@ target_include_directories(alligator
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_features(alligator PUBLIC cxx_std_20)
+target_compile_definitions(alligator PUBLIC ALLIGATOR_SLOT_BITS=${ALLIGATOR_SLOT_BITS})
 target_link_libraries(alligator PUBLIC logging::logging Threads::Threads)
 if(WIN32)
     target_link_libraries(alligator PUBLIC onecore psapi)
@@ -68,7 +79,7 @@ install(TARGETS alligator
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
-install(FILES include/alligator.hpp include/alligator_layout.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(FILES include/alligator.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(BUFFETALLIGATOR_OWNS_LOGGING_TARGET)
     set(BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS "../logging/loggingTargets.cmake")
 else()

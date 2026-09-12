@@ -3,7 +3,6 @@
  * @brief Implements the public slice API over the C11 arena.
  */
 #include <alligator.hpp>
-#include <simd.hpp>
 #include <cstring>
 extern "C" {
 #include "core/ba_core.h"
@@ -20,22 +19,6 @@ struct SliceLayout {
     static_assert(offsetof(Slice, cached_) == offsetof(ba_slice_t, ptr));
 };
 namespace {
-/** --------------------------------------------------------------------------------------------------------- Find Atomic IDs
- * @brief Runs the SIMD search over acquire-loaded snapshots of concurrently published IDs.
- */
-int64_t find_atomic_ids(const int64_t* identifiers, size_t count, int64_t needle) {
-    for (size_t start = 0; start < count; start += 8) {
-        alignas(64) std::array<int64_t, 8> snapshot;
-        const size_t length = std::min(size_t(8), count - start);
-        for (size_t index = 0; index < length; ++index) {
-            snapshot[index] = std::atomic_ref<int64_t>(const_cast<int64_t&>(identifiers[start + index]))
-                .load(std::memory_order_acquire);
-        }
-        const int64_t found = SIMDMisc::find_id(snapshot.data(), length, needle);
-        if (found >= 0) return static_cast<int64_t>(start) + found;
-    }
-    return -1;
-}
 /** --------------------------------------------------------------------------------------------------------- Check Claim
  * @brief Logs and throws a core allocation failure with its placement name.
  */
@@ -112,6 +95,12 @@ Slice& Slice::operator=(Slice&& other) noexcept {
 const Placemat* Slice::placement() const {
     return meta_ == BA_NULL_META ? nullptr : BuffetMenu::get(ba_slice_placement(reinterpret_cast<const ba_slice_t*>(this)));
 }
+/** --------------------------------------------------------------------------------------------------------- Novel Backing
+ * @brief Reports dedicated backing without changing the Slice's packed representation.
+ */
+bool Slice::is_novel() const noexcept {
+    return ba_slice_is_novel(reinterpret_cast<const ba_slice_t*>(this)) != 0;
+}
 /** --------------------------------------------------------------------------------------------------------- View
  * @brief Retains a checked subrange of this slice.
  */
@@ -156,19 +145,57 @@ void Slice::resize(
     }
     *this = std::move(grown);
 }
+/** --------------------------------------------------------------------------------------------------------- Row Allocation
+ * @brief Stores a Slice owner immediately before the row without a general-purpose heap allocation.
+ */
+void* SliceMap::Row::operator new(size_t bytes) {
+    Slice storage(bytes + sizeof(Slice));
+    void* row = storage.data<std::byte>() + sizeof(Slice);
+    void* owner = storage.raw();
+    ::new (owner) Slice(std::move(storage));
+    return row;
+}
+/** --------------------------------------------------------------------------------------------------------- Row Deallocation
+ * @brief Moves the backing owner off-row before releasing the row's allocation.
+ */
+void SliceMap::Row::operator delete(void* pointer) noexcept {
+    auto* owner = reinterpret_cast<Slice*>(static_cast<std::byte*>(pointer) - sizeof(Slice));
+    Slice storage(std::move(*owner));
+    owner->~Slice();
+}
+/** --------------------------------------------------------------------------------------------------------- Lookup Slot
+ * @brief Searches atomic index buckets and screens IDs before acquiring a matching row.
+ */
+int64_t SliceMap::lookup_slot(int64_t id, size_t first) const {
+    if (!capacity_ || id == SENTINEL) return -1;
+    const size_t hash = hash_id(id);
+    const size_t fingerprint = hash & ~index_mask_;
+    size_t bucket = hash & index_mask_;
+    for (size_t scanned = 0; scanned <= index_mask_; ++scanned) {
+        const size_t entry = index_bucket(bucket).load(std::memory_order_acquire);
+        if (!entry) break;
+        const size_t slot = (entry & index_mask_) - 1;
+        if ((entry & ~index_mask_) == fingerprint
+            && std::atomic_ref<int64_t>(const_cast<int64_t&>(ids()[slot]))
+            .load(std::memory_order_relaxed) == id) {
+            return slot >= first ? static_cast<int64_t>(slot) : -1;
+        }
+        bucket = (bucket + 1) & index_mask_;
+    }
+    return -1;
+}
 /** --------------------------------------------------------------------------------------------------------- Find Internal
  * @brief Locates the slot index for the given ID, or -1 if not found.
  * @param id The ID to search for.
  * @return The slot index containing the ID, or -1 if not found.
  */
 int64_t SliceMap::find_internal(int64_t id) const {
+    if (id == SENTINEL) return -1;
     const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
+    int64_t slot = lookup_slot(needle, 0);
     while (slot >= 0) {
         if (verify_slot(slot, needle)) return slot;
-        const int64_t next =
-            find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
-        slot = next < 0 ? -1 : next + slot + 1;
+        slot = lookup_slot(needle, static_cast<size_t>(slot) + 1);
     }
     return -1;
 }
@@ -178,15 +205,7 @@ int64_t SliceMap::find_internal(int64_t id) const {
  * @return The slot index containing the ID, or -1 if not found.
  */
 int64_t SliceMap::find_internal(uint32_t id) const {
-    const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
-    while (slot >= 0) {
-        if (verify_slot(slot, needle)) return slot;
-        const int64_t next =
-            find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
-        slot = next < 0 ? -1 : next + slot + 1;
-    }
-    return -1;
+    return find_internal(static_cast<int64_t>(id));
 }
 /** --------------------------------------------------------------------------------------------------------- Get Slice Internal
  * @brief Retrieves the payload slice for the given ID, or an empty slice if not found.
@@ -194,8 +213,9 @@ int64_t SliceMap::find_internal(uint32_t id) const {
  * @return The payload slice associated with the ID, or an empty slice if not found.
  */
 Slice SliceMap::get_slice_internal(int64_t id) {
+    if (id == SENTINEL) return Slice();
     const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
+    int64_t slot = lookup_slot(needle, 0);
     while (slot >= 0) {
         Row* row = slot_row(slot).load(std::memory_order_acquire);
         hazard_protect(0, row);
@@ -205,8 +225,7 @@ Slice SliceMap::get_slice_internal(int64_t id) {
             return out;
         }
         hazard_clear(0);
-        const int64_t next = find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
-        slot = next < 0 ? -1 : next + slot + 1;
+        slot = lookup_slot(needle, static_cast<size_t>(slot) + 1);
     }
     return Slice();
 }
@@ -216,21 +235,7 @@ Slice SliceMap::get_slice_internal(int64_t id) {
  * @return The payload slice associated with the ID, or an empty slice if not found.
  */
 Slice SliceMap::get_slice_internal(uint32_t id) {
-    const int64_t needle = static_cast<int64_t>(id);
-    int64_t slot = find_atomic_ids(ids(), capacity_, needle);
-    while (slot >= 0) {
-        Row* row = slot_row(slot).load(std::memory_order_acquire);
-        hazard_protect(0, row);
-        if (verify_held(slot, needle, row)) {
-            Slice out = row->payload.slice();
-            hazard_clear(0);
-            return out;
-        }
-        hazard_clear(0);
-        const int64_t next = find_atomic_ids(ids() + slot + 1, capacity_ - (slot + 1), needle);
-        slot = next < 0 ? -1 : next + slot + 1;
-    }
-    return Slice();
+    return get_slice_internal(static_cast<int64_t>(id));
 }
 /** --------------------------------------------------------------------------------------------------------- Placement Handle
  * @brief Resolves the underlying handle for a non-null slice.

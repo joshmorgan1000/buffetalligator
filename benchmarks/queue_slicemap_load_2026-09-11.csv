@@ -1,0 +1,24 @@
+workers_each,window,unix_time,other_cpu_percent,largest_other_cpu_percent,largest_other_command
+1,8192,1789159307.217741,152.4,100.0,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+1,8192,1789159309.248618,173.0,100.0,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+1,8192,1789159311.280133,137.7,100.0,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+1,8192,1789159313.310591,175.7,100.0,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+1,8192,1789159315.339787,55.9,8.1,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+2,8192,1789159316.927521,52.4,10.8,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+2,8192,1789159318.958536,51.2,10.6,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+2,8192,1789159320.987593,42.5,12.2,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+4,8192,1789159321.60445,59.5,17.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+4,8192,1789159323.637407,43.2,9.7,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,8192,1789159324.6770911,85.6,26.6,/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+8,8192,1789159326.709952,33.1,9.3,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159326.916735,38.2,7.8,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159328.9462342,66.9,11.6,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159330.980181,38.9,10.3,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159333.012341,47.4,9.1,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159335.047918,51.4,9.2,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159337.080998,94.4,28.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,65536,1789159339.112961,80.5,13.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,65536,1789159341.1429949,84.6,10.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,65536,1789159343.178077,110.5,30.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+8,65536,1789159345.209437,41.6,9.3,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159347.24146,48.1,9.1,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal

@@ -1,0 +1,33 @@
+unix_time,other_cpu_percent,largest_other_cpu_percent,largest_other_command
+1789157542.15254,56.7,8.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157544.1855092,43.5,8.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157546.220595,41.1,13.4,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+1789157548.254882,19.1,4.4,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+1789157550.2891588,22.7,5.3,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+1789157552.3203719,30.400000000000002,7.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157554.351158,31.2,6.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157556.3848,34.4,9.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157558.416849,40.0,8.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157560.4511948,34.4,10.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157562.485662,124.1,25.5,/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node
+1789157564.520066,15.4,2.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157566.554465,14.0,4.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157568.588049,21.2,5.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157570.620758,41.300000000000004,11.8,/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+1789157572.655133,17.8,4.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157574.687304,12.8,2.0,/System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+1789157576.716707,39.2,11.0,/sbin/launchd
+1789157578.7484748,23.8,7.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157580.779287,16.1,4.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157582.81351,33.0,8.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157584.8440661,24.8,8.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157586.877281,35.6,9.0,/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/152.0.7977.64/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer)
+1789157588.9111109,14.4,3.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157590.9448051,33.9,9.6,/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/152.0.7977.64/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer)
+1789157592.979106,93.2,34.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157595.012179,48.5,9.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+1789157597.0420768,135.7,52.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157599.0766551,46.2,12.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157601.1085582,52.7,18.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157603.1420412,25.1,5.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157605.175325,23.1,4.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer

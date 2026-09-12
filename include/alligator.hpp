@@ -2,15 +2,13 @@
 /** --------------------------------------------------------------------------------------------------------- Slice
  * @file alligator.hpp
  * @brief Unified header for the BuffetAlligator.
- * NOTES: 2026-09-11 (Codex) WHY: The C core and public size accessor must share the slot width.
- * CHANGE: The packed Slice layout uses 21 slot bits; rebuild all linked consumers with this header.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
  */
 #include <logging.hpp>
-#include <alligator_layout.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -479,6 +477,10 @@ public:
      * @return The `Placement` enum value representing the slice's memory placement.
      */
     const Placemat* placement() const;
+    /** ------------------------------------------------------------------------------------------- Novel Backing
+     * @brief Reports dedicated novel backing for this Slice or subview, returning false for null.
+     */
+    bool is_novel() const noexcept;
     /** ------------------------------------------------------------------------------------------- Raw accessors
      * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
      * host-writable pointer to the underlying memory.
@@ -613,10 +615,99 @@ private:
     /// @brief Cached host pointer to the slice's first byte.
     void* cached_ = nullptr;
     friend struct SliceLayout;
+    friend class SliceQueue;
     friend class Buffet;
     friend class Placemat;
 };
 static_assert(sizeof(Slice) == 16, "Slice must be 16 bytes in size.");
+/** --------------------------------------------------------------------------------------------------------- SliceQueue
+ * @class SliceQueue
+ * @brief Moves owned Slices through fixed worker pools with TLS blocks and semaphore wakeups.
+ */
+class SliceQueue {
+private:
+    void* queue_; ///< Private C queue state.
+public:
+    static constexpr size_t block_size = 256; ///< Slices per synchronized handoff.
+    /** ------------------------------------------------------------------------------------------- Producer
+     * @brief Owns one producer binding on its calling thread and flushes on destruction.
+     */
+    class Producer {
+    private:
+        void* local_; ///< Cached producer TLS address.
+        explicit Producer(void* local) noexcept : local_(local) {}
+        friend class SliceQueue;
+    public:
+        Producer(const Producer&) = delete;
+        Producer& operator=(const Producer&) = delete;
+        Producer(Producer&&) = delete;
+        Producer& operator=(Producer&&) = delete;
+        ~Producer();
+        /** --------------------------------------------------------------------------------------- Push
+         * @brief Moves one Slice into local staging, blocking for capacity and nulling the source.
+         */
+        void push(Slice&& slice) noexcept;
+        /** --------------------------------------------------------------------------------------- Push Bulk
+         * @brief Moves every Slice in the span into staging and nulls every source.
+         */
+        void push(std::span<Slice> slices) noexcept;
+        /** --------------------------------------------------------------------------------------- Flush
+         * @brief Publishes a partial block at a burst boundary before the producer finishes.
+         */
+        void flush() noexcept;
+    };
+    /** ------------------------------------------------------------------------------------------- Consumer
+     * @brief Owns a thread-bound consumer that must drain its local blocks before destruction.
+     */
+    class Consumer {
+    private:
+        void* local_; ///< Cached consumer TLS address.
+        explicit Consumer(void* local) noexcept : local_(local) {}
+        friend class SliceQueue;
+    public:
+        Consumer(const Consumer&) = delete;
+        Consumer& operator=(const Consumer&) = delete;
+        Consumer(Consumer&&) = delete;
+        Consumer& operator=(Consumer&&) = delete;
+        ~Consumer();
+        /** --------------------------------------------------------------------------------------- Pop
+         * @brief Waits for a Slice and replaces output, returning false unchanged after closure.
+         */
+        bool pop(Slice& output) noexcept;
+        /** --------------------------------------------------------------------------------------- Pop Bulk
+         * @brief Replaces up to one block of outputs, returning zero for closure or an empty span.
+         */
+        size_t pop(std::span<Slice> output) noexcept;
+    };
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Allocates fixed worker pools with capacity per producer in multiples of block_size.
+     */
+    SliceQueue(size_t producers, size_t consumers, size_t capacity = 4096);
+    SliceQueue(const SliceQueue&) = delete;
+    SliceQueue& operator=(const SliceQueue&) = delete;
+    SliceQueue(SliceQueue&&) = delete;
+    SliceQueue& operator=(SliceQueue&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Releases undelivered Slices after all worker handles have been destroyed.
+     */
+    ~SliceQueue();
+    /** ------------------------------------------------------------------------------------------- Bind Producer
+     * @brief Binds a unique producer index with at most one producer binding per calling thread.
+     */
+    Producer producer(size_t index);
+    /** ------------------------------------------------------------------------------------------- Bind Consumer
+     * @brief Binds a unique consumer index with all configured consumers participating until drain.
+     */
+    Consumer consumer(size_t index);
+    /** ------------------------------------------------------------------------------------------- Close
+     * @brief Wakes consumers after all producers have finished and flushed their partial blocks.
+     */
+    void close() noexcept;
+    /** ------------------------------------------------------------------------------------------- Reset
+     * @brief Reopens a fully drained queue while every worker is quiescent.
+     */
+    void reset() noexcept;
+};
 /** --------------------------------------------------------------------------------------------------------- SliceT
  * @class SliceT
  * @brief A template class that wraps a Slice and provides type-safe access to its underlying memory.
@@ -2502,7 +2593,7 @@ public:
  */
 class SliceMap {
 public:
-    inline static constexpr int kHazardMaxThreads = 256; ///< Legacy constant retained for source compatibility.
+    inline static constexpr int kHazardMaxThreads    = 256;  ///< Legacy constant retained for source compatibility.
     inline static constexpr int kHazardPtrsPerThread = 2;    ///< Hazard slots per thread row
     inline static constexpr size_t kRetireBatch      = 32;   ///< Retired nodes scanned per reclamation pass
     struct HazardSlot { std::atomic<void*> ptr{nullptr}; };
@@ -2517,6 +2608,22 @@ public:
         Slice payload;
         Row(const int64_t& row_id, Slice&& claim)
         : id(row_id), payload(std::move(claim)) {}
+        /** --------------------------------------------------------------------------------------- Allocate
+         * @brief Claims row storage through the TLS arena with an adjacent owning Slice.
+         */
+        static void* operator new(size_t bytes);
+        /** --------------------------------------------------------------------------------------- Placement Allocate
+         * @brief Preserves placement construction into caller-owned row storage.
+         */
+        static void* operator new(size_t, void* storage) noexcept { return storage; }
+        /** --------------------------------------------------------------------------------------- Deallocate
+         * @brief Releases the adjacent owner after the row payload has been destroyed.
+         */
+        static void operator delete(void* pointer) noexcept;
+        /** --------------------------------------------------------------------------------------- Placement Deallocate
+         * @brief Leaves caller-owned placement storage intact if construction throws.
+         */
+        static void operator delete(void*, void*) noexcept {}
     };
     struct OrphanBatch {
         static constexpr size_t kCapacity = 32;
@@ -2563,13 +2670,15 @@ public:
      * @param capacity Number of rows this set will carry.
      */
     explicit SliceMap(size_t capacity)
-    : ids_(capacity * sizeof(int64_t))
+    : index_(index_capacity(capacity) * sizeof(size_t))
+    , ids_(capacity * sizeof(int64_t))
     , raws_(capacity * sizeof(void*))
     , slots_(capacity * sizeof(Row*))
     , expected_(capacity)
-    , capacity_(capacity) {
+    , capacity_(capacity)
+    , index_mask_(index_capacity(capacity) - 1) {
         /// The sentinel is all-ones, so one byte fill marks every slot unpublished.
-        std::memset(ids(), 0xFF, capacity_ * sizeof(int64_t));
+        if (capacity_) std::memset(ids(), 0xFF, capacity_ * sizeof(int64_t));
     }
     /** ------------------------------------------------------------------------------------------- Move Only Semantics
      * @brief The slots hold live row claims, so the set moves rather than copies.
@@ -2577,7 +2686,8 @@ public:
     SliceMap(const SliceMap&) = delete;
     SliceMap& operator=(const SliceMap&) = delete;
     SliceMap(SliceMap&& other) noexcept
-    : ids_(std::move(other.ids_))
+    : index_(std::move(other.index_))
+    , ids_(std::move(other.ids_))
     , raws_(std::move(other.raws_))
     , slots_(std::move(other.slots_))
     , claimed_(other.claimed_.load(std::memory_order_acquire))
@@ -2587,7 +2697,8 @@ public:
     , wait_sem_(0)
     , on_publish_(other.on_publish_)
     , on_publish_context_(other.on_publish_context_)
-    , capacity_(other.capacity_) {
+    , capacity_(other.capacity_)
+    , index_mask_(other.index_mask_) {
         other.capacity_ = 0;
         other.expected_.store(0, std::memory_order_release);
     }
@@ -2604,7 +2715,7 @@ public:
     ~SliceMap() {
         if (slots_) {
             for (size_t slot = 0; slot < capacity_; ++slot) {
-                destroy_row(slot_row(slot).exchange(nullptr, std::memory_order_seq_cst));
+                destroy_row(slot_row(slot).load(std::memory_order_relaxed));
             }
         }
     }
@@ -2626,18 +2737,22 @@ public:
      */
     SliceMap& merge(SliceMap& other) {
         const size_t count = other.capacity_;
-        const size_t first = claim(count);
+        const size_t first = claim(other.size());
         size_t taken = 0;
         for (size_t slot = 0; slot < count; ++slot) {
-            Row* row = other.slot_row(slot).exchange(nullptr, std::memory_order_seq_cst);
+            Row* row = other.slot_row(slot).exchange(nullptr, std::memory_order_relaxed);
             if (row == nullptr) continue;
             raws()[first + taken] = row->payload.data<void>();
             slot_row(first + taken).store(row, std::memory_order_relaxed);
             std::atomic_ref<int64_t>(ids()[first + taken]).store(row->id, std::memory_order_release);
+            index_row(first + taken, row->id);
             ++taken;
         }
-        std::memset(other.ids(), 0xFF, count * sizeof(int64_t));
-        std::memset(other.raws(), 0, count * sizeof(void*));
+        if (count) {
+            std::memset(other.ids(), 0xFF, count * sizeof(int64_t));
+            std::memset(other.raws(), 0, count * sizeof(void*));
+            std::memset(other.index_.raw(), 0, other.index_.size_bytes());
+        }
         other.published_.store(0, std::memory_order_release);
         other.claimed_.store(0, std::memory_order_release);
         notify_if_waiting(published_.fetch_add(taken, std::memory_order_release) + taken);
@@ -2660,7 +2775,7 @@ public:
     template<typename ID>
         requires std::is_convertible_v<ID, int64_t>
     int64_t find(const ID& id) const {
-        return find_internal(id);
+        return find_internal(static_cast<int64_t>(id));
     }
     /** ------------------------------------------------------------------------------------------- Get Slice by ID
      * @brief Copies a published row's payload out by ID, sharing the underlying claim; safe under
@@ -2671,7 +2786,7 @@ public:
     template<typename ID>
         requires std::is_convertible_v<ID, int64_t>
     Slice get_slice(ID id) {
-        return get_slice_internal(id);
+        return get_slice_internal(static_cast<int64_t>(id));
     }
     /** ------------------------------------------------------------------------------------------- Data Access
      * @brief The kernel-facing pointer list: one payload data pointer per slot, in slot order,
@@ -2761,10 +2876,12 @@ public:
      * @param count The number of rows to wait for.
      */
     void wait_until_full(size_t count) {
-        if (published_.load(std::memory_order_acquire) >= count) return;
+        if (size() >= count) return;
         wait_threshold_.store(count, std::memory_order_release);
-        while (published_.load(std::memory_order_acquire) < count) {
-            (void)wait_sem_.try_acquire_for(std::chrono::microseconds(1000));
+        while (size() < count) {
+            if (wait_sem_.try_acquire_for(std::chrono::microseconds(1000))) {
+                wake_pending_.clear(std::memory_order_relaxed);
+            }
         }
         wait_threshold_.store(SIZE_MAX, std::memory_order_release);
     }
@@ -2773,6 +2890,9 @@ public:
      * producers, and readers of retired rows survive through their hazard claims.
      */
     void reset() {
+        for (size_t bucket = 0; capacity_ && bucket <= index_mask_; ++bucket) {
+            index_bucket(bucket).store(0, std::memory_order_relaxed);
+        }
         for (size_t slot = 0; slot < capacity_; ++slot) {
             std::atomic_ref<int64_t>(ids()[slot]).store(SENTINEL, std::memory_order_release);
             Row* row = slot_row(slot).exchange(nullptr, std::memory_order_seq_cst);
@@ -2780,7 +2900,7 @@ public:
                 thread_retired().retire(row);
             }
         }
-        std::memset(raws(), 0, capacity_ * sizeof(void*));
+        if (capacity_) std::memset(raws(), 0, capacity_ * sizeof(void*));
         claimed_.store(0, std::memory_order_release);
         published_.store(0, std::memory_order_release);
         wait_threshold_.store(SIZE_MAX, std::memory_order_release);
@@ -2807,6 +2927,10 @@ public:
 private:
     /// @brief Unpublished-slot marker; all-ones is never a valid ID in either category.
     static constexpr int64_t SENTINEL = -1;
+    /// @brief Separates the two active hazard slots of each thread by a full cache line.
+    static constexpr size_t kHazardStride = 128 / sizeof(HazardSlot);
+    /// @brief Open-addressed slot and fingerprint index with zero marking an empty bucket.
+    Slice index_;
     /// @brief One ID per slot, sentinel-filled until its row is published; the publication flag.
     Slice ids_;
     /// @brief One raw payload pointer per slot, the kernel-facing view maintained at publish time.
@@ -2814,14 +2938,16 @@ private:
     /// @brief One row node pointer per slot, null until published and after reset.
     Slice slots_;
     /// @brief Producer slot claims; claiming and publishing are separate steps.
-    std::atomic<size_t> claimed_{0};
-    /// @brief Rows landed; the counter `size()` and `wait_until_full` watch.
-    std::atomic<size_t> published_{0};
+    alignas(128) std::atomic<size_t> claimed_{0};
+    /// @brief Rows landed; the counter watched by size and wait.
+    alignas(128) std::atomic<size_t> published_{0};
     /// @brief The landed count the channel is expected to fulfill; `wait` and `wait_threshold` watch.
     std::atomic<size_t> expected_{0};
     /// @brief Armed landed-count threshold a parked waiter is watching; SIZE_MAX means none.
-    std::atomic<size_t> wait_threshold_{SIZE_MAX};
-    /// @brief The parked waiter's semaphore; release saturates so producer wakes coalesce.
+    alignas(128) std::atomic<size_t> wait_threshold_{SIZE_MAX};
+    /// @brief Coalesces posted or in-flight wakes into one binary-semaphore credit.
+    std::atomic_flag wake_pending_ = ATOMIC_FLAG_INIT;
+    /// @brief The parked waiter's semaphore, with at most one outstanding credit.
     std::binary_semaphore wait_sem_{0};
     /// @brief The per-row publish hook, or null when none is registered.
     PublishHook on_publish_ = nullptr;
@@ -2829,11 +2955,63 @@ private:
     void* on_publish_context_ = nullptr;
     /// @brief Number of slots.
     size_t capacity_ = 0;
+    /// @brief Power-of-two bucket count minus one.
+    size_t index_mask_ = 0;
     /// @brief Internal type-erased accessor for slices based on ID category and ID.
     int64_t find_internal(int64_t id) const;
     int64_t find_internal(uint32_t id) const;
     Slice get_slice_internal(int64_t id);
     Slice get_slice_internal(uint32_t id);
+    /** ------------------------------------------------------------------------------------------- Index Capacity
+     * @brief Reserves at least two buckets per row without integer overflow.
+     */
+    static size_t index_capacity(size_t capacity) {
+        if (capacity > SIZE_MAX / (4 * sizeof(size_t))) ALLIGATOR_THROW("SliceMap capacity is too large");
+        return std::bit_ceil(std::max(capacity, size_t(1))) * 2;
+    }
+    /** ------------------------------------------------------------------------------------------- Index Bucket
+     * @brief Exposes a stable bucket through atomic accesses during publication and reset.
+     */
+    std::atomic_ref<size_t> index_bucket(size_t bucket) const {
+        return std::atomic_ref<size_t>(const_cast<size_t&>(index_.data<size_t>()[bucket]));
+    }
+    /** ------------------------------------------------------------------------------------------- Hash ID
+     * @brief Mixes every ID bit for both the bucket position and its fingerprint.
+     */
+    size_t hash_id(int64_t id) const {
+        uint64_t hash = static_cast<uint64_t>(id);
+        hash = (hash ^ (hash >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+        hash = (hash ^ (hash >> 27)) * UINT64_C(0x94d049bb133111eb);
+        return static_cast<size_t>(hash ^ (hash >> 31));
+    }
+    /** ------------------------------------------------------------------------------------------- Index Row
+     * @brief Publishes each key's earliest slot into one independently claimed hash bucket.
+     */
+    void index_row(size_t slot, int64_t id) {
+        const size_t hash = hash_id(id);
+        const size_t fingerprint = hash & ~index_mask_;
+        const size_t desired = fingerprint | (slot + 1);
+        size_t bucket = hash & index_mask_;
+        size_t entry = 0;
+        for (;;) {
+            if (index_bucket(bucket).compare_exchange_strong(entry, desired,
+                std::memory_order_release, std::memory_order_relaxed)) return;
+            if ((entry & ~index_mask_) == fingerprint) {
+                entry = index_bucket(bucket).load(std::memory_order_acquire);
+                const size_t previous = (entry & index_mask_) - 1;
+                if (std::atomic_ref<int64_t>(ids()[previous]).load(std::memory_order_relaxed) == id) {
+                    if (previous <= slot) return;
+                    continue;
+                }
+            }
+            bucket = (bucket + 1) & index_mask_;
+            entry = 0;
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Lookup Slot
+     * @brief Screens one probe cluster for the key's earliest published slot.
+     */
+    int64_t lookup_slot(int64_t id, size_t first) const;
     /** ------------------------------------------------------------------------------------------- Typed bases */
     int64_t* ids() { return ids_.template data<int64_t>(); }
     const int64_t* ids() const { return ids_.template data<int64_t>(); }
@@ -2892,8 +3070,9 @@ private:
     void publish_row(const size_t& slot, const int64_t& id, Slice&& slice) {
         Row* row = new Row(id, std::move(slice));
         raws()[slot] = row->payload.data<void>();
-        slot_row(slot).store(row, std::memory_order_seq_cst);
+        slot_row(slot).store(row, std::memory_order_release);
         std::atomic_ref<int64_t>(ids()[slot]).store(id, std::memory_order_release);
+        index_row(slot, id);
         if (on_publish_ != nullptr) [[unlikely]] {
             on_publish_(on_publish_context_, static_cast<void*>(this), slot);
         }
@@ -2901,11 +3080,12 @@ private:
     }
     /** ------------------------------------------------------------------------------------------- Notify If Waiting
      * @brief Wakes a parked waiter once the landed count crosses its armed threshold.
-     * @param landed The landed count after this publish.
      */
-    void notify_if_waiting(const size_t& landed) {
-        if (landed >= wait_threshold_.load(std::memory_order_acquire)) [[unlikely]] {
-            wait_sem_.release();
+    void notify_if_waiting(size_t landed) {
+        size_t threshold = wait_threshold_.load(std::memory_order_relaxed);
+        if (landed >= threshold && wait_threshold_.compare_exchange_strong(threshold, SIZE_MAX,
+            std::memory_order_relaxed, std::memory_order_relaxed)) [[unlikely]] {
+            if (!wake_pending_.test_and_set(std::memory_order_relaxed)) wait_sem_.release();
         }
     }
     /** ------------------------------------------------------------------------------------------- Verify Slot
@@ -2934,7 +3114,8 @@ private:
         return row != nullptr
             && slot_row(slot).load(std::memory_order_seq_cst) == row
             && std::atomic_ref<int64_t>(const_cast<int64_t&>(ids()[slot]))
-                .load(std::memory_order_acquire) == needle;
+                .load(std::memory_order_acquire) == needle
+            && row->id == needle;
     }
     /** ------------------------------------------------------------------------------------------- Hazard Storage
      * @struct HazardStorage
@@ -2949,9 +3130,9 @@ private:
          */
         HazardStorage()
         : rows(4 * Memory::hardware_threads())
-        , pointers(rows * kHazardPtrsPerThread * sizeof(HazardSlot))
+        , pointers(rows * kHazardStride * sizeof(HazardSlot))
         , owners(rows * sizeof(std::atomic<bool>)) {
-            for (size_t index = 0; index < rows * kHazardPtrsPerThread; ++index) {
+            for (size_t index = 0; index < rows * kHazardStride; ++index) {
                 new (pointers.data<HazardSlot>() + index) HazardSlot();
             }
             for (size_t index = 0; index < rows; ++index) {
@@ -2993,7 +3174,7 @@ private:
     static void hazard_release_row(unsigned row) {
         HazardSlot* pool = hazard_pool();
         for (int slot = 0; slot < kHazardPtrsPerThread; ++slot) {
-            pool[row * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_seq_cst);
+            pool[row * kHazardStride + slot].ptr.store(nullptr, std::memory_order_seq_cst);
         }
         hazard_storage().owners.data<std::atomic<bool>>()[row].store(false, std::memory_order_release);
     }
@@ -3023,14 +3204,14 @@ private:
      * @param p Pointer to the node to protect.
      */
     static void hazard_protect(int slot, void* p) {
-        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(p, std::memory_order_seq_cst);
+        hazard_pool()[hazard_mine() * kHazardStride + slot].ptr.store(p, std::memory_order_seq_cst);
     }
     /** ------------------------------------------------------------------------------------------- Hazard Clear
      * @brief Clears the hazard pointer at the specified slot for the current thread.
      * @param slot The slot index of the hazard pointer to clear.
      */
     static void hazard_clear(int slot) {
-        hazard_pool()[hazard_mine() * kHazardPtrsPerThread + slot].ptr.store(nullptr, std::memory_order_seq_cst);
+        hazard_pool()[hazard_mine() * kHazardStride + slot].ptr.store(nullptr, std::memory_order_seq_cst);
     }
     /** ------------------------------------------------------------------------------------------- Hazard Is Protected
      * @brief Checks if a pointer is currently protected by any hazard pointer.
@@ -3041,7 +3222,7 @@ private:
         const HazardSlot* pool = hazard_pool();
         for (size_t row = 1; row < hazard_storage().rows; ++row) {
             for (int slot = 0; slot < kHazardPtrsPerThread; ++slot) {
-                if (pool[row * kHazardPtrsPerThread + slot].ptr.load(std::memory_order_seq_cst) == p) return true;
+                if (pool[row * kHazardStride + slot].ptr.load(std::memory_order_seq_cst) == p) return true;
             }
         }
         return false;
@@ -3071,8 +3252,7 @@ private:
      */
     static void destroy_row(void* p) {
         if (p != nullptr) {
-            static_cast<Row*>(p)->~Row();
-            operator delete(p);
+            delete static_cast<Row*>(p);
         }
     }
     /** ------------------------------------------------------------------------------------------- Thread Retired List

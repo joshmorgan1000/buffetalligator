@@ -1,0 +1,18 @@
+workers_each,window,unix_time,other_cpu_percent,largest_other_cpu_percent,largest_other_command
+8,8192,1789159543.0127628,1457.1,142.6,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,8192,1789159545.076022,1156.2,126.9,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,8192,1789159547.1192288,1267.2,183.3,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,8192,1789159549.169461,1294.9,163.8,(ld)
+8,8192,1789159551.212766,925.6,92.3,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,65536,1789159552.065396,918.3,94.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,65536,1789159554.12588,625.4,94.5,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,65536,1789159556.1637068,423.0,100.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,65536,1789159558.197999,144.9,98.9,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8,65536,1789159560.23544,62.6,10.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+8,65536,1789159562.269449,140.8,94.6,/usr/libexec/duetexpertd
+8,65536,1789159564.301424,175.4,96.9,/usr/libexec/duetexpertd
+8,65536,1789159566.330532,143.1,96.0,/usr/libexec/duetexpertd
+8,65536,1789159568.364463,242.1,97.0,/usr/libexec/duetexpertd
+8,65536,1789159570.39879,64.4,10.8,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159572.4289868,48.0,9.7,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+8,65536,1789159574.461077,83.7,12.0,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal

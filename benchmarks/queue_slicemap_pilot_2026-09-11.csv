@@ -1,0 +1,5 @@
+mode,engine,repeat,producers,consumers,batch,items,seconds,million_items_s,ns_item,push_misses,pop_misses,p50_us,p99_us,p999_us,latency_samples,min_consumer_items,max_consumer_items,timed_moody_allocations
+throughput,c_tls_semaphore,0,8,8,1,65536,0.001512624,43.326,23.081,0,1300,0.000,0.000,0.000,0,0,5376,0
+throughput,moodycamel_direct,0,8,8,1,65536,0.001999251,32.780,30.506,0,6714,0.000,0.000,0.000,0,84,7393,0
+throughput,moodycamel_tls,0,8,8,1,65536,0.002738125,23.935,41.780,0,45,0.000,0.000,0.000,0,0,8192,0
+throughput,slicemap_sequence,0,8,8,1,65536,0.029750957,2.203,453.964,0,2276,0.000,0.000,0.000,0,569,2131,0

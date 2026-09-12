@@ -1,0 +1,37 @@
+variant,trial,workload,mean_ns,wall_ns,max_us,over_1us,over_10us,over_100us,over_1ms
+fixed_21,1,1 threads claim+free,28.42,63.16,417.000,13,4,1,0
+fixed_21,1,4 threads claim+free,226.17,85.27,101185.667,146,68,47,37
+fixed_21,1,8 threads claim+free,201.27,36.05,33331.292,303,173,139,116
+fixed_21,1,16 threads claim+free,320.13,27.33,41274.375,788,514,440,388
+fixed_21,1,view+drop,26.41,26.41,3.167,1,0,0,0
+fixed_21,1,1 MiB novel,1033.83,1033.83,12.000,669,1,0,0
+growing_24,1,1 threads claim+free,32.04,58.92,2516.250,15,6,3,2
+growing_24,1,4 threads claim+free,140.33,47.02,15615.500,164,53,43,39
+growing_24,1,8 threads claim+free,201.55,37.25,23529.208,436,187,147,125
+growing_24,1,16 threads claim+free,318.07,26.34,43107.791,1154,463,405,365
+growing_24,1,view+drop,31.08,31.08,3818.875,7,2,2,1
+growing_24,1,1 MiB novel,1551.97,1551.97,422.833,1488,7,1,0
+growing_24,2,1 threads claim+free,31.38,57.90,1462.250,6,3,2,1
+growing_24,2,4 threads claim+free,132.74,47.90,30485.167,145,54,43,31
+growing_24,2,8 threads claim+free,225.61,42.33,45353.834,381,169,143,130
+growing_24,2,16 threads claim+free,351.42,32.45,61993.750,1033,496,439,382
+growing_24,2,view+drop,26.02,26.02,2.250,3,0,0,0
+growing_24,2,1 MiB novel,973.17,973.17,15.500,454,1,0,0
+fixed_21,2,1 threads claim+free,32.34,64.95,1826.250,13,6,4,1
+fixed_21,2,4 threads claim+free,116.50,47.44,20686.083,158,56,40,30
+fixed_21,2,8 threads claim+free,193.36,35.16,20512.375,308,168,136,121
+fixed_21,2,16 threads claim+free,328.07,25.79,38689.917,770,489,418,378
+fixed_21,2,view+drop,27.01,27.01,706.209,7,1,1,0
+fixed_21,2,1 MiB novel,1012.11,1012.11,11.334,558,1,0,0
+fixed_21,3,1 threads claim+free,49.39,88.57,8704.791,122,99,32,3
+fixed_21,3,4 threads claim+free,163.37,82.51,28277.625,325,172,92,54
+fixed_21,3,8 threads claim+free,150.75,27.73,21889.666,342,184,130,96
+fixed_21,3,16 threads claim+free,269.96,24.56,44986.125,831,515,391,321
+fixed_21,3,view+drop,27.10,27.10,1484.375,8,3,2,1
+fixed_21,3,1 MiB novel,1361.22,1361.22,688.083,645,2,1,0
+growing_24,3,1 threads claim+free,29.90,58.37,2908.083,7,2,1,1
+growing_24,3,4 threads claim+free,109.26,42.16,24930.375,158,90,43,28
+growing_24,3,8 threads claim+free,170.58,30.97,22848.042,366,171,121,100
+growing_24,3,16 threads claim+free,262.36,23.30,38945.667,1042,477,376,309
+growing_24,3,view+drop,29.77,29.77,2996.625,15,6,2,1
+growing_24,3,1 MiB novel,966.77,966.77,13.333,496,1,0,0

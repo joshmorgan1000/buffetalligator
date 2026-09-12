@@ -2,6 +2,10 @@
 /** --------------------------------------------------------------------------------------------------------- Core Interface
  * @file ba_core.h
  * @brief Defines the private C11 arena interface and storage contracts.
+ * NOTES:
+ * - 2026-09-11 (Codex):
+ *     WHY: Growing registry storage needs a larger default slot ceiling.
+ *     CHANGE: The default is 24 slot bits; rebuild all consumers with the library's setting.
  */
 #include <stdint.h>
 #include <stddef.h>
@@ -9,7 +13,6 @@
 #include <stdatomic.h>
 #endif
 #include "ba_os.h"
-#include <alligator_layout.h>
 
 #define BA_SLOT_BITS ALLIGATOR_SLOT_BITS
 #define BA_SLOT_MASK ((1ull << BA_SLOT_BITS) - 1ull)
@@ -158,6 +161,10 @@ ba_status_t ba_view(const ba_slice_t* s, size_t offset, size_t length, ba_slice_
  * @brief Resolves the owning placement of a live slice.
  */
 uint32_t    ba_slice_placement(const ba_slice_t* s);
+/** --------------------------------------------------------------------------------------------------------- Slice Novel
+ * @brief Reports whether a non-null Slice owns or views dedicated novel backing.
+ */
+int         ba_slice_is_novel(const ba_slice_t* s);
 /** --------------------------------------------------------------------------------------------------------- Slice Handle
  * @brief Resolves the substrate handle of a live slice.
  */
@@ -174,6 +181,10 @@ void        ba_stats_total(ba_stats_t* out);
  * @brief Returns a fresh OS capacity snapshot.
  */
 void        ba_sysinfo(ba_sysinfo_t* out);
+/** --------------------------------------------------------------------------------------------------------- Slot Capacity
+ * @brief Returns the number of currently writable backing registry entries.
+ */
+uint32_t    ba_slot_capacity(void);
 /** --------------------------------------------------------------------------------------------------------- Pressure
  * @brief Returns the current pressure level.
  */

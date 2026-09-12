@@ -17,9 +17,12 @@ static ba_tunables_t g_tunables = {3, 4, 256, 4, 16, 1, 50, 3};
 static ba_placement_t g_placements[BA_MAX_PLACEMENTS];
 static _Atomic uint32_t g_placement_count;
 static _Atomic uint32_t g_default;
-static ba_plate_t g_plates[BA_PLATE_COUNT];
+static ba_plate_t* g_plates;
 static _Atomic uint64_t g_slot_head;
 static _Atomic uint32_t g_slot_fresh = 1;
+static BA_ALIGN(128) _Atomic uint32_t g_slot_capacity;
+static ba_mutex_t* g_slot_mutex;
+static uint32_t g_slot_growth;
 static _Atomic uint64_t g_os_live_bytes;
 static uint64_t g_os_budget;
 static uint32_t g_slot_stride;
@@ -186,23 +189,57 @@ void ba_slab_release(ba_slab_t* slab) {
     ba_uncharge(placement, bytes);
     ba_header_push(slab);
 }
-/** --------------------------------------------------------------------------------------------------------- Slot Pop
- * @brief Claims a tagged free-list slot or a fresh registry entry.
+/** --------------------------------------------------------------------------------------------------------- Slot Grow
+ * @brief Commits a registry prefix and publishes its capacity without relocating live records.
  */
-static uint32_t ba_slot_pop(void) {
+static BA_COLD ba_status_t ba_slot_grow(uint32_t slot) {
+    ba_mutex_lock(g_slot_mutex);
+    const uint32_t previous = atomic_load_explicit(&g_slot_capacity, memory_order_relaxed);
+    if (slot < previous) { ba_mutex_unlock(g_slot_mutex); return BA_OK; }
+    const uint32_t capacity = (uint32_t)ba_min(BA_PLATE_COUNT,
+        ba_round((uint64_t)slot + 1, g_slot_growth));
+    const uint64_t bytes = ba_round((uint64_t)(capacity - previous) * sizeof(*g_plates), g_sys.page);
+    if (ba_os_commit(g_plates + previous, bytes) != 0) {
+        ba_mutex_unlock(g_slot_mutex);
+        return BA_E_ALLOC;
+    }
+    atomic_store_explicit(&g_slot_capacity, capacity, memory_order_release);
+    ba_mutex_unlock(g_slot_mutex);
+    return BA_OK;
+}
+/** --------------------------------------------------------------------------------------------------------- Slot Pop
+ * @brief Claims a recycled slot or advances the fresh cursor after its storage is writable.
+ */
+static ba_status_t ba_slot_pop(uint32_t* out) {
     uint64_t head = atomic_load_explicit(&g_slot_head, memory_order_acquire);
     for (;;) {
         const uint32_t slot = (uint32_t)head;
         if (!slot) {
-            const uint32_t fresh = atomic_fetch_add_explicit(&g_slot_fresh, 1, memory_order_relaxed);
-            if (fresh >= BA_PLATE_COUNT) return 0;
+            uint32_t fresh = atomic_load_explicit(&g_slot_fresh, memory_order_relaxed);
             const uint32_t columns = BA_PLATE_COUNT / g_slot_stride;
-            return (fresh % columns) * g_slot_stride + fresh / columns;
+            for (;;) {
+                if (fresh >= BA_PLATE_COUNT) return BA_E_SLOTS;
+                const uint32_t mapped = (fresh % columns) * g_slot_stride + fresh / columns;
+                if (mapped >= atomic_load_explicit(&g_slot_capacity, memory_order_acquire)) {
+                    const ba_status_t status = ba_slot_grow(mapped);
+                    if (status != BA_OK) return status;
+                }
+                if (atomic_compare_exchange_weak_explicit(&g_slot_fresh, &fresh, fresh + 1,
+                    memory_order_relaxed, memory_order_relaxed)) {
+                    atomic_init(&g_plates[mapped].state, 0);
+                    atomic_init(&g_plates[mapped].next_free, 0);
+                    *out = mapped;
+                    return BA_OK;
+                }
+            }
         }
         const uint32_t next = atomic_load_explicit(&g_plates[slot].next_free, memory_order_relaxed);
         const uint64_t replacement = (head & 0xffffffff00000000ull) | next;
         if (atomic_compare_exchange_weak_explicit(&g_slot_head, &head, replacement,
-            memory_order_acq_rel, memory_order_acquire)) return slot;
+            memory_order_acq_rel, memory_order_acquire)) {
+            *out = slot;
+            return BA_OK;
+        }
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Slot Push
@@ -306,8 +343,9 @@ static void ba_thread_exit(void* ignored) {
  */
 static ba_status_t ba_carve(ba_placement_t* placement, uint64_t bytes, uint32_t kind, uint32_t* out) {
     const ba_tunables_t policy = *ba_policy();
-    const uint32_t slot = ba_slot_pop();
-    if (!slot) return BA_E_SLOTS;
+    uint32_t slot;
+    const ba_status_t slot_status = ba_slot_pop(&slot);
+    if (slot_status != BA_OK) return slot_status;
     for (;;) {
         ba_slab_t* slab = atomic_load_explicit(&placement->current, memory_order_acquire);
         if (slab == BA_ADVANCING) { ba_os_yield(); continue; }
@@ -365,8 +403,9 @@ static ba_status_t ba_claim_novel(ba_placement_t* placement, size_t bytes, size_
         capacity = ba_pow2_ceil(capacity < 65536 ? 65536 : capacity);
         ba_handle_t* handle;
         uint8_t* base;
-        const uint32_t slot = ba_slot_pop();
-        if (!slot) return BA_E_SLOTS;
+        uint32_t slot;
+        const ba_status_t status = ba_slot_pop(&slot);
+        if (status != BA_OK) return status;
         if (ba_novel_cache_pop(placement, capacity, &handle, &base)) {
             ba_plate_t* plate = &g_plates[slot];
             plate->slab = NULL; plate->placement = placement->type; plate->kind = BA_PLATE_NOVEL;
@@ -379,8 +418,9 @@ static ba_status_t ba_claim_novel(ba_placement_t* placement, size_t bytes, size_
     }
     ba_status_t status = ba_charge(placement, capacity);
     if (status != BA_OK) return status;
-    const uint32_t slot = ba_slot_pop();
-    if (!slot) { ba_uncharge(placement, capacity); return BA_E_SLOTS; }
+    uint32_t slot;
+    status = ba_slot_pop(&slot);
+    if (status != BA_OK) { ba_uncharge(placement, capacity); return status; }
     ba_plate_t* plate = &g_plates[slot];
     plate->slab = NULL; plate->placement = placement->type; plate->kind = BA_PLATE_NOVEL; plate->bytes = capacity;
     if (placement->descriptor.flags & BA_PLACEMENT_OS_PAGES) {
@@ -480,6 +520,12 @@ ba_status_t ba_view(const ba_slice_t* slice, size_t offset, size_t length, ba_sl
  * @brief Resolves the owning placement of a live slice.
  */
 uint32_t ba_slice_placement(const ba_slice_t* slice) { return g_plates[slice->meta & BA_SLOT_MASK].placement; }
+/** --------------------------------------------------------------------------------------------------------- Slice Novel
+ * @brief Reads the immutable backing kind while the Slice keeps its plate alive.
+ */
+int ba_slice_is_novel(const ba_slice_t* slice) {
+    return slice->meta != BA_NULL_META && g_plates[slice->meta & BA_SLOT_MASK].kind == BA_PLATE_NOVEL;
+}
 /** --------------------------------------------------------------------------------------------------------- Slice Handle
  * @brief Resolves the substrate handle of a live slice.
  */
@@ -547,7 +593,14 @@ void ba_init(void) {
         return;
     }
     ba_os_probe(&g_sys);
-    g_slot_stride = (g_sys.cache_line + sizeof(ba_plate_t) - 1) / sizeof(ba_plate_t);
+    g_slot_stride = (uint32_t)ba_min(BA_PLATE_COUNT,
+        (g_sys.cache_line + sizeof(ba_plate_t) - 1) / sizeof(ba_plate_t));
+    g_slot_growth = (uint32_t)ba_round(1ull << 20, g_sys.page) / sizeof(ba_plate_t);
+    g_plates = ba_os_reserve(ba_round((uint64_t)BA_PLATE_COUNT * sizeof(ba_plate_t), g_sys.page));
+    g_slot_mutex = ba_mutex_create();
+    if (!g_plates || !g_slot_mutex || ba_slot_grow(0) != BA_OK) abort();
+    atomic_init(&g_plates[0].state, 0);
+    atomic_init(&g_plates[0].next_free, 0);
     const uint64_t headroom = ba_min(g_sys.available, g_sys.limit > g_sys.rss ? g_sys.limit - g_sys.rss : 0);
     g_os_budget = headroom / policy.headroom_den * policy.headroom_num;
     if (ba_os_tls_key(ba_thread_exit) != 0) abort();
@@ -685,6 +738,12 @@ void ba_shutdown(void) {
     ba_thread_exit(NULL);
     ba_os_tls_set(NULL);
     ba_worker_stop();
+}
+/** --------------------------------------------------------------------------------------------------------- Slot Capacity
+ * @brief Reports writable registry entries while preserving storage for process-lifetime slices.
+ */
+uint32_t ba_slot_capacity(void) {
+    return atomic_load_explicit(&g_slot_capacity, memory_order_acquire);
 }
 /** --------------------------------------------------------------------------------------------------------- Placement Runtime
  * @brief Resolves a worker-owned placement record.

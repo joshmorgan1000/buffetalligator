@@ -44,6 +44,16 @@ struct ba_event {
 #endif
     int signaled; ///< Pending signal predicate.
 };
+/** --------------------------------------------------------------------------------------------------------- Mutex
+ * @brief Stores the native exclusive lock for cold-path mutations.
+ */
+struct ba_mutex {
+#if defined(_WIN32)
+    SRWLOCK native; ///< Windows blocking lock.
+#else
+    pthread_mutex_t native; ///< POSIX blocking lock.
+#endif
+};
 /** --------------------------------------------------------------------------------------------------------- Thread Start
  * @brief Carries a detached thread's entry point and argument.
  */
@@ -284,6 +294,29 @@ void* ba_os_map(uint64_t bytes, uint64_t alignment, int want_large_pages) {
     return (void*)aligned;
 #endif
 }
+/** --------------------------------------------------------------------------------------------------------- Reserve
+ * @brief Reserves an inaccessible address range for later page commitment.
+ */
+void* ba_os_reserve(uint64_t bytes) {
+    if (!bytes || bytes > SIZE_MAX) return NULL;
+#if defined(_WIN32)
+    return VirtualAlloc(NULL, (SIZE_T)bytes, MEM_RESERVE, PAGE_NOACCESS);
+#else
+    void* mapping = mmap(NULL, (size_t)bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return mapping == MAP_FAILED ? NULL : mapping;
+#endif
+}
+/** --------------------------------------------------------------------------------------------------------- Commit
+ * @brief Commits writable pages within an existing reservation.
+ */
+int ba_os_commit(void* base, uint64_t bytes) {
+    if (!base || !bytes || bytes > SIZE_MAX) return -1;
+#if defined(_WIN32)
+    return VirtualAlloc(base, (SIZE_T)bytes, MEM_COMMIT, PAGE_READWRITE) == base ? 0 : -1;
+#else
+    return mprotect(base, (size_t)bytes, PROT_READ | PROT_WRITE);
+#endif
+}
 /** --------------------------------------------------------------------------------------------------------- Unmap
  * @brief Releases an owned page mapping.
  */
@@ -385,6 +418,48 @@ int ba_os_thread_start(ba_thread_fn function, void* argument) {
     pthread_attr_destroy(&attributes);
     if (result) free(start);
     return result;
+#endif
+}
+/** --------------------------------------------------------------------------------------------------------- Create Mutex
+ * @brief Allocates a native blocking mutex.
+ */
+ba_mutex_t* ba_mutex_create(void) {
+    ba_mutex_t* mutex = malloc(sizeof(*mutex));
+    if (!mutex) return NULL;
+#if defined(_WIN32)
+    InitializeSRWLock(&mutex->native);
+#else
+    if (pthread_mutex_init(&mutex->native, NULL) != 0) { free(mutex); return NULL; }
+#endif
+    return mutex;
+}
+/** --------------------------------------------------------------------------------------------------------- Destroy Mutex
+ * @brief Releases an unused native mutex.
+ */
+void ba_mutex_destroy(ba_mutex_t* mutex) {
+#if !defined(_WIN32)
+    if (pthread_mutex_destroy(&mutex->native) != 0) abort();
+#endif
+    free(mutex);
+}
+/** --------------------------------------------------------------------------------------------------------- Lock Mutex
+ * @brief Acquires the native mutex and parks while another owner holds it.
+ */
+void ba_mutex_lock(ba_mutex_t* mutex) {
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&mutex->native);
+#else
+    if (pthread_mutex_lock(&mutex->native) != 0) abort();
+#endif
+}
+/** --------------------------------------------------------------------------------------------------------- Unlock Mutex
+ * @brief Releases the native mutex after publishing protected state.
+ */
+void ba_mutex_unlock(ba_mutex_t* mutex) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&mutex->native);
+#else
+    if (pthread_mutex_unlock(&mutex->native) != 0) abort();
 #endif
 }
 /** --------------------------------------------------------------------------------------------------------- Create Event

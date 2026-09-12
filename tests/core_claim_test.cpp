@@ -84,11 +84,20 @@ void sizes(uint32_t type) {
     require(ba_claim(type, statistics.plate_bytes + 64, 0, &direct) == BA_OK, "direct failed");
     require(ba_claim(type, 64, 0, &after) == BA_OK, "after direct failed");
     require((direct.meta & BA_SLOT_MASK) != (before.meta & BA_SLOT_MASK), "direct reused thread plate");
+    require(!ba_slice_is_novel(&before) && !ba_slice_is_novel(&direct), "a slab plate reported novel backing");
     require(static_cast<char*>(after.ptr) - static_cast<char*>(before.ptr) == 64, "direct changed thread cursor");
     ba_slice_t whole;
     require(ba_claim(type, statistics.slab_bytes, 0, &whole) == BA_OK, "slab-sized claim failed");
     require(ba_slice_handle(&whole) != ba_slice_handle(&after), "slab-sized claim reused slab handle");
+    require(!ba_slice_is_novel(&whole), "a full slab reported novel backing");
     ba_release(&before); ba_release(&direct); ba_release(&after); ba_release(&whole);
+    if (type == 2) {
+        ba_slice_t oversized;
+        require(ba_claim(type, statistics.slab_bytes + 64, 0, &oversized) == BA_OK, "oversized claim failed");
+        require(ba_slice_is_novel(&oversized), "automatic novel routing was not reported");
+        ba_release(&oversized);
+        require(!ba_slice_is_novel(&oversized), "released core Slice reported novel backing");
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Claims
  * @brief Exercises plate turnover with thread-exit sealing under contention.

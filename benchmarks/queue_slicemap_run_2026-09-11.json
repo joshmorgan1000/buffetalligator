@@ -1,0 +1,120 @@
+{
+  "started_utc": "2026-09-11T20:41:47.187208+00:00",
+  "commands": [
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "1",
+      "--consumers",
+      "1",
+      "--batch",
+      "1",
+      "--items",
+      "8192",
+      "--rounds",
+      "64",
+      "--repeats",
+      "7"
+    ],
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "2",
+      "--consumers",
+      "2",
+      "--batch",
+      "1",
+      "--items",
+      "4096",
+      "--rounds",
+      "64",
+      "--repeats",
+      "7"
+    ],
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "4",
+      "--consumers",
+      "4",
+      "--batch",
+      "1",
+      "--items",
+      "2048",
+      "--rounds",
+      "64",
+      "--repeats",
+      "7"
+    ],
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "8",
+      "--consumers",
+      "8",
+      "--batch",
+      "1",
+      "--items",
+      "1024",
+      "--rounds",
+      "64",
+      "--repeats",
+      "7"
+    ],
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "8",
+      "--consumers",
+      "8",
+      "--batch",
+      "1",
+      "--items",
+      "8192",
+      "--rounds",
+      "16",
+      "--repeats",
+      "7"
+    ]
+  ],
+  "cases": [
+    {
+      "workers_each": 1,
+      "window": 8192,
+      "rounds": 64
+    },
+    {
+      "workers_each": 2,
+      "window": 8192,
+      "rounds": 64
+    },
+    {
+      "workers_each": 4,
+      "window": 8192,
+      "rounds": 64
+    },
+    {
+      "workers_each": 8,
+      "window": 8192,
+      "rounds": 64
+    },
+    {
+      "workers_each": 8,
+      "window": 65536,
+      "rounds": 16
+    }
+  ],
+  "source_sha256": {
+    "tests/bench_queue.cpp": "108617549ae5d724d52f701c389e49a4295420617da48f709c4d696838f6fd5f",
+    "tests/queue_prototype.c": "27d00cc7681dca2d6dcf9f03cc82d38144477bdfc43c141af25a04f8c2335db9",
+    "tests/queue_prototype.h": "a5428a0c5060be027fda62790c61adc2e2855278a43ffafb30c49f08efc1f04b",
+    "include/alligator.hpp": "cbe51a96d3339a29e65a448a2df4a7c595556cebb0db77c24d485bc2504ed8bc",
+    "src/memory/slice.cpp": "fe2af8e681c81eeaf0edfc08669a1bc134f24a5f4c1d64a695f1656a3028bc05"
+  },
+  "finished_utc": "2026-09-11T20:42:27.521887+00:00"
+}

@@ -1,0 +1,45 @@
+{
+  "started_utc": "2026-09-11T20:48:27.147850+00:00",
+  "commands": [
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "8",
+      "--consumers",
+      "8",
+      "--batch",
+      "1",
+      "--items",
+      "1024",
+      "--rounds",
+      "64",
+      "--repeats",
+      "7"
+    ],
+    [
+      "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+      "--slicemap",
+      "--producers",
+      "8",
+      "--consumers",
+      "8",
+      "--batch",
+      "1",
+      "--items",
+      "8192",
+      "--rounds",
+      "16",
+      "--repeats",
+      "7"
+    ]
+  ],
+  "source_sha256": {
+    "tests/bench_queue.cpp": "4115d088758d0e835be3ed8c4012a12cc2f7f05167737f51f28c215949b7f778",
+    "tests/queue_prototype.c": "27d00cc7681dca2d6dcf9f03cc82d38144477bdfc43c141af25a04f8c2335db9",
+    "tests/queue_prototype.h": "a5428a0c5060be027fda62790c61adc2e2855278a43ffafb30c49f08efc1f04b",
+    "include/alligator.hpp": "cbe51a96d3339a29e65a448a2df4a7c595556cebb0db77c24d485bc2504ed8bc",
+    "src/memory/slice.cpp": "fe2af8e681c81eeaf0edfc08669a1bc134f24a5f4c1d64a695f1656a3028bc05"
+  },
+  "finished_utc": "2026-09-11T20:48:58.788906+00:00"
+}

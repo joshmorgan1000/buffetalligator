@@ -1,0 +1,5 @@
+unix_time,other_cpu_percent,largest_other_cpu_percent,largest_other_command
+1789157839.1794298,63.6,10.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157841.2120981,83.10000000000001,35.7,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+1789157843.248557,51.9,14.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+1789157845.287047,26.1,4.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer

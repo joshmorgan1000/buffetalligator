@@ -1,0 +1,517 @@
+mode,unix_time,pid,cpu_percent,command
+throughput,1789152654.463039,59310,1389.3,./build/tests/test_seeded_search
+throughput,1789152654.463064,54318,99.4,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152654.4630709,54212,7.3,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152654.4630752,606,5.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152654.463079,293,4.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152654.463082,64112,3.1,/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python
+throughput,1789152659.550095,59310,1440.0,./build/tests/test_seeded_search
+throughput,1789152659.550113,54318,99.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152659.5501199,64196,9.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152659.550124,6035,7.8,claude
+throughput,1789152659.550126,606,7.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152659.55013,45074,6.7,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+throughput,1789152664.619961,59310,1409.0,./build/tests/test_seeded_search
+throughput,1789152664.620011,54318,98.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152664.620018,64196,6.0,build/current/tests/buffetalligator_queue_bench
+throughput,1789152664.620021,606,5.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152664.6200252,293,4.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152664.620028,54212,3.7,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152669.7055109,59310,1431.1,./build/tests/test_seeded_search
+throughput,1789152669.705537,54318,103.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152669.7055402,606,12.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152669.7055418,59736,5.0,opencode
+throughput,1789152669.7055428,14554,3.6,opencode
+throughput,1789152669.705544,42956,3.5,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152674.771584,59310,1419.4,./build/tests/test_seeded_search
+throughput,1789152674.771608,54318,99.4,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152674.771611,54212,10.1,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152674.771612,42956,9.9,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152674.771615,64196,7.8,build/current/tests/buffetalligator_queue_bench
+throughput,1789152674.771616,606,5.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152679.830424,59310,1438.2,./build/tests/test_seeded_search
+throughput,1789152679.830467,54318,100.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152679.830473,606,6.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152679.830477,293,5.9,/usr/libexec/spotlightknowledged.updater
+throughput,1789152679.8304808,64196,5.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152679.830484,44312,4.6,/Users/joshmorgan/.vscode/extensions/openai.chatgpt-26.908.40401-darwin-arm64/bin/macos-aarch64/codex
+throughput,1789152684.915267,59310,1433.3,./build/tests/test_seeded_search
+throughput,1789152684.9153101,54318,97.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152684.915317,64196,8.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152684.9153202,606,7.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152684.915324,293,4.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152684.915327,44792,2.9,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152690.0070531,59310,1442.4,./build/tests/test_seeded_search
+throughput,1789152690.007081,54318,100.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152690.0070841,606,6.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152690.007086,293,4.1,/usr/libexec/spotlightknowledged.updater
+throughput,1789152690.007087,64196,3.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152690.007089,13361,2.7,/Users/joshmorgan/.vscode/extensions/openai.chatgpt-26.903.61454-darwin-arm64/bin/macos-aarch64/codex
+throughput,1789152695.058209,59310,1456.1,./build/tests/test_seeded_search
+throughput,1789152695.058254,54318,95.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152695.058261,64196,11.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152695.058264,606,6.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152695.0582678,293,5.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152695.058271,618,3.4,/usr/sbin/coreaudiod
+throughput,1789152700.106671,59310,1411.3,./build/tests/test_seeded_search
+throughput,1789152700.1067169,42956,37.9,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152700.106723,606,18.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152700.106727,44792,10.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152700.1067321,32086,9.0,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking
+throughput,1789152700.106737,32124,6.9,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152705.176088,59310,1507.4,./build/tests/test_seeded_search
+throughput,1789152705.1761348,64196,10.8,build/current/tests/buffetalligator_queue_bench
+throughput,1789152705.176139,1381,5.4,/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+throughput,1789152705.176144,606,3.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152705.176148,33055,2.2,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152705.1761532,719,2.2,/System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+throughput,1789152710.226012,59310,1506.7,./build/tests/test_seeded_search
+throughput,1789152710.2260458,64196,8.5,build/current/tests/buffetalligator_queue_bench
+throughput,1789152710.226048,606,7.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152710.2260501,293,6.5,/usr/libexec/spotlightknowledged.updater
+throughput,1789152710.226052,54318,2.6,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152710.226054,13285,2.4,/Users/joshmorgan/.vscode/extensions/openai.chatgpt-26.903.61454-darwin-arm64/bin/macos-aarch64/codex
+throughput,1789152715.26961,59310,1485.0,./build/tests/test_seeded_search
+throughput,1789152715.2696419,64196,40.1,build/current/tests/buffetalligator_queue_bench
+throughput,1789152715.269645,606,6.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152715.2696471,66346,4.6,/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared
+throughput,1789152715.2696488,32124,2.1,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152715.269651,59736,1.5,opencode
+throughput,1789152720.3194408,59310,1448.9,./build/tests/test_seeded_search
+throughput,1789152720.3194969,42956,14.8,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152720.319503,606,10.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152720.319508,64196,4.8,build/current/tests/buffetalligator_queue_bench
+throughput,1789152720.319511,293,4.5,/usr/libexec/spotlightknowledged.updater
+throughput,1789152720.319514,45074,3.1,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+throughput,1789152725.401904,59310,1483.2,./build/tests/test_seeded_search
+throughput,1789152725.401935,42956,12.5,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152725.401938,606,5.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152725.4019399,64196,2.9,build/current/tests/buffetalligator_queue_bench
+throughput,1789152725.401941,32124,2.3,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152725.401943,32068,2.2,/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+throughput,1789152730.470392,59310,1498.1,./build/tests/test_seeded_search
+throughput,1789152730.470415,64196,21.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152730.470418,42956,8.9,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152730.47042,293,4.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152730.470422,6035,2.0,claude
+throughput,1789152730.470423,606,2.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152735.5373209,59310,1505.7,./build/tests/test_seeded_search
+throughput,1789152735.5373461,64196,30.9,build/current/tests/buffetalligator_queue_bench
+throughput,1789152735.537348,293,5.4,/usr/libexec/spotlightknowledged.updater
+throughput,1789152735.53735,606,1.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152735.5373518,54318,1.3,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152735.537354,42956,1.3,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152740.578877,59310,1431.8,./build/tests/test_seeded_search
+throughput,1789152740.578919,606,10.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152740.578924,293,7.9,/usr/libexec/spotlightknowledged.updater
+throughput,1789152740.578927,64196,6.6,build/current/tests/buffetalligator_queue_bench
+throughput,1789152740.5789309,32068,4.5,/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+throughput,1789152740.5789351,42956,4.4,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152745.642221,59310,1414.0,./build/tests/test_seeded_search
+throughput,1789152745.642242,64196,32.4,build/current/tests/buffetalligator_queue_bench
+throughput,1789152745.642244,42956,25.2,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152745.6422458,606,18.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152745.642248,293,8.9,/usr/libexec/spotlightknowledged.updater
+throughput,1789152745.6422489,32124,6.6,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152750.717393,59310,871.8,./build/tests/test_seeded_search
+throughput,1789152750.7174342,54318,293.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152750.717441,67746,46.6,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+throughput,1789152750.7174451,67744,44.7,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+throughput,1789152750.717449,67749,42.4,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+throughput,1789152750.717453,67756,37.5,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+throughput,1789152755.790748,59310,1359.0,./build/tests/test_seeded_search
+throughput,1789152755.790795,54318,130.4,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152755.790802,61572,28.7,/System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService
+throughput,1789152755.790807,42956,11.0,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152755.790812,293,6.4,/usr/libexec/spotlightknowledged.updater
+throughput,1789152755.790816,64196,5.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152760.8465269,59310,1316.8,./build/tests/test_seeded_search
+throughput,1789152760.846572,54318,68.6,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152760.8465788,606,9.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152760.8465831,64196,8.9,build/current/tests/buffetalligator_queue_bench
+throughput,1789152760.8465862,293,5.7,/usr/libexec/spotlightknowledged.updater
+throughput,1789152760.8465889,54212,4.6,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152765.913176,59310,1433.7,./build/tests/test_seeded_search
+throughput,1789152765.9132311,54318,93.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152765.913237,64196,18.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152765.9132411,606,14.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152765.913245,32124,6.2,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152765.91325,42956,5.6,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152770.988512,59310,1389.5,./build/tests/test_seeded_search
+throughput,1789152770.988551,54318,92.4,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152770.988558,606,30.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152770.9885619,64196,12.0,build/current/tests/buffetalligator_queue_bench
+throughput,1789152770.9885828,54212,7.3,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152770.988587,293,5.4,/usr/libexec/spotlightknowledged.updater
+throughput,1789152776.121296,59310,1382.1,./build/tests/test_seeded_search
+throughput,1789152776.121344,54318,96.2,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152776.1213498,606,23.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152776.121355,64196,21.1,build/current/tests/buffetalligator_queue_bench
+throughput,1789152776.1213582,42956,15.3,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152776.121363,32124,6.5,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152781.202383,59310,1356.5,./build/tests/test_seeded_search
+throughput,1789152781.202427,54318,100.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152781.202433,42956,21.7,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152781.2024388,606,17.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152781.2024431,32068,8.5,/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app/Contents/MacOS/Safari
+throughput,1789152781.2024472,64196,7.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152786.253705,59310,1406.6,./build/tests/test_seeded_search
+throughput,1789152786.2537541,54318,95.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152786.25376,64196,13.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152786.2537642,606,11.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152786.253768,42956,5.9,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+throughput,1789152786.253773,32124,5.9,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152791.340158,59310,1347.3,./build/tests/test_seeded_search
+throughput,1789152791.3401852,54318,96.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152791.3401878,1126,30.9,/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+throughput,1789152791.34019,606,17.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152791.340192,64196,9.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152791.340193,618,9.2,/usr/sbin/coreaudiod
+throughput,1789152796.392124,59310,1375.5,./build/tests/test_seeded_search
+throughput,1789152796.392171,54318,146.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152796.3921769,606,11.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152796.392181,64196,8.1,build/current/tests/buffetalligator_queue_bench
+throughput,1789152796.392185,32124,5.6,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152796.39219,54212,4.2,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152801.490307,59310,1091.7,./build/tests/test_seeded_search
+throughput,1789152801.490368,54318,405.6,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152801.4903738,606,12.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152801.490379,44312,6.3,/Users/joshmorgan/.vscode/extensions/openai.chatgpt-26.908.40401-darwin-arm64/bin/macos-aarch64/codex
+throughput,1789152801.4903831,6035,6.3,claude
+throughput,1789152801.490386,64196,5.5,build/current/tests/buffetalligator_queue_bench
+throughput,1789152806.55306,59310,1244.9,./build/tests/test_seeded_search
+throughput,1789152806.553109,54318,231.6,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152806.5531158,1,31.0,/sbin/launchd
+throughput,1789152806.553119,606,13.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152806.553123,64196,5.1,build/current/tests/buffetalligator_queue_bench
+throughput,1789152806.5531268,32124,5.1,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152811.610677,59310,1342.4,./build/tests/test_seeded_search
+throughput,1789152811.610708,54318,179.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152811.610711,606,11.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152811.610713,32124,5.3,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152811.610715,64196,4.5,build/current/tests/buffetalligator_queue_bench
+throughput,1789152811.6107168,618,3.4,/usr/sbin/coreaudiod
+throughput,1789152816.724405,59310,1320.4,./build/tests/test_seeded_search
+throughput,1789152816.724467,54318,182.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152816.7244742,606,11.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152816.724478,64196,6.5,build/current/tests/buffetalligator_queue_bench
+throughput,1789152816.724482,32124,5.5,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152816.7244868,293,3.6,/usr/libexec/spotlightknowledged.updater
+throughput,1789152821.7970781,59310,1363.2,./build/tests/test_seeded_search
+throughput,1789152821.797127,54318,178.3,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152821.7971342,606,12.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152821.797138,32124,5.4,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152821.797143,64196,3.6,build/current/tests/buffetalligator_queue_bench
+throughput,1789152821.797146,618,3.3,/usr/sbin/coreaudiod
+throughput,1789152826.9392629,59310,1324.4,./build/tests/test_seeded_search
+throughput,1789152826.939311,54318,179.2,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152826.939318,64196,21.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152826.939322,606,13.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152826.939326,32124,5.3,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152826.93933,293,5.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152832.017766,59310,1369.8,./build/tests/test_seeded_search
+throughput,1789152832.017815,54318,136.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152832.017822,64196,23.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152832.017833,606,14.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152832.017837,32124,6.0,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152832.017843,293,4.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152837.132649,59310,1141.7,./build/tests/test_seeded_search
+throughput,1789152837.1326761,54318,202.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152837.132679,71594,52.4,(clang)
+throughput,1789152837.132681,606,40.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152837.132683,1126,18.8,/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+throughput,1789152837.132684,64196,15.6,build/current/tests/buffetalligator_queue_bench
+throughput,1789152842.198467,59310,1344.1,./build/tests/test_seeded_search
+throughput,1789152842.198495,54318,160.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152842.198499,64196,16.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152842.198501,606,8.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152842.198503,1126,8.3,/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+throughput,1789152842.198505,44792,5.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152847.2755919,59310,1380.9,./build/tests/test_seeded_search
+throughput,1789152847.2756429,54318,98.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152847.275649,64196,28.0,build/current/tests/buffetalligator_queue_bench
+throughput,1789152847.2756531,42815,19.8,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152847.275658,44792,6.5,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152847.2756631,293,6.1,/usr/libexec/spotlightknowledged.updater
+throughput,1789152852.36588,59310,1440.5,./build/tests/test_seeded_search
+throughput,1789152852.36593,54318,99.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152852.365936,64196,18.2,build/current/tests/buffetalligator_queue_bench
+throughput,1789152852.3659399,293,5.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152852.3659441,606,3.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152852.365948,36335,1.8,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152857.444318,59310,1427.8,./build/tests/test_seeded_search
+throughput,1789152857.44437,54318,100.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152857.444376,64196,13.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152857.4443798,293,6.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152857.444383,604,4.8,/usr/libexec/runningboardd
+throughput,1789152857.444386,606,2.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152862.51425,59310,1437.7,./build/tests/test_seeded_search
+throughput,1789152862.5143092,54318,101.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152862.514316,64196,18.9,build/current/tests/buffetalligator_queue_bench
+throughput,1789152862.5143192,293,5.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152862.514323,606,3.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152862.514326,14554,2.0,opencode
+throughput,1789152867.583122,59310,1384.0,./build/tests/test_seeded_search
+throughput,1789152867.583167,54318,101.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152867.583174,64196,33.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152867.583178,606,5.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152867.5831811,293,4.9,/usr/libexec/spotlightknowledged.updater
+throughput,1789152867.5831838,44792,3.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152872.675783,59310,1423.2,./build/tests/test_seeded_search
+throughput,1789152872.6758132,54318,98.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152872.6758158,64196,23.6,build/current/tests/buffetalligator_queue_bench
+throughput,1789152872.675817,606,6.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152872.675819,6035,4.9,claude
+throughput,1789152872.67582,293,3.6,/usr/libexec/spotlightknowledged.updater
+throughput,1789152877.749366,59310,1437.6,./build/tests/test_seeded_search
+throughput,1789152877.749413,54318,96.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152877.74942,64196,31.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152877.7494242,293,5.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152877.7494268,14554,3.1,opencode
+throughput,1789152877.74943,606,2.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152882.824364,59310,1366.0,./build/tests/test_seeded_search
+throughput,1789152882.824408,54318,99.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152882.824414,12873,18.7,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152882.8244202,14554,9.1,opencode
+throughput,1789152882.824422,293,8.5,/usr/libexec/spotlightknowledged.updater
+throughput,1789152882.824426,54212,7.9,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152887.873518,59310,1445.8,./build/tests/test_seeded_search
+throughput,1789152887.873572,54318,100.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152887.873579,64196,15.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152887.873583,1171,2.7,/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd
+throughput,1789152887.873588,293,2.5,/usr/libexec/spotlightknowledged.updater
+throughput,1789152887.873591,14554,1.8,opencode
+throughput,1789152892.9856482,59310,1430.7,./build/tests/test_seeded_search
+throughput,1789152892.985693,54318,92.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152892.9856992,12874,36.8,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152892.985704,64196,34.4,build/current/tests/buffetalligator_queue_bench
+throughput,1789152892.985708,293,5.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152892.985711,606,4.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152898.058888,59310,1407.2,./build/tests/test_seeded_search
+throughput,1789152898.058928,54318,99.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152898.058934,64196,33.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152898.058938,293,6.2,/usr/libexec/spotlightknowledged.updater
+throughput,1789152898.058941,606,2.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152898.058945,54212,1.8,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152903.1308749,59310,1367.8,./build/tests/test_seeded_search
+throughput,1789152903.130899,54318,98.6,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152903.130902,64196,29.6,build/current/tests/buffetalligator_queue_bench
+throughput,1789152903.130904,606,13.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152903.130906,17178,10.0,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152903.130908,32124,8.2,/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+throughput,1789152908.209044,59310,1230.4,./build/tests/test_seeded_search
+throughput,1789152908.209097,54318,280.8,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152908.2091038,64196,7.9,build/current/tests/buffetalligator_queue_bench
+throughput,1789152908.209107,606,6.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152908.209111,293,5.4,/usr/libexec/spotlightknowledged.updater
+throughput,1789152908.209114,44221,4.2,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)
+throughput,1789152913.284819,59310,1349.7,./build/tests/test_seeded_search
+throughput,1789152913.284868,54318,195.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152913.284874,64196,8.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152913.284878,293,5.1,/usr/libexec/spotlightknowledged.updater
+throughput,1789152913.2848809,606,2.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152913.284885,59736,1.7,opencode
+throughput,1789152918.390798,59310,1375.0,./build/tests/test_seeded_search
+throughput,1789152918.390825,54318,182.2,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152918.3908281,64196,3.7,build/current/tests/buffetalligator_queue_bench
+throughput,1789152918.39083,293,2.8,/usr/libexec/spotlightknowledged.updater
+throughput,1789152918.390831,606,1.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152918.390833,813,1.0,/Library/Application Support/CatoNetworks/com.catonetworks.mac.CatoClient.helper.app/Contents/MacOS/com.catonetworks.mac.CatoClient.helper
+throughput,1789152923.744313,59310,1348.0,./build/tests/test_seeded_search
+throughput,1789152923.7443578,54318,187.3,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152923.744365,14554,9.2,opencode
+throughput,1789152923.744368,606,6.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152923.744372,293,6.3,/usr/libexec/spotlightknowledged.updater
+throughput,1789152923.744375,64196,5.6,build/current/tests/buffetalligator_queue_bench
+throughput,1789152928.821833,59310,1327.6,./build/tests/test_seeded_search
+throughput,1789152928.821878,54318,99.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152928.8218849,17178,69.0,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152928.821891,606,29.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152928.821894,12869,22.7,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+throughput,1789152928.821899,64196,8.3,build/current/tests/buffetalligator_queue_bench
+throughput,1789152933.8860722,59310,1250.5,./build/tests/test_seeded_search
+throughput,1789152933.886094,54318,174.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152933.886097,12873,43.2,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152933.8861,606,31.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152933.886101,12869,19.3,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+throughput,1789152933.8861032,54212,5.5,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+throughput,1789152939.0906959,59310,1229.2,./build/tests/test_seeded_search
+throughput,1789152939.09075,54318,297.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152939.0907562,606,6.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152939.090761,293,4.8,/usr/libexec/spotlightknowledged.updater
+throughput,1789152939.090764,75331,3.8,(docker)
+throughput,1789152939.0907662,75333,3.3,/Applications/Docker.app/Contents/Resources/bin/docker
+throughput,1789152944.161074,59310,1110.8,./build/tests/test_seeded_search
+throughput,1789152944.161101,54318,290.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152944.161105,75507,62.4,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+throughput,1789152944.1611068,606,28.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152944.161109,12873,16.9,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152944.161111,12869,16.0,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+throughput,1789152949.222173,59310,1328.8,./build/tests/test_seeded_search
+throughput,1789152949.222197,54318,188.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152949.2222002,12873,19.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152949.222202,606,9.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152949.222204,64196,7.0,build/current/tests/buffetalligator_queue_bench
+throughput,1789152949.2222059,293,4.4,/usr/libexec/spotlightknowledged.updater
+throughput,1789152954.343022,59310,1291.9,./build/tests/test_seeded_search
+throughput,1789152954.343064,54318,237.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152954.343071,606,3.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152954.343075,293,3.0,/usr/libexec/spotlightknowledged.updater
+throughput,1789152954.343078,14554,1.8,opencode
+throughput,1789152954.343081,64196,1.1,build/current/tests/buffetalligator_queue_bench
+throughput,1789152959.426028,59310,1251.9,./build/tests/test_seeded_search
+throughput,1789152959.426053,54318,149.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152959.426056,12873,44.2,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152959.426059,8759,36.3,/Applications/Ollama.app/Contents/Resources/ollama
+throughput,1789152959.42606,606,14.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152959.426062,13036,13.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)
+throughput,1789152964.490046,59310,1263.5,./build/tests/test_seeded_search
+throughput,1789152964.490069,54318,160.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152964.490072,75507,73.2,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+throughput,1789152964.4900742,606,12.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152964.4900758,12873,11.0,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152964.490078,12869,6.6,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+throughput,1789152969.555439,59310,1391.9,./build/tests/test_seeded_search
+throughput,1789152969.555489,54318,119.1,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+throughput,1789152969.5555,12873,12.3,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+throughput,1789152969.555506,606,9.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+throughput,1789152969.55551,293,7.1,/usr/libexec/spotlightknowledged.updater
+throughput,1789152969.5555131,64196,6.8,build/current/tests/buffetalligator_queue_bench
+latency,1789152974.617325,59310,1540.1,./build/tests/test_seeded_search
+latency,1789152974.6173491,293,5.0,/usr/libexec/spotlightknowledged.updater
+latency,1789152974.6173508,606,2.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+latency,1789152974.617353,6035,1.7,claude
+latency,1789152974.617354,12873,1.6,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+latency,1789152974.617356,12869,1.2,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+latency,1789152979.663184,59310,1378.8,./build/tests/test_seeded_search
+latency,1789152979.663208,606,42.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+latency,1789152979.66321,12869,21.9,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+latency,1789152979.663212,12873,12.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+latency,1789152979.663214,17178,11.2,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+latency,1789152979.663216,54212,10.4,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+latency,1789152984.7037618,59310,1489.2,./build/tests/test_seeded_search
+latency,1789152984.703786,76642,29.2,build/current/tests/buffetalligator_queue_bench
+latency,1789152984.703788,293,7.0,/usr/libexec/spotlightknowledged.updater
+latency,1789152984.7037902,606,5.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+latency,1789152984.703792,17178,2.5,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+latency,1789152984.703794,12843,1.9,/Applications/Visual Studio Code.app/Contents/MacOS/Code
+skew,1789152989.7792609,59310,1485.6,./build/tests/test_seeded_search
+skew,1789152989.779308,54318,3.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789152989.7793138,54212,3.6,/Applications/Docker.app/Contents/MacOS/com.docker.backend
+skew,1789152989.779318,293,3.6,/usr/libexec/spotlightknowledged.updater
+skew,1789152989.7793212,606,2.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789152989.779325,14554,1.4,opencode
+skew,1789152994.8468878,59310,1476.0,./build/tests/test_seeded_search
+skew,1789152994.8469398,606,10.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789152994.846945,17178,3.9,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789152994.8469498,12843,3.3,/Applications/Visual Studio Code.app/Contents/MacOS/Code
+skew,1789152994.8469539,293,2.5,/usr/libexec/spotlightknowledged.updater
+skew,1789152994.846957,12869,2.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+skew,1789152999.921412,59310,1477.6,./build/tests/test_seeded_search
+skew,1789152999.921451,77200,11.4,build/current/tests/buffetalligator_queue_bench
+skew,1789152999.9214551,12873,9.7,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789152999.92146,13361,3.5,/Users/joshmorgan/.vscode/extensions/openai.chatgpt-26.903.61454-darwin-arm64/bin/macos-aarch64/codex
+skew,1789152999.921464,54318,3.2,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789152999.92147,606,2.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153004.999441,59310,1522.8,./build/tests/test_seeded_search
+skew,1789153004.999468,77200,21.0,build/current/tests/buffetalligator_queue_bench
+skew,1789153004.99947,293,4.3,/usr/libexec/spotlightknowledged.updater
+skew,1789153004.9994721,606,2.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153004.9994738,12873,2.2,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153004.999476,719,1.7,/System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN
+skew,1789153010.0426428,59310,1410.0,./build/tests/test_seeded_search
+skew,1789153010.042667,13686,44.8,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+skew,1789153010.04267,75507,14.7,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+skew,1789153010.0426722,606,8.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153010.0426729,12873,8.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153010.042675,293,7.6,/usr/libexec/spotlightknowledged.updater
+skew,1789153015.1058729,59310,1302.2,./build/tests/test_seeded_search
+skew,1789153015.105896,75507,86.0,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+skew,1789153015.105899,54318,82.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153015.105901,13686,16.9,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+skew,1789153015.1059031,606,15.0,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153015.1059048,12873,8.9,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153020.18605,59310,867.3,./build/tests/test_seeded_search
+skew,1789153020.186091,54318,68.6,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153020.1860979,78445,63.4,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+skew,1789153020.186102,78447,45.1,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+skew,1789153020.186107,78465,43.3,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+skew,1789153020.18611,78449,43.2,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+skew,1789153025.262315,59310,1127.3,./build/tests/test_seeded_search
+skew,1789153025.262363,54318,123.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153025.26237,75507,69.6,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+skew,1789153025.262374,13686,62.5,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+skew,1789153025.262378,42815,51.9,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153025.2623832,12873,13.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153030.3442152,59310,1105.6,./build/tests/test_seeded_search
+skew,1789153030.3442419,54318,201.9,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153030.344245,79070,61.9,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang
+skew,1789153030.344247,79073,48.3,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+skew,1789153030.344249,12873,38.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153030.344251,13686,31.4,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools
+skew,1789153035.396228,59310,1376.2,./build/tests/test_seeded_search
+skew,1789153035.396276,54318,146.2,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153035.396279,17178,12.0,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153035.3962822,77200,7.3,build/current/tests/buffetalligator_queue_bench
+skew,1789153035.396283,606,6.9,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153035.3962848,12869,4.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+skew,1789153040.476387,59310,1389.5,./build/tests/test_seeded_search
+skew,1789153040.476425,54318,153.2,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153040.4764311,17178,10.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153040.476437,293,3.3,/usr/libexec/spotlightknowledged.updater
+skew,1789153040.47644,13361,2.7,/Users/joshmorgan/.vscode/extensions/openai.chatgpt-26.903.61454-darwin-arm64/bin/macos-aarch64/codex
+skew,1789153040.476444,77200,1.9,build/current/tests/buffetalligator_queue_bench
+skew,1789153045.541239,59310,1421.2,./build/tests/test_seeded_search
+skew,1789153045.541263,54318,102.0,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153045.541266,77200,11.7,build/current/tests/buffetalligator_queue_bench
+skew,1789153045.5412679,12873,6.4,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153045.54127,606,5.2,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153045.5412722,293,5.2,/usr/libexec/spotlightknowledged.updater
+skew,1789153050.587092,59310,1489.6,./build/tests/test_seeded_search
+skew,1789153050.58714,77200,33.4,build/current/tests/buffetalligator_queue_bench
+skew,1789153050.587144,293,9.1,/usr/libexec/spotlightknowledged.updater
+skew,1789153050.587148,606,3.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153050.5871518,54318,2.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153050.587157,813,1.9,/Library/Application Support/CatoNetworks/com.catonetworks.mac.CatoClient.helper.app/Contents/MacOS/com.catonetworks.mac.CatoClient.helper
+skew,1789153055.638283,59310,1478.1,./build/tests/test_seeded_search
+skew,1789153055.638331,77200,40.3,build/current/tests/buffetalligator_queue_bench
+skew,1789153055.638335,606,6.8,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153055.638339,54318,6.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153055.638345,17178,4.0,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153055.63835,12869,3.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+skew,1789153060.7465181,59310,1510.8,./build/tests/test_seeded_search
+skew,1789153060.7465441,77200,33.1,build/current/tests/buffetalligator_queue_bench
+skew,1789153060.746546,606,3.5,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153060.746549,54318,1.5,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153060.746551,1202,1.5,/System/Library/CoreServices/WindowManager.app/Contents/MacOS/WindowManager
+skew,1789153060.7465532,59736,1.3,opencode
+skew,1789153065.787662,59310,1527.3,./build/tests/test_seeded_search
+skew,1789153065.7877069,77200,32.0,build/current/tests/buffetalligator_queue_bench
+skew,1789153065.787711,606,3.1,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153065.787715,293,2.1,/usr/libexec/spotlightknowledged.updater
+skew,1789153065.7877178,14554,1.6,opencode
+skew,1789153065.787721,54318,1.3,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153070.8234172,59310,1447.2,./build/tests/test_seeded_search
+skew,1789153070.823447,17178,53.7,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153070.82345,77200,33.6,build/current/tests/buffetalligator_queue_bench
+skew,1789153070.823452,606,6.6,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153070.823453,293,5.0,/usr/libexec/spotlightknowledged.updater
+skew,1789153070.8234549,12869,2.5,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper
+skew,1789153075.889914,59310,1529.2,./build/tests/test_seeded_search
+skew,1789153075.889964,77200,13.0,build/current/tests/buffetalligator_queue_bench
+skew,1789153075.8899682,293,2.1,/usr/libexec/spotlightknowledged.updater
+skew,1789153075.889972,59736,1.8,opencode
+skew,1789153075.889974,54318,1.7,/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine
+skew,1789153075.8899798,606,1.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153080.9615018,59310,1515.5,./build/tests/test_seeded_search
+skew,1789153080.961549,77200,14.9,build/current/tests/buffetalligator_queue_bench
+skew,1789153080.9615529,293,12.1,/usr/libexec/spotlightknowledged.updater
+skew,1789153080.961557,6035,10.5,claude
+skew,1789153080.96156,606,1.3,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153080.9615629,80910,1.2,/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared
+skew,1789153086.003953,59310,1446.3,./build/tests/test_seeded_search
+skew,1789153086.004,79073,87.7,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+skew,1789153086.004004,606,7.7,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+skew,1789153086.004008,12873,7.3,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+skew,1789153086.004013,293,6.1,/usr/libexec/spotlightknowledged.updater
+skew,1789153086.0040162,77200,4.6,build/current/tests/buffetalligator_queue_bench

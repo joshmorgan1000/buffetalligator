@@ -6,6 +6,7 @@ extern "C" {
 #include "core/ba_os.h"
 }
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -54,6 +55,35 @@ int main() {
     require(ba_os_rezero(memory, bytes) == 0, "remapping failed");
     for (size_t index = 0; index < bytes; ++index) require(memory[index] == 0, "remapping retained data");
     ba_os_unmap(memory, bytes);
+    auto* reserved = static_cast<unsigned char*>(ba_os_reserve(bytes));
+    require(reserved != nullptr, "virtual reservation failed");
+    require(ba_os_commit(reserved, information.page) == 0, "initial commit failed");
+    require(reserved[0] == 0 && reserved[information.page - 1] == 0, "commit was not zeroed");
+    reserved[0] = 0x5a;
+    reserved[information.page - 1] = 0x6b;
+    require(ba_os_commit(reserved + information.page, bytes - information.page) == 0,
+        "reservation extension failed");
+    require(reserved[0] == 0x5a && reserved[information.page - 1] == 0x6b,
+        "extension changed existing pages");
+    require(reserved[information.page] == 0 && reserved[bytes - 1] == 0,
+        "extension was not zeroed");
+    ba_os_unmap(reserved, bytes);
+    ba_mutex_t* mutex = ba_mutex_create();
+    require(mutex != nullptr, "mutex allocation failed");
+    size_t protected_count = 0;
+    std::array<std::thread, 4> contenders;
+    for (auto& contender : contenders) {
+        contender = std::thread([&] {
+            for (size_t index = 0; index < 10000; ++index) {
+                ba_mutex_lock(mutex);
+                ++protected_count;
+                ba_mutex_unlock(mutex);
+            }
+        });
+    }
+    for (auto& contender : contenders) contender.join();
+    require(protected_count == 40000, "mutex lost a protected update");
+    ba_mutex_destroy(mutex);
     const uint64_t before = ba_os_now_ns();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
     require(ba_os_now_ns() > before, "clock did not advance");

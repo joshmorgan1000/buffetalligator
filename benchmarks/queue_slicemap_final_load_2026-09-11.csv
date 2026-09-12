@@ -1,0 +1,28 @@
+window,unix_time,other_cpu_percent,largest_other_cpu_percent,largest_other_command
+8192,1789159707.211464,173.7,98.3,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8192,1789159708.244394,274.9,97.7,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8192,1789159709.276175,138.6,98.9,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+8192,1789159710.314551,892.3,162.7,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+65536,1789159715.343584,237.5,98.8,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159716.385514,214.2,98.7,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159717.419961,229.9,100.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159718.456043,192.0,96.9,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159719.488523,176.7,98.6,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159720.522051,192.0,98.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159721.56268,274.4,100.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159722.59616,172.9,100.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159723.628391,147.1,100.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159724.658289,169.4,100.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159725.689157,151.1,98.0,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159726.722338,139.2,99.7,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
+65536,1789159727.752683,103.8,32.8,/System/Library/PrivateFrameworks/CacheDelete.framework/deleted_helper
+65536,1789159728.785162,132.9,97.4,/private/var/folders/7w/fl9z261d6vn5fbs9rf05m6dc0000gn/T/build-env-w90jb9pj/bin/python
+65536,1789159729.8188102,193.2,45.2,/Users/joshmorgan/.vscode/extensions/ms-vscode.cpptools-1.34.4-darwin-arm64/bin/cpptools-srv
+65536,1789159730.852492,94.5,28.4,/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+65536,1789159731.887004,53.6,7.5,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+65536,1789159732.9176588,56.1,10.5,/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+65536,1789159733.949642,104.2,17.6,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)
+65536,1789159734.9811351,249.7,130.8,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+65536,1789159736.012613,120.9,43.5,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+65536,1789159737.043767,171.1,33.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)
+65536,1789159738.0762591,130.6,61.1,/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)

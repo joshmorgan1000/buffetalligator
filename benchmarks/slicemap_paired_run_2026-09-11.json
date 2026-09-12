@@ -1,0 +1,1528 @@
+{
+  "started_utc": "2026-09-11T23:12:12.336474+00:00",
+  "commands": [
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.431640625,
+        3.05517578125,
+        2.80029296875
+      ],
+      "load_after": [
+        3.431640625,
+        3.05517578125,
+        2.80029296875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.431640625,
+        3.05517578125,
+        2.80029296875
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.47705078125,
+        3.07080078125,
+        2.80712890625
+      ],
+      "load_after": [
+        3.1982421875,
+        3.01953125,
+        2.79052734375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.1982421875,
+        3.01953125,
+        2.79052734375
+      ],
+      "load_after": [
+        3.1982421875,
+        3.01953125,
+        2.79052734375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        3.1982421875,
+        3.01953125,
+        2.79052734375
+      ],
+      "load_after": [
+        3.1982421875,
+        3.01953125,
+        2.79052734375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 0,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        3.1982421875,
+        3.01953125,
+        2.79052734375
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        3.90283203125,
+        3.16845703125,
+        2.84423828125
+      ],
+      "load_after": [
+        4.390625,
+        3.28173828125,
+        2.8857421875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        4.390625,
+        3.28173828125,
+        2.8857421875
+      ],
+      "load_after": [
+        4.390625,
+        3.28173828125,
+        2.8857421875
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 1,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        4.390625,
+        3.28173828125,
+        2.8857421875
+      ],
+      "load_after": [
+        4.390625,
+        3.28173828125,
+        2.8857421875
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        4.390625,
+        3.28173828125,
+        2.8857421875
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        4.35888671875,
+        3.29345703125,
+        2.89208984375
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 2,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.05078125,
+        3.45458984375,
+        2.951171875
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.20654296875,
+        3.51318359375,
+        2.974609375
+      ],
+      "load_after": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ],
+      "load_after": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 3,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ],
+      "load_after": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ],
+      "load_after": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ],
+      "load_after": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.67041015625,
+        3.63720703125,
+        3.021484375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "1",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "2",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "8192",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.29638671875,
+        3.59326171875,
+        3.00927734375
+      ],
+      "load_after": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_slicemap_bench",
+        "8",
+        "65536",
+        "8"
+      ],
+      "load_before": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ],
+      "load_after": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ]
+    },
+    {
+      "variant": "before",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/slicemap-before/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ],
+      "load_after": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ]
+    },
+    {
+      "variant": "after",
+      "pair": 4,
+      "argv": [
+        "/Users/joshmorgan/manifoldb/buffetalligator/build/current/tests/buffetalligator_queue_bench",
+        "--slicemap",
+        "--producers",
+        "8",
+        "--consumers",
+        "8",
+        "--batch",
+        "1",
+        "--items",
+        "8192",
+        "--rounds",
+        "16",
+        "--repeats",
+        "1"
+      ],
+      "load_before": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ],
+      "load_after": [
+        5.9931640625,
+        3.765625,
+        3.0732421875
+      ]
+    }
+  ],
+  "sha256": {
+    "include/alligator.hpp": "e756bf022cb089f66de13048a4eadf484c0c678202cc4b09576be8ff2daf00aa",
+    "src/memory/slice.cpp": "38b2dc1a301281354744017d0eb91f9287d7c1510832a7247718494ea3e3e40f",
+    "tests/bench_slicemap.cpp": "e413bd03f5235dce5a987d81900b0c26da5b43a99d11f836a033d5a7e56bc994",
+    "tests/bench_queue.cpp": "ee08659ac4ef867e3517d179dead04271effba5b69ffe81d90c12be4e4cddd5d",
+    "build/slicemap-before/alligator.hpp.snapshot": "fce628bbe838d968e3accf7fd5ed9f96c96c909b987ce6c79798a477cc482b13",
+    "build/slicemap-before/slice.cpp.snapshot": "013815702d49a17064ef05adeeb486151618e351598a4c397d1c9c03af4689db",
+    "build/slicemap-before/buffetalligator_slicemap_bench": "072716f4da351bbfff6c66d7c33ba90f6339080ff8b1041ac63c2debc53a6386",
+    "build/slicemap-before/buffetalligator_queue_bench": "8fddca98b4face2ad84f9f88fed06cc4b348a0ff76957abbba9467f390db0da6",
+    "build/current/tests/buffetalligator_slicemap_bench": "edcd63083a02389f6abeabe17d4cb8dd869872d19b0e3591c3c4282d162b410c",
+    "build/current/tests/buffetalligator_queue_bench": "00315ff1e653db05fdd56a667c341d638bbe2f3c195c75941bd44bd127e0d1df"
+  },
+  "machine": "Apple M4 Max",
+  "compiler": "Apple clang version 17.0.0 (clang-1700.6.3.2)",
+  "logger_commit": "dc2c21885a6e0f3204f3bfd6a4ec95edd3a52bcf",
+  "finished_utc": "2026-09-11T23:13:02.677649+00:00",
+  "final_source_sha256": {
+    "include/alligator.hpp": "04704a8b205125be857fad21caa412b2172aa68581225af50a54691edeae148d",
+    "src/memory/slice.cpp": "38b2dc1a301281354744017d0eb91f9287d7c1510832a7247718494ea3e3e40f",
+    "tests/bench_slicemap.cpp": "e413bd03f5235dce5a987d81900b0c26da5b43a99d11f836a033d5a7e56bc994",
+    "tests/slicemap_test.cpp": "95288304620fa917511672420868cacd5d23e75d869ce2b54dc954d08987e632"
+  },
+  "source_note": "The four-line header compatibility comment was removed concurrently during the run; reinserting that comment in memory reproduces the recorded header hash exactly, and every benchmark binary hash is unchanged; the comment removal was preserved."
+}

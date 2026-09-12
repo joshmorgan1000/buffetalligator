@@ -32,9 +32,11 @@ int main() {
     buffetalligator::Slice null_slice;
     require(null_slice.is_null() && !null_slice.valid() && !null_slice, "a default Slice is not null");
     require(null_slice.placement() == nullptr, "a null Slice reported a placement");
+    require(!null_slice.is_novel(), "a null Slice reported novel backing");
     null_slice.free();
     require(null_slice.is_null(), "freeing a null Slice changed its state");
     buffetalligator::Slice bytes(4096);
+    require(!bytes.is_novel(), "a slab claim reported novel backing");
     require(bytes.valid() && bytes.size_bytes() == 4096, "a fresh claim has the wrong size");
     require(bytes.size<uint32_t>() == 1024 && bytes.size<uint64_t>() == 512, "typed size is wrong");
     require(std::all_of(bytes.data<uint8_t>(), bytes.data<uint8_t>() + 4096,
@@ -100,5 +102,18 @@ int main() {
     buffetalligator::Slice aligned_next(16, buffetalligator::BuffetMenu::get(1));
     require(reinterpret_cast<uintptr_t>(aligned_next.raw()) % 64 == 0,
         "the aligned heap placement ignored its 64 byte alignment");
+    const buffetalligator::Slice novel(4096, true);
+    require(novel.is_novel() && sizeof(novel) == 16, "novel identity changed the Slice layout");
+    auto novel_view = novel.slice(64, 128);
+    auto novel_copy = novel_view;
+    require(novel_view.is_novel() && novel_copy.is_novel(), "a view lost its novel identity");
+    auto novel_moved = std::move(novel_copy);
+    require(novel_moved.is_novel() && !novel_copy.is_novel(), "move changed novel ownership");
+    novel_moved.resize(32);
+    require(novel_moved.is_novel(), "a preserving shrink changed backing identity");
+    novel_moved.resize(64, false, false);
+    require(!novel_moved.is_novel(), "a new slab claim retained stale novel identity");
+    novel_view.free();
+    require(!novel_view.is_novel(), "a released Slice retained novel identity");
     return 0;
 }

@@ -1,0 +1,238 @@
+Release suite:
+Test project /Users/joshmorgan/manifoldb/buffetalligator/build/current
+      Start  1: test_logging
+ 1/17 Test  #1: test_logging ...........................   Passed    0.00 sec
+      Start  2: test_utilities
+ 2/17 Test  #2: test_utilities .........................   Passed    0.00 sec
+      Start  3: buffetalligator_memory_test
+ 3/17 Test  #3: buffetalligator_memory_test ............   Passed    0.39 sec
+      Start  4: buffetalligator_slice_test
+ 4/17 Test  #4: buffetalligator_slice_test .............   Passed    0.32 sec
+      Start  5: buffetalligator_slice_queue_test
+ 5/17 Test  #5: buffetalligator_slice_queue_test .......   Passed    0.26 sec
+      Start  6: buffetalligator_builtin_default_test
+ 6/17 Test  #6: buffetalligator_builtin_default_test ...   Passed    0.28 sec
+      Start  7: buffetalligator_slicemap_test
+ 7/17 Test  #7: buffetalligator_slicemap_test ..........   Passed    0.26 sec
+      Start  8: buffetalligator_slab_lifecycle_test
+ 8/17 Test  #8: buffetalligator_slab_lifecycle_test ....   Passed    0.27 sec
+      Start  9: buffetalligator_os_layer_test
+ 9/17 Test  #9: buffetalligator_os_layer_test ..........   Passed    0.13 sec
+      Start 10: buffetalligator_core_claim_test
+10/17 Test #10: buffetalligator_core_claim_test ........   Passed    0.84 sec
+      Start 11: buffetalligator_core_worker_test
+11/17 Test #11: buffetalligator_core_worker_test .......   Passed    3.18 sec
+      Start 12: buffetalligator_header_fixes_test
+12/17 Test #12: buffetalligator_header_fixes_test ......   Passed    0.40 sec
+      Start 13: buffetalligator_resource_test
+13/17 Test #13: buffetalligator_resource_test ..........   Passed    0.35 sec
+      Start 14: buffetalligator_novel_recycle_test
+14/17 Test #14: buffetalligator_novel_recycle_test .....   Passed    9.98 sec
+      Start 15: buffetalligator_registry_growth_test
+15/17 Test #15: buffetalligator_registry_growth_test ...   Passed    0.07 sec
+      Start 16: buffetalligator_queue_test
+16/17 Test #16: buffetalligator_queue_test .............   Passed    0.68 sec
+      Start 17: buffetalligator_slicemap_queue_test
+17/17 Test #17: buffetalligator_slicemap_queue_test ....   Passed    0.09 sec
+
+100% tests passed, 0 tests failed out of 17
+
+Total Test time (real) =  17.47 sec
+
+Repeated stress:
+Test project /Users/joshmorgan/manifoldb/buffetalligator/build/current
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+    Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start  7: buffetalligator_slicemap_test
+1/3 Test  #7: buffetalligator_slicemap_test .........   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.01 sec
+    Start 12: buffetalligator_header_fixes_test
+    Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 12: buffetalligator_header_fixes_test
+2/3 Test #12: buffetalligator_header_fixes_test .....   Passed    0.02 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.09 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+    Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+    Start 17: buffetalligator_slicemap_queue_test
+3/3 Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.10 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   2.65 sec
+
+UBSan:
+Test project /Users/joshmorgan/manifoldb/buffetalligator/build/queue-ubsan
+    Start  7: buffetalligator_slicemap_test
+1/3 Test  #7: buffetalligator_slicemap_test .........   Passed    0.65 sec
+    Start 12: buffetalligator_header_fixes_test
+2/3 Test #12: buffetalligator_header_fixes_test .....   Passed    0.47 sec
+    Start 17: buffetalligator_slicemap_queue_test
+3/3 Test #17: buffetalligator_slicemap_queue_test ...   Passed    0.60 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   1.72 sec
+
+ThreadSanitizer runtime check: independent thread-and-join smoke program exited 139.
+
+Installed find_package(alligator) consumer rebuilt against the final library and exited 0.
+
+Portable worker-count regression rerun:
+Test project /Users/joshmorgan/manifoldb/buffetalligator/build/current
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.48 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+    Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+    Start 7: buffetalligator_slicemap_test
+1/1 Test #7: buffetalligator_slicemap_test ....   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.86 sec
+Test project /Users/joshmorgan/manifoldb/buffetalligator/build/queue-ubsan
+    Start 7: buffetalligator_slicemap_test
+1/1 Test #7: buffetalligator_slicemap_test ....   Passed    0.53 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.54 sec
