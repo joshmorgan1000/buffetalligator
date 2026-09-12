@@ -18,6 +18,7 @@ INSTALL_DIR="${REPO_ROOT}/build/install"
 CLEAN_BUILD=false
 REBUILD_VENDORED=false
 RUN_TESTS=true
+DEPS_ONLY=false
 CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib)
 while (( $# > 0 )); do
     case "$1" in
@@ -30,19 +31,26 @@ while (( $# > 0 )); do
             REBUILD_VENDORED=true
             shift
             ;;
+        --deps-only)
+            DEPS_ONLY=true
+            shift
+            ;;
         --skip-tests)
             RUN_TESTS=false
             shift
             ;;
         --build-dir)
+            [[ $# -ge 2 ]] || { printf '%s\n' "--build-dir needs a directory"; exit 1; }
             BUILD_ROOT="$2"
             shift 2
             ;;
         --deps-dir)
+            [[ $# -ge 2 ]] || { printf '%s\n' "--deps-dir needs a directory"; exit 1; }
             DEPS_DIR="$2"
             shift 2
             ;;
         --install-dir)
+            [[ $# -ge 2 ]] || { printf '%s\n' "--install-dir needs a directory"; exit 1; }
             INSTALL_DIR="$2"
             shift 2
             ;;
@@ -51,11 +59,15 @@ while (( $# > 0 )); do
             shift
             ;;
         *)
-            printf '%s\n' "${RED}Unknown option: $1${NC}"
+            if [[ "$1" != --help && "$1" != -h ]]; then
+                printf '%s\n' "${RED}Unknown option: $1${NC}"
+                exit 1
+            fi
             printf '%s\n' "Usage: $0 [OPTIONS]"
             printf '%s\n' "Options:"
             printf '%s\n' "  --clean              Delete the build directory to start fresh."
             printf '%s\n' "  --rebuild-vendored   Force rebuild of vendored dependencies."
+            printf '%s\n' "  --deps-only          Fetch and build the required dependencies only."
             printf '%s\n' "  --skip-tests         Build and install without running the test suite."
             printf '%s\n' "  --build-dir DIR      Specify the build directory."
             printf '%s\n' "  --deps-dir DIR       Specify the dependencies directory."
@@ -66,8 +78,13 @@ while (( $# > 0 )); do
             ;;
     esac
 done
+[[ "${BUILD_ROOT}" = /* ]] || BUILD_ROOT="${PWD}/${BUILD_ROOT}"
+[[ "${DEPS_DIR}" = /* ]] || DEPS_DIR="${PWD}/${DEPS_DIR}"
+[[ "${INSTALL_DIR}" = /* ]] || INSTALL_DIR="${PWD}/${INSTALL_DIR}"
 BUILD_DIR="${BUILD_ROOT}/current"
 DEPS_SOURCE_DIR="${DEPS_DIR}/src"
+DEPS="${DEPS_DIR}"
+DEPS_SRC="${DEPS_SOURCE_DIR}"
 LOG_FILE="${BUILD_ROOT}/build_buffetalligator.log"
 LOGGER_DIR="${DEPS_SOURCE_DIR}/threadsafe-logger"
 LOGGER_URL="https://github.com/joshmorgan1000/threadsafe-logger.git"
@@ -118,6 +135,10 @@ MOLTENVK_REPO="https://github.com/KhronosGroup/MoltenVK.git"
 MOLTENVK_SRC="${DEPS_SRC}/MoltenVK"
 MOLTENVK_DEPS="${DEPS}/MoltenVK"
 MOLTENVK_VERSION="v1.4.1"
+SIMDJSON_REPO="https://github.com/simdjson/simdjson.git"
+SIMDJSON_SRC="${DEPS_SRC}/simdjson"
+SIMDJSON_DEPS="${DEPS}/simdjson"
+SIMDJSON_VERSION="v4.6.3"
 printf '%s' "${GREEN}"
 cat <<'ALLIGATOR_ART'
                        _.---._
@@ -158,6 +179,16 @@ missing_dependency() {
             fi
         fi
         printf '%s\n' "Run: brew install ${package_name}"
+    elif command -v apt-get >/dev/null 2>&1; then
+        if [[ "${command_name}" == c++ ]]; then package_name=build-essential; fi
+        if [[ -t 0 ]]; then
+            read -r -p "Install ${package_name} with apt now? [y/N] " answer
+            if [[ "${answer}" == y || "${answer}" == Y ]]; then
+                sudo apt-get install "${package_name}"
+                return
+            fi
+        fi
+        printf '%s\n' "Run: sudo apt-get install ${package_name}"
     else
         printf '%s\n' "Install ${package_name} with your system package manager, then rerun ./run_build.sh."
     fi
@@ -233,7 +264,7 @@ build_abseil_from_source() {
 }
 # =========================================================================================================== build libfabric
 build_libfabric_from_source() {
-    if [[ -f "${LIBFABRIC_DEPS}/.version" ]] && \
+    if [[ "${REBUILD_VENDORED}" == false && -f "${LIBFABRIC_DEPS}/.version" ]] && \
        [[ "$(cat "${LIBFABRIC_DEPS}/.version" 2>/dev/null)" == "${LIBFABRIC_VERSION}" ]] && \
        [[ -f "${LIBFABRIC_DEPS}/lib/libfabric.a" ]] && \
        [[ -f "${LIBFABRIC_DEPS}/include/rdma/fabric.h" ]]; then
@@ -256,6 +287,9 @@ build_libfabric_from_source() {
             git checkout "${LIBFABRIC_VERSION}"
             popd > /dev/null
         fi
+    fi
+    if [[ "${REBUILD_VENDORED}" == true && -f "${LIBFABRIC_SRC}/Makefile" ]]; then
+        make -C "${LIBFABRIC_SRC}" clean
     fi
     echo "Building libfabric (${LIBFABRIC_VERSION})..."
     (cd "${LIBFABRIC_SRC}" && ./autogen.sh -s) > /dev/null
@@ -340,7 +374,7 @@ build_moodycamel_from_source() {
 }
 # =========================================================================================================== build libsodium
 build_libsodium_from_source() {
-    if [[ -f "${LIBSODIUM_DEPS}/.version" ]] && \
+    if [[ "${REBUILD_VENDORED}" == false && -f "${LIBSODIUM_DEPS}/.version" ]] && \
        [[ "$(cat "${LIBSODIUM_DEPS}/.version" 2>/dev/null)" == "${LIBSODIUM_VERSION}" ]] && \
        [[ -f "${LIBSODIUM_DEPS}/lib/libsodium.a" ]] && \
        [[ -f "${LIBSODIUM_DEPS}/include/sodium.h" ]] && \
@@ -482,7 +516,7 @@ build_vulkan_headers_from_source() {
         echo "Error: vulkan/vulkan.h missing at ${VULKAN_HEADERS_SRC}/include/"
         exit 1
     fi
-    if [[ -f "${VULKAN_HEADERS_DEPS}/.version" ]] && \
+    if [[ "${REBUILD_VENDORED}" == false && -f "${VULKAN_HEADERS_DEPS}/.version" ]] && \
        [[ "$(cat "${VULKAN_HEADERS_DEPS}/.version" 2>/dev/null)" == "${VULKAN_HEADERS_VERSION}" ]] && \
        [[ -f "${VULKAN_HEADERS_DEPS}/include/vulkan/vulkan.h" ]] && \
        [[ -f "${VULKAN_HEADERS_DEPS}/share/cmake/VulkanHeaders/VulkanHeadersConfig.cmake" ]]; then
@@ -705,6 +739,7 @@ build_moltenvk_from_source() {
     pushd "${MOLTENVK_SRC}"
     ./fetchDependencies --macos
     echo "Building MoltenVK macOS dylib via 'make macos'..."
+    if [[ "${REBUILD_VENDORED}" == true ]]; then make clean; fi
     make macos
     popd
     if [[ ! -f "${DYLIB_OUT}" ]]; then
@@ -720,67 +755,99 @@ build_moltenvk_from_source() {
 }
 # =========================================================================================================== build libuv
 build_libuv_from_source() {
-
+    if [[ "${REBUILD_VENDORED}" == false && -f "${LIBUV_DEPS}/.version" ]] &&
+       [[ "$(cat "${LIBUV_DEPS}/.version")" == "${LIBUV_VERSION}" ]] &&
+       [[ -f "${LIBUV_DEPS}/lib/libuv.a" && -f "${LIBUV_DEPS}/include/uv.h" ]]; then
+        return
+    fi
+    if [[ ! -d "${LIBUV_SRC}/.git" ]]; then
+        GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "${LIBUV_VERSION}" \
+            "${LIBUV_REPO}" "${LIBUV_SRC}"
+    elif [[ "$(git -C "${LIBUV_SRC}" describe --tags --exact-match)" != "${LIBUV_VERSION}" ]]; then
+        echo "The libuv checkout differs from ${LIBUV_VERSION}; use a fresh --deps-dir."
+        return 1
+    fi
+    cmake -S "${LIBUV_SRC}" -B "${LIBUV_SRC}/build" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DCMAKE_INSTALL_PREFIX="${LIBUV_DEPS}" -DCMAKE_INSTALL_LIBDIR=lib \
+        -DLIBUV_BUILD_SHARED=OFF -DLIBUV_BUILD_TESTS=OFF -DLIBUV_BUILD_BENCH=OFF
+    if [[ "${REBUILD_VENDORED}" == true ]]; then
+        cmake --build "${LIBUV_SRC}/build" --target clean
+    fi
+    cmake --build "${LIBUV_SRC}/build" --parallel
+    cmake --install "${LIBUV_SRC}/build"
+    test -f "${LIBUV_DEPS}/lib/libuv.a"
+    echo "${LIBUV_VERSION}" > "${LIBUV_DEPS}/.version"
 }
-
+# =========================================================================================================== Build stages
+run_stage() {
+    local label="$1"
+    shift
+    printf '%s\n' "${CYAN}${label}...${NC}"
+    ( "$@" ) >> "${LOG_FILE}" 2>&1 &
+    local stage_process=$!
+    local elapsed=0
+    while kill -0 "${stage_process}" 2>/dev/null; do
+        printf '\r%s' "${DIM}${label} (${elapsed}s)...${NC}"
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if wait "${stage_process}"; then
+        printf '\r%s\n' "${GREEN}${label}: done (${elapsed}s).${NC}"
+    else
+        printf '\r%s\n' "${RED}${label} failed.${NC}"
+        printf '%s\n' "Details: ${LOG_FILE}" \
+            "Check the log for the dependency or compiler diagnostic, fix it, then rerun ./run_build.sh."
+        exit 1
+    fi
+}
 command -v git >/dev/null 2>&1 || missing_dependency git git
 command -v cmake >/dev/null 2>&1 || missing_dependency cmake cmake
 command -v c++ >/dev/null 2>&1 || missing_dependency c++ llvm
+command -v autoreconf >/dev/null 2>&1 || missing_dependency autoreconf autoconf
+command -v automake >/dev/null 2>&1 || missing_dependency automake automake
+command -v pkg-config >/dev/null 2>&1 || missing_dependency pkg-config pkg-config
+if ! command -v libtoolize >/dev/null 2>&1 && ! command -v glibtoolize >/dev/null 2>&1; then
+    missing_dependency libtoolize libtool
+fi
+if [[ "$(uname -s)" == Linux ]]; then
+    pkg-config --exists libibverbs || missing_dependency "libibverbs development files" libibverbs-dev
+    pkg-config --exists librdmacm || missing_dependency "librdmacm development files" librdmacm-dev
+fi
+if [[ "${CLEAN_BUILD}" == true && -d "${BUILD_DIR}" ]]; then
+    rm -rf "${BUILD_DIR}"
+fi
 mkdir -p "${BUILD_DIR}" "${DEPS_SOURCE_DIR}"
 : > "${LOG_FILE}"
 if [[ ! -d "${LOGGER_DIR}/.git" ]]; then
-    printf '%s\n' "${CYAN}Fetching threadsafe-logger...${NC}"
-    if ! git clone "${LOGGER_URL}" "${LOGGER_DIR}" 2>&1 | tee -a "${LOG_FILE}"; then
-        printf '%s\n' "${RED}Could not fetch ${LOGGER_URL}.${NC}" "Check network access, then rerun ./run_build.sh." "Details: ${LOG_FILE}"
-        exit 1
-    fi
+    run_stage "Fetching threadsafe-logger" git clone "${LOGGER_URL}" "${LOGGER_DIR}"
 fi
-if git -C "${LOGGER_DIR}" remote get-url origin 2>&1 | tee -a "${LOG_FILE}"; then
-    printf '%s\n' "${CYAN}Updating threadsafe-logger to the latest main...${NC}"
-    if ! git -C "${LOGGER_DIR}" fetch origin main 2>&1 | tee -a "${LOG_FILE}" ||
-       ! git -C "${LOGGER_DIR}" checkout --detach FETCH_HEAD 2>&1 | tee -a "${LOG_FILE}"; then
-        printf '%s\n' "${RED}Could not update threadsafe-logger.${NC}" "Check network access, then rerun ./run_build.sh." "Details: ${LOG_FILE}"
-        exit 1
-    fi
-else
-    printf '%s\n' "${CYAN}Using the vendored threadsafe-logger checkout...${NC}"
+run_stage "Preparing libuv TCP and UDP" build_libuv_from_source
+run_stage "Preparing libsodium encryption" build_libsodium_from_source
+run_stage "Preparing libfabric RDMA" build_libfabric_from_source
+run_stage "Preparing Vulkan headers" build_vulkan_headers_from_source
+if [[ "${REBUILD_VENDORED}" == true ]]; then
+    rm -f "${VULKAN_LOADER_DEPS}/.version" "${MOLTENVK_DEPS}/.version"
+fi
+run_stage "Preparing Vulkan runtime" build_vulkan_loader_from_source
+if [[ "${DEPS_ONLY}" == true ]]; then
+    printf '%s\n' "${GREEN}All networking and Vulkan dependencies are ready in ${DEPS_DIR}.${NC}"
+    exit 0
 fi
 GENERATOR_ARGS=()
 if command -v ninja >/dev/null 2>&1; then
     GENERATOR_ARGS=(-G Ninja)
 fi
-printf '%s\n' "${CYAN}Configuring BuffetAlligator...${NC}"
-if ! cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" "${GENERATOR_ARGS[@]}" -DBUFFETALLIGATOR_BUILD_TESTS="$([[ "${RUN_TESTS}" == true ]] && echo ON || echo OFF)" -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" "${CMAKE_ARGS[@]}" 2>&1 | tee -a "${LOG_FILE}"; then
-    printf '%s\n' "${RED}Configuration failed.${NC}" "The last diagnostics were:"
-    tail -n 30 "${LOG_FILE}"
-    exit 1
-fi
-printf '%s\n' "${CYAN}Building the library and its static dependencies...${NC}"
-if ! cmake --build "${BUILD_DIR}" --parallel 2>&1 | tee -a "${LOG_FILE}"; then
-    printf '%s\n' "${RED}Build failed.${NC}" "The last diagnostics were:"
-    tail -n 30 "${LOG_FILE}"
-    exit 1
-fi
+run_stage "Configuring BuffetAlligator" cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
+    "${GENERATOR_ARGS[@]}" \
+    -DBUFFETALLIGATOR_BUILD_TESTS="$([[ "${RUN_TESTS}" == true ]] && echo ON || echo OFF)" \
+    -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" \
+    -DBUFFETALLIGATOR_DEPS_DIR="${DEPS_DIR}" "${CMAKE_ARGS[@]}"
+run_stage "Building BuffetAlligator" cmake --build "${BUILD_DIR}" --parallel
 if [[ "${RUN_TESTS}" == true ]]; then
-    printf '%s\n' "${CYAN}Running the memory contract tests...${NC}"
-    if ! ctest --test-dir "${BUILD_DIR}" --output-on-failure 2>&1 | tee -a "${LOG_FILE}"; then
-        printf '%s\n' "${RED}Tests failed.${NC}" "The last diagnostics were:"
-        tail -n 40 "${LOG_FILE}"
-        exit 1
-    fi
-else
-    printf '%s\n' "${DIM}Skipping the test suite (--skip-tests).${NC}"
+    run_stage "Testing memory and network contracts" ctest --test-dir "${BUILD_DIR}" --output-on-failure
 fi
-printf '%s\n' "${CYAN}Installing the library...${NC}"
-if ! cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}" 2>&1 | tee -a "${LOG_FILE}"; then
-    printf '%s\n' "${RED}Installation failed.${NC}" "The last diagnostics were:"
-    tail -n 30 "${LOG_FILE}"
-    exit 1
-fi
-if [[ "${RUN_TESTS}" == true ]]; then
-    printf '%s\n' "${GREEN}BuffetAlligator is built and all tests passed.${NC}"
-else
-    printf '%s\n' "${GREEN}BuffetAlligator is built and installed.${NC}"
-fi
-printf '%s\n' "${DIM}Static library: ${BUILD_DIR}/liballigator.a${NC}"
-printf '%s\n' "${DIM}Installation directory: ${INSTALL_DIR}${NC}"
+run_stage "Installing BuffetAlligator" cmake --install "${BUILD_DIR}" --prefix "${INSTALL_DIR}"
+printf '%s\n' "${GREEN}BuffetAlligator is built and installed. Full plates, across the wire.${NC}" \
+    "${DIM}Static library: ${BUILD_DIR}/liballigator.a${NC}" \
+    "${DIM}Installation directory: ${INSTALL_DIR}${NC}"

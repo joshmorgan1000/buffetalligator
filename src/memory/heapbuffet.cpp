@@ -3,8 +3,10 @@
  * @brief Mirrors C core placement registrations in the public C++ registry.
  */
 #include <alligator.hpp>
+#include <mutex>
 extern "C" {
 #include "core/ba_core.h"
+void ba_net_shutdown(void);
 }
 
 namespace buffetalligator {
@@ -12,6 +14,7 @@ static_assert(sizeof(Placemat::Handle) == sizeof(ba_handle_t));
 static_assert(offsetof(Placemat::Handle, substrate_handle) == offsetof(ba_handle_t, substrate_handle));
 static_assert(offsetof(Placemat::Handle, context) == offsetof(ba_handle_t, context));
 namespace {
+static std::mutex placement_registration;
 static PlacementDescription descriptions[BA_MAX_PLACEMENTS];
 /** --------------------------------------------------------------------------------------------------------- Placement Bridge
  * @brief Calls each registered C++ callback through its exact public function type.
@@ -57,10 +60,10 @@ struct BridgeFunctions {
  */
 template<size_t... Indices>
 constexpr auto make_bridges(std::index_sequence<Indices...>) {
-    return std::array<BridgeFunctions, sizeof...(Indices)>{{
-        {PlacementBridge<Indices>::allocate, PlacementBridge<Indices>::deallocate,
+    return std::array<BridgeFunctions, BA_MAX_PLACEMENTS>{
+        BridgeFunctions{PlacementBridge<Indices>::allocate, PlacementBridge<Indices>::deallocate,
          PlacementBridge<Indices>::host_pointer, PlacementBridge<Indices>::zero}...
-    }};
+    };
 }
 static constexpr auto bridges = make_bridges(std::make_index_sequence<BA_MAX_PLACEMENTS>{});
 /** --------------------------------------------------------------------------------------------------------- Destroy Handle
@@ -109,6 +112,7 @@ uint16_t BuffetMenu::register_type(const PlacementDescription& description) {
         LOG_ERROR_STREAM << "PlacementDescription.name is required";
         ALLIGATOR_THROW("PlacementDescription.name is required");
     }
+    std::unique_lock registration(placement_registration);
     const char* name = description.name;
     const size_t default_slab_size = description.slab_bytes;
     const size_t bump_alignment = description.base_alignment;
@@ -152,9 +156,10 @@ uint16_t BuffetMenu::register_type(const PlacementDescription& description) {
     placement->bump_alignment_ = static_cast<uint16_t>(bump_alignment);
     placement->default_slab_size_ = static_cast<uint32_t>(descriptor.slab_bytes >> 12);
     auto& menu = instance();
-    menu.placement_indices_.emplace(name, type);
-    menu.placements_.emplace_back(std::move(placement));
-    default_placement_slot() = menu.placements_.at(ba_placement_default()).get();
+    menu.placements_[type] = std::move(placement);
+    menu.placement_count_.store(type + 1, std::memory_order_release);
+    if (set_as_default) default_placement_slot() = menu.placements_[type].get();
+    registration.unlock();
     menu.notify_change_listeners();
     return static_cast<uint16_t>(type);
 }
@@ -182,11 +187,20 @@ void BuffetMenu::ensure_builtins_slow() {
         placement->core_type_ = type;
         placement->bump_alignment_ = static_cast<uint16_t>(descriptor.base_alignment);
         placement->default_slab_size_ = static_cast<uint32_t>(descriptor.slab_bytes >> 12);
-        menu.placement_indices_.emplace(descriptor.name, type);
-        menu.placements_.emplace_back(std::move(placement));
+        menu.placements_[type] = std::move(placement);
     }
     default_placement_slot() = menu.placements_.at(ba_placement_default()).get();
+    menu.placement_count_.store(2, std::memory_order_release);
     menu.builtins_ready_.store(true, std::memory_order_release);
+}
+/** --------------------------------------------------------------------------------------------------------- Get by Name
+ * @brief Resolves a published C placement to its stable C++ wrapper.
+ */
+Placemat* BuffetMenu::get(const std::string& name) {
+    if (!instance().builtins_ready_.load(std::memory_order_acquire)) ensure_builtins_slow();
+    const int type = ba_placement_find(name.c_str());
+    if (type < 0 || static_cast<size_t>(type) >= count()) return nullptr;
+    return get(static_cast<uint16_t>(type));
 }
 /** --------------------------------------------------------------------------------------------------------- Default Placement
  * @brief Returns the wrapper corresponding to the C core default identifier.
@@ -198,5 +212,5 @@ const Placemat*& BuffetMenu::default_placement() {
 /** --------------------------------------------------------------------------------------------------------- Shutdown
  * @brief Explicitly stops the C allocator worker after application quiescence.
  */
-void BuffetMenu::shutdown() { ba_shutdown(); }
+void BuffetMenu::shutdown() { ba_net_shutdown(); ba_shutdown(); }
 }

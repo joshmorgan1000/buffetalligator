@@ -28,6 +28,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <vulkan/vulkan_core.h>
 
 namespace buffetalligator {
 class Alligator; class Buffet; class BuffetMenu; class Slice; class Memory;
@@ -119,6 +120,14 @@ public:
      * @brief Registers a placement with explicit resource policy and optional zeroing callbacks.
      */
     static uint16_t register_type(const PlacementDescription& description);
+    /** ------------------------------------------------------------------------------------------- Vulkan Placement
+     * @brief Returns a Vulkan placement with the requested memory properties, prepared at startup.
+     */
+    static const Placemat* vulkan(VkMemoryPropertyFlags properties);
+    /** ------------------------------------------------------------------------------------------- Vulkan Device
+     * @brief Returns the device used by Vulkan placements.
+     */
+    static VkDevice vulkan_device();
 
     /** ------------------------------------------------------------------------------------------- Register Type
      * @brief Registers one process-lifetime Placemat before the first Slice is created.
@@ -152,23 +161,17 @@ public:
         if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
             ensure_builtins_slow();
         }
-        return instance().placements_.at(type).get();
+        auto& menu = instance();
+        if (type >= menu.placement_count_.load(std::memory_order_acquire))
+            ALLIGATOR_THROW("Unknown placement identifier");
+        return menu.placements_[type].get();
     }
     /** ------------------------------------------------------------------------------------------- Get by Name
      * @brief Returns the registered Placemat for a given name.
      * @param name The name of the placement.
      * @return The registered placement factory, or nullptr if not found.
      */
-    static Placemat* get(const std::string& name) {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
-        }
-        auto it = instance().placement_indices_.find(name);
-        if (it != instance().placement_indices_.end()) {
-            return instance().placements_.at(it->second).get();
-        }
-        return nullptr;
-    }
+    static Placemat* get(const std::string& name);
     /** ------------------------------------------------------------------------------------------- Count
      * @brief Returns the number of Placemat types registered so far.
      * @return The registered placement count.
@@ -177,7 +180,7 @@ public:
         if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
             ensure_builtins_slow();
         }
-        return instance().placements_.size();
+        return instance().placement_count_.load(std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Default Placement
      * @brief Returns the default Placemat instance, registering the built-ins first if needed.
@@ -206,10 +209,10 @@ public:
     BuffetMenu& operator=(BuffetMenu&&) = delete;
     ~BuffetMenu() = default;
 private:
-    /// @brief Vector of unique pointers to all registered Placemat instances.
-    std::vector<std::unique_ptr<Placemat>> placements_;
-    /// @brief Mapping from placement names to their corresponding indices in the placements_ vector.
-    std::unordered_map<std::string, size_t> placement_indices_;
+    /// @brief Stable storage for published placement wrappers.
+    std::array<std::unique_ptr<Placemat>, 32768> placements_;
+    /// @brief Publishes initialized wrappers to concurrent readers.
+    std::atomic<size_t> placement_count_{0};
     /// @brief List of registered change listeners along with their context pointers.
     std::vector<std::pair<void*, void (*)(void*)>> change_listeners_;
     /// @brief Set while the built-in placements are being registered.
@@ -481,6 +484,15 @@ public:
      * @brief Reports dedicated novel backing for this Slice or subview, returning false for null.
      */
     bool is_novel() const noexcept;
+    /** ------------------------------------------------------------------------------------------- Vulkan Buffer
+     * @brief Returns this Slice's Vulkan buffer range for use on BuffetMenu::vulkan_device().
+     */
+    VkDescriptorBufferInfo vulkan_buffer() const;
+    /** ------------------------------------------------------------------------------------------- Vulkan Synchronization
+     * @brief Transfers this Slice between its host view and Vulkan storage after caller GPU work finishes.
+     * @param to_device True uploads host writes and false downloads device writes.
+     */
+    void vulkan_sync(bool to_device) const;
     /** ------------------------------------------------------------------------------------------- Raw accessors
      * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
      * host-writable pointer to the underlying memory.
@@ -615,11 +627,38 @@ private:
     /// @brief Cached host pointer to the slice's first byte.
     void* cached_ = nullptr;
     friend struct SliceLayout;
+    friend struct SliceNetworkAccess;
     friend class SliceQueue;
     friend class Buffet;
     friend class Placemat;
 };
 static_assert(sizeof(Slice) == 16, "Slice must be 16 bytes in size.");
+/** --------------------------------------------------------------------------------------------------------- SliceChannel
+ * @brief Sends and receives Slices across network boundaries while preserving their placement.
+ */
+class SliceChannel {
+public:
+    enum class Protocol : uint8_t {
+        TCP, UDP, RDMA, EncryptedTCP = 128, EncryptedUDP, EncryptedRDMA
+    };
+    SliceChannel() = delete;
+    /** ------------------------------------------------------------------------------------------- Listen
+     * @brief Starts receiving Slices on a port and protocol, invoking recv on the channel thread.
+     */
+    static void listen(uint16_t port, Protocol protocol, void (*recv)(Slice));
+    /** ------------------------------------------------------------------------------------------- Close
+     * @brief Closes the listener and pending exchanges for a port and protocol.
+     */
+    static void close(uint16_t port, Protocol protocol);
+    /** ------------------------------------------------------------------------------------------- Send
+     * @brief Sends a Slice, using an empty address inside recv to reply to its sender.
+     * @param resp Receives the peer's reply or a null Slice on transport failure.
+     */
+    static void send(
+        Slice slice, std::string address, uint16_t port, Protocol protocol,
+        void (*resp)(Slice) = nullptr
+    );
+};
 /** --------------------------------------------------------------------------------------------------------- SliceQueue
  * @class SliceQueue
  * @brief Moves owned Slices through fixed worker pools with TLS blocks and semaphore wakeups.
@@ -724,6 +763,11 @@ public:
      * @param size The size of the slice in bytes.
      */
     SliceT(bool initialize = false);
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a SliceT with a specified number of elements of type T.
+     * @param count The number of elements of type T.
+     */
+    SliceT(size_t count);
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT from a Slice. The Slice must have a size that is a multiple of
      * the size of type T.
@@ -901,6 +945,15 @@ SliceT<T>::SliceT(bool initialize) {
     if (initialize) {
         slice_ = Slice(sizeof(T));
     }
+}
+/** --------------------------------------------------------------------------------------------------------- Constructor - From Count
+ * @brief Constructs a SliceT with a specified number of elements of type T.
+ * @param count The number of elements of type T.
+ */
+template <typename T>
+SliceT<T>::SliceT(size_t count) {
+    if (count > SIZE_MAX / sizeof(T)) ALLIGATOR_THROW("SliceT element count exceeds addressable memory");
+    slice_ = Slice(count * sizeof(T));
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Slice
  * @brief Constructs a SliceT from an existing Slice.

@@ -21,6 +21,7 @@ else()
 endif()
 option(BUFFETALLIGATOR_BUILD_TESTS "Build the BuffetAlligator tests" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
 set(BUFFETALLIGATOR_DEPS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/src" CACHE PATH "Dependency source directory")
+set(BUFFETALLIGATOR_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps" CACHE PATH "Built dependency directory")
 set(THREADSAFE_LOGGER_SOURCE_DIR "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/threadsafe-logger")
 set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET OFF)
 if(NOT TARGET logging::logging)
@@ -36,6 +37,7 @@ if(NOT OpenSSL_FOUND)
     message(FATAL_ERROR "OpenSSL is required by BuffetAlligator and not vendored. Please install OpenSSL and try again.")
 endif()
 find_package(Threads REQUIRED)
+include(cmake/NetworkDependencies.cmake)
 add_library(alligator STATIC
     src/core/ba_os.c
     src/core/ba_core.c
@@ -44,6 +46,12 @@ add_library(alligator STATIC
     src/memory/slice.cpp
     src/memory/slice_queue.cpp
     src/memory/heapbuffet.cpp
+    src/memory/ba_vulkan.c
+    src/memory/vulkan.cpp
+    src/network/ba_wire.c
+    src/network/ba_network.c
+    src/network/ba_fabric.c
+    src/network/slice_channel.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
 target_include_directories(alligator
@@ -55,7 +63,13 @@ target_include_directories(alligator
 )
 target_compile_features(alligator PUBLIC cxx_std_20)
 target_compile_definitions(alligator PUBLIC ALLIGATOR_SLOT_BITS=${ALLIGATOR_SLOT_BITS})
-target_link_libraries(alligator PUBLIC logging::logging Threads::Threads)
+target_link_libraries(alligator PUBLIC logging::logging Threads::Threads alligator::vulkan
+    PRIVATE alligator::uv alligator::sodium alligator::fabric)
+if(UNIX AND NOT APPLE)
+    set_source_files_properties(src/network/ba_network.c src/network/ba_wire.c
+        src/network/ba_fabric.c src/memory/ba_vulkan.c
+        PROPERTIES COMPILE_DEFINITIONS _POSIX_C_SOURCE=200809L)
+endif()
 if(WIN32)
     target_link_libraries(alligator PUBLIC onecore psapi)
 endif()

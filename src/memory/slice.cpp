@@ -6,6 +6,7 @@
 #include <cstring>
 extern "C" {
 #include "core/ba_core.h"
+int ba_vulkan_transfer(const ba_slice_t* slice, int to_device);
 }
 
 namespace buffetalligator {
@@ -54,6 +55,10 @@ Slice::Slice(const void* source, size_t size, bool novel, const Placemat* placem
     if (!source || !size) return;
     check_claim(ba_claim(placement->type(), size, novel ? BA_CLAIM_NOVEL : 0, reinterpret_cast<ba_slice_t*>(this)), placement);
     std::memcpy(cached_, source, size);
+    if (ba_vulkan_transfer(reinterpret_cast<const ba_slice_t*>(this), 1)) {
+        free();
+        ALLIGATOR_THROW("Vulkan upload failed");
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- Copy Constructor
  * @brief Retains the source plate and copies its two slice words.
@@ -141,7 +146,11 @@ void Slice::resize(
     }
     Slice grown(new_size, novel_buffer, placement);
     if (preserve_data && !is_null() && !grown.is_null()) {
+        if (ba_vulkan_transfer(reinterpret_cast<const ba_slice_t*>(this), 0))
+            ALLIGATOR_THROW("Vulkan readback failed");
         std::memcpy(grown.raw(), raw(), std::min(size_bytes(), new_size));
+        if (ba_vulkan_transfer(reinterpret_cast<const ba_slice_t*>(&grown), 1))
+            ALLIGATOR_THROW("Vulkan upload failed");
     }
     *this = std::move(grown);
 }

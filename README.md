@@ -8,6 +8,21 @@ BuffetAlligator is a C++20 memory arena backed by a private C11 core. Its 16-byt
 
 The project is pre-release. API and ABI compatibility are not guaranteed until 1.0.
 
+## Install
+
+```sh
+cmake --install build/current --prefix /your/install/prefix
+```
+
+Installed CMake consumers can use the exported target:
+
+```cmake
+find_package(alligator CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE alligator::alligator)
+```
+
+Concurrent claims and independent `Slice` handles are supported. Concurrent mutation of the same `Slice` object requires external synchronization.
+
 ## Placemat
 
 A registered `Placemat` is a process-lifetime memory source with stable host-pointer access. `heap` has identifier 0, `aligned_heap` has identifier 1 and is the default, and custom identifiers start at 2. Both built-ins use anonymous OS pages. Every claim has a host pointer aligned to at least 64 bytes and reads as zero when returned. Sub-slice views retain the original allocation and can begin at an arbitrary byte offset.
@@ -81,7 +96,7 @@ const auto type = buffetalligator::BuffetMenu::register_type(description);
 
 ## Build
 
-BuffetAlligator requires a C++20 compiler, CMake 3.20 or newer, Git, and a platform threading library. `run_build.sh` is the supported one-shot build on macOS and Linux; it uses Ninja when available.
+BuffetAlligator requires a C++20 compiler, CMake 3.20 or newer, Git, Autoconf, Automake, Libtool, pkg-config, OpenSSL, and a platform threading library. `run_build.sh` is the supported one-shot build on macOS and Linux; it uses Ninja when available.
 
 ```sh
 ./run_build.sh
@@ -95,7 +110,7 @@ Override the slot width with the `ALLIGATOR_SLOT_BITS` CMake cache setting (defa
 
 Direct CMake configuration accepts the same `-DALLIGATOR_SLOT_BITS=20` option. The `alligator::alligator` target propagates the selected definition to consumers, including installed packages. Each additional slot bit doubles the registry's reserved address range and halves the maximum representable slice size; writable storage still grows on demand. Existing CMake caches retain their selected width; use `-DALLIGATOR_SLOT_BITS=24` to adopt the new default in an existing build.
 
-The script checks out [threadsafe-logger](https://github.com/joshmorgan1000/threadsafe-logger) at commit `52588cec8fda78ffa5af31b8479b4e97a9417de8` under `deps/src`, builds both libraries statically, and runs the contract tests. The dependency is MIT-licensed; see `THIRD_PARTY_NOTICES.md`.
+The script fetches dependencies under `deps/src` and installs libuv, libsodium, libfabric, and Vulkan headers into `deps/`. It builds MoltenVK on macOS and Vulkan-Loader on Linux. An existing threadsafe-logger checkout is preserved. OpenSSL is discovered with `find_package` and is not vendored. Use `--deps-dir DIR` to select a different dependency directory, `--deps-only` to prepare dependencies, or `--rebuild-vendored` to rebuild them. The library, its dependency archives, Vulkan headers, and Vulkan runtime are installed together for CMake consumers. See `THIRD_PARTY_NOTICES.md` for licenses.
 
 The standalone registry benchmark compares fixed capacity, atomic page growth, and shared-lock access on macOS and Linux:
 
@@ -158,20 +173,54 @@ Call `close()` only after every producer has finished and flushed, and do not pu
 
 The method returns false for null/released/moved-from Slices and slab-backed claims, including direct plates carved from a slab. Explicit novel allocations and oversized allocations automatically routed to novel backing return true. Copies and subviews report their shared backing's kind; this does not imply exclusive ownership. A preserving shrink keeps that identity, while a resize that allocates new backing reports the new backing's kind.
 
-## Install
+## SliceChannel
 
-```sh
-cmake --install build/current --prefix /your/install/prefix
+`SliceChannel` sends Slices between processes and machines through three static operations:
+
+```cpp
+using buffetalligator::Slice;
+using buffetalligator::SliceChannel;
+using Protocol = SliceChannel::Protocol;
+void receive(Slice slice) {
+    SliceChannel::send(std::move(slice), "", 9000, Protocol::TCP);
+}
+void response(Slice slice) {
+    if (slice) consume(std::move(slice));
+}
+SliceChannel::listen(9000, Protocol::TCP, receive);
+SliceChannel::send(Slice("hello", 5), "127.0.0.1", 9000, Protocol::TCP, response);
+// Close after the application has finished its exchanges.
+SliceChannel::close(9000, Protocol::TCP);
 ```
 
-Installed CMake consumers can use the exported target:
+`listen` binds before returning. `send` captures the source bytes before returning and delivers the peer's response asynchronously. The Slice passed to either callback retains its memory normally and may be moved into an application queue. Callbacks execute serially on the channel thread and should return promptly. An empty address is valid only inside the receive callback: it replies to that callback's sender, using the same port and protocol. Each request accepts one reply. Omitting `resp` makes the send one-way; a receiver may use its usual reply path, and that reply is discarded. A response callback receives a null Slice if its exchange fails or is canceled. Setup errors throw `AlligatorException`. A null Slice cannot be sent.
 
-```cmake
-find_package(alligator CONFIG REQUIRED)
-target_link_libraries(your_target PRIVATE alligator::alligator)
+`close(port, protocol)` stops that listener, closes its accepted connections, and cancels outgoing exchanges targeting the same port and protocol. Calls from callbacks are supported. `BuffetMenu::shutdown()` stops network activity before the allocator worker; invoke it after application threads quiesce.
+
+Protocols are `TCP`, `UDP`, `RDMA`, `EncryptedTCP`, `EncryptedUDP`, and `EncryptedRDMA`. TCP and UDP accept IPv4, IPv6, and hostnames. RDMA uses an available libfabric message provider; provider selection follows libfabric's normal configuration, including `FI_PROVIDER`. The test suite exercises this path with libfabric's TCP provider, so real RDMA hardware is not required to run the tests. A hardware RDMA deployment needs its provider, drivers, and networking configured on both machines.
+
+TCP and RDMA accept Slices up to 64 MiB. UDP sends one datagram per Slice, subject to the operating system's datagram limit including placement information; oversized messages fail. UDP retains its normal delivery semantics: messages can be lost, duplicated, or reordered. There are no application timeouts or automatic retries; `close` cancels an exchange whose peer does not answer.
+
+Encrypted protocols use libsodium XChaCha20-Poly1305 with a 32-byte shared key. Set `ALLIGATOR_NETWORK_KEY` to the same 64 hexadecimal digits on both machines before starting channels. For example, generate a key with `openssl rand -hex 32` and distribute it through your application's secret configuration. Encryption authenticates the Slice and its placement information; it does not establish individual identities among holders of the same key or provide application-level duplicate suppression. Plain and encrypted listeners cannot share the same port for the same transport.
+
+Placement names are matched across machines, independently of local registration order. Register matching custom placements on each receiver. Unsupported or missing placements fail the exchange; they are never replaced with ordinary host memory.
+
+## Vulkan-backed Slices
+
+```cpp
+const auto* placement = buffetalligator::BuffetMenu::vulkan(
+    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+buffetalligator::Slice slice(4096, placement);
+std::memset(slice.raw(), 42, slice.size_bytes());
+slice.vulkan_sync(true);
+auto buffer = slice.vulkan_buffer();
 ```
 
-Concurrent claims and independent `Slice` handles are supported. Concurrent mutation of the same `Slice` object requires external synchronization.
+`BuffetMenu::vulkan(properties)` selects a memory type satisfying the requested Vulkan property bits. Supported combinations use `DEVICE_LOCAL`, `HOST_VISIBLE`, `HOST_COHERENT`, and `HOST_CACHED`. Unsupported combinations throw. `Slice::vulkan_buffer()` returns the buffer, byte offset, and range for the exact Slice view; `BuffetMenu::vulkan_device()` returns its allocation device. These resources remain owned by the library and must not be destroyed by callers.
+
+Host-visible allocations remain mapped. Device-local allocations without host visibility have a staging view so `raw()` remains usable. Call `vulkan_sync(true)` after writing through that view; call `vulkan_sync(false)` to read completed GPU output. External-copy construction uploads its initial bytes automatically. Complete GPU access to the Slice before synchronization or sending it, and do not modify it concurrently with those operations.
+
+Sending a Vulkan Slice reads its device contents. Receiving it creates the same requested memory class locally and uploads the bytes before invoking the callback. Receivers create Vulkan placements on demand; a receiver without compatible Vulkan memory rejects the exchange. Applications receiving GPU data can retain the Slice and its buffer range normally.
 
 ## License
 
