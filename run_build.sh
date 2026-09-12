@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # =========================================================================================================== BuffetAlligator Build
 set -Eeuo pipefail
-if [[ -t 1 ]]; then
-    GREEN=$'\033[1;32m'
-    CYAN=$'\033[1;36m'
-    YELLOW=$'\033[1;33m'
-    RED=$'\033[1;31m'
-    DIM=$'\033[0;90m'
-    NC=$'\033[0m'
-else
+set_colors() {
     GREEN="" CYAN="" YELLOW="" RED="" DIM="" NC=""
+    if [[ "$1" == always ]]; then
+        GREEN=$'\033[1;32m'
+        CYAN=$'\033[1;36m'
+        YELLOW=$'\033[1;33m'
+        RED=$'\033[1;31m'
+        DIM=$'\033[0;90m'
+        NC=$'\033[0m'
+    fi
+}
+if [[ -n "${NO_COLOR:-}" ]]; then
+    set_colors never
+else
+    set_colors always
 fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_ROOT="${REPO_ROOT}/build"
@@ -22,6 +28,14 @@ DEPS_ONLY=false
 CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib)
 while (( $# > 0 )); do
     case "$1" in
+        --color)
+            set_colors always
+            shift
+            ;;
+        --no-color)
+            set_colors never
+            shift
+            ;;
         --clean)
             # Delete the build directory to start fresh.
             CLEAN_BUILD=true
@@ -65,6 +79,8 @@ while (( $# > 0 )); do
             fi
             printf '%s\n' "Usage: $0 [OPTIONS]"
             printf '%s\n' "Options:"
+            printf '%s\n' "  --color              Enable ANSI colors (default unless NO_COLOR is set)."
+            printf '%s\n' "  --no-color           Disable ANSI colors."
             printf '%s\n' "  --clean              Delete the build directory to start fresh."
             printf '%s\n' "  --rebuild-vendored   Force rebuild of vendored dependencies."
             printf '%s\n' "  --deps-only          Fetch and build the required dependencies only."
@@ -784,21 +800,28 @@ run_stage() {
     local label="$1"
     shift
     printf '%s\n' "${CYAN}${label}...${NC}"
-    ( "$@" ) >> "${LOG_FILE}" 2>&1 &
+    printf '\n=== %s ===\n' "${label}" >> "${LOG_FILE}"
+    ( ( set -e; "$@" ) 2>&1 | tee -a "${LOG_FILE}" ) &
     local stage_process=$!
     local elapsed=0
     while kill -0 "${stage_process}" 2>/dev/null; do
-        printf '\r%s' "${DIM}${label} (${elapsed}s)...${NC}"
         sleep 1
         elapsed=$((elapsed + 1))
+        if kill -0 "${stage_process}" 2>/dev/null; then
+            printf '%s\n' "${DIM}${label}: working (${elapsed}s)...${NC}"
+        fi
     done
-    if wait "${stage_process}"; then
-        printf '\r%s\n' "${GREEN}${label}: done (${elapsed}s).${NC}"
+    local stage_status=0
+    wait "${stage_process}" || stage_status=$?
+    if (( stage_status == 0 )); then
+        printf '%s\n' "${GREEN}${label}: done (${elapsed}s).${NC}"
     else
-        printf '\r%s\n' "${RED}${label} failed.${NC}"
-        printf '%s\n' "Details: ${LOG_FILE}" \
-            "Check the log for the dependency or compiler diagnostic, fix it, then rerun ./run_build.sh."
-        exit 1
+        printf '%s\n' "${RED}${label} failed (exit ${stage_status}).${NC}"
+        printf 'Failed command: '
+        printf '%q ' "$@"
+        printf '\n%s\n' "The diagnostic output is shown above; the complete transcript is in ${LOG_FILE}." \
+            "Resolve the reported error, then rerun ./run_build.sh with the same options."
+        exit "${stage_status}"
     fi
 }
 command -v git >/dev/null 2>&1 || missing_dependency git git

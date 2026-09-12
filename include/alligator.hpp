@@ -3110,14 +3110,6 @@ public:
     size_t size_bytes() const {
         return span_.size();
     }
-    /** ----------------------------------------------------------------------------------------- Root Slice
-     * @brief Returns a reference to the root Slice object. Since a `WeakSlice` is not a full
-     * owning slice, this operation is discouraged since it requires a memory copy.
-     * @return A new `Slice` object with the memory copied from the `WeakSlice`.
-     */
-    Slice root_slice() const {
-        return static_cast<const Slice&>(*this);
-    }
     /** ----------------------------------------------------------------------------------------- Operator Slice
      * @brief Converts the WeakSlice to a Slice object.
      * @return A new Slice object containing the memory from the WeakSlice.
