@@ -1,6 +1,18 @@
 @PACKAGE_INIT@
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
+foreach(dependency IN ITEMS uv sodium fabric)
+    if(NOT TARGET alligator::${dependency})
+        add_library(alligator::${dependency} STATIC IMPORTED)
+        set_target_properties(alligator::${dependency} PROPERTIES
+            IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/lib${dependency}.a")
+    endif()
+endforeach()
+set_property(TARGET alligator::uv PROPERTY INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_property(TARGET alligator::uv APPEND PROPERTY INTERFACE_LINK_LIBRARIES rt m)
+endif()
+set_property(TARGET alligator::fabric PROPERTY INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS};@BUFFETALLIGATOR_FABRIC_LIBRARIES@")
 if(NOT "@BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS@" STREQUAL "")
     include("${CMAKE_CURRENT_LIST_DIR}/@BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS@")
 elseif(NOT TARGET logging::logging)

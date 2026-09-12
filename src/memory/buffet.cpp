@@ -159,6 +159,12 @@ Placemat* Buffet::placement() const {
 bool Buffet::full() const {
     return bump_offset_.load(std::memory_order_acquire) >= (size_ >> 17);
 }
+/** ------------------------------------------------------------------------------------------- Novel
+ * @brief Reports whether this allocation is a dedicated novel buffer.
+ */
+bool Buffet::is_novel() const {
+    return cold_ && cold_->next.load(std::memory_order_acquire) == NOVEL_NEXT_SENTINEL;
+}
 /** ------------------------------------------------------------------------------------------- Claim
  * @brief Bump-allocates a Slice from this chain.
  */

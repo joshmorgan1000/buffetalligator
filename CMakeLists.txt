@@ -1,11 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
-project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES CXX)
+project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES C CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed; run ./run_build.sh")
 endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     set(BUFFETALLIGATOR_BUILD_TESTS_DEFAULT ON)
@@ -14,6 +17,7 @@ else()
 endif()
 option(BUFFETALLIGATOR_BUILD_TESTS "Build the BuffetAlligator tests" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
 set(BUFFETALLIGATOR_DEPS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/src" CACHE PATH "Dependency source directory")
+set(BUFFETALLIGATOR_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps" CACHE PATH "Built dependency directory")
 set(THREADSAFE_LOGGER_SOURCE_DIR "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/threadsafe-logger")
 set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET OFF)
 if(NOT TARGET logging::logging)
@@ -25,11 +29,18 @@ if(NOT TARGET logging::logging)
     set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
 endif()
 find_package(Threads REQUIRED)
+include(cmake/NetworkDependencies.cmake)
 add_library(alligator STATIC
     src/memory/slice.cpp
     src/memory/buffet.cpp
     src/memory/alligator.cpp
     src/memory/heapbuffet.cpp
+    src/memory/slice_queue.cpp
+    src/core/ba_queue.c
+    src/network/ba_wire.c
+    src/network/ba_network.c
+    src/network/ba_fabric.c
+    src/network/slice_channel.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
 target_include_directories(alligator
@@ -40,7 +51,16 @@ target_include_directories(alligator
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_features(alligator PUBLIC cxx_std_20)
-target_link_libraries(alligator PUBLIC logging::logging Threads::Threads)
+target_link_libraries(alligator PUBLIC logging::logging Threads::Threads
+    PRIVATE alligator::uv alligator::sodium alligator::fabric)
+if(UNIX AND NOT APPLE)
+    set_source_files_properties(src/network/ba_network.c src/network/ba_wire.c
+        src/network/ba_fabric.c
+        PROPERTIES COMPILE_DEFINITIONS _POSIX_C_SOURCE=200809L)
+endif()
+if(WIN32)
+    target_link_libraries(alligator PUBLIC onecore psapi)
+endif()
 set_target_properties(alligator PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(alligator PRIVATE -Wall -Wextra -Wpedantic)

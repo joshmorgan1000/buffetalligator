@@ -8,6 +8,8 @@
 #include <new>
 #include <thread>
 
+extern "C" void ba_net_shutdown(void);
+
 namespace buffetalligator {
 namespace {
 /** ------------------------------------------------------------------------------------------- Heap Allocate
@@ -95,4 +97,8 @@ void BuffetMenu::ensure_builtins_slow() {
     );
     menu.builtins_ready_.store(true, std::memory_order_release);
 }
+/** --------------------------------------------------------------------------------------------------------- Shutdown
+ * @brief Stops channel reactors at application quiescence before the process exits.
+ */
+void BuffetMenu::shutdown() { ba_net_shutdown(); }
 } // namespace buffetalligator

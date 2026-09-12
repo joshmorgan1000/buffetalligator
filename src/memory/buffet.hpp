@@ -157,6 +157,11 @@ public:
      * @return True when no further claim begins within the slab.
      */
     bool full() const;
+    /** ------------------------------------------------------------------------------------------- Novel
+     * @brief Reports whether this allocation is a dedicated novel buffer.
+     * @return True when the allocation has no chain successor.
+     */
+    bool is_novel() const;
     /** ------------------------------------------------------------------------------------------- Next
      * @brief Returns the successor link, allocating and publishing a fresh slab first when the
      * worker has not prepared one yet.

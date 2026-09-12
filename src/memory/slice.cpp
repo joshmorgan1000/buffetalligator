@@ -206,6 +206,17 @@ void Slice::resize(
     }
     *this = std::move(grown);
 }
+/** ------------------------------------------------------------------------------------------- Novel Backing
+ * @brief Reports whether this slice owns or views a dedicated novel buffer.
+ * @return True when the backing allocation is a novel buffer.
+ */
+bool Slice::is_novel() const noexcept {
+    if (meta_ == UINT64_MAX || cached_ == nullptr) {
+        return false;
+    }
+    Buffet* buffet = Alligator::instance().get(meta_ & 0x1FFFFu);
+    return buffet != nullptr && buffet->is_novel();
+}
 /** ------------------------------------------------------------------------------------------- Free
  * @brief Frees the underlying memory of the slice. This is called automatically when the
  * slice is destroyed, but can be called manually to free the memory early. After calling this

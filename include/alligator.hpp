@@ -28,7 +28,7 @@
 #include <vector>
 
 namespace buffetalligator {
-class Alligator; class Buffet; class BuffetMenu; class Slice; class SliceFriend; class Memory;
+class Alligator; class Buffet; class BuffetMenu; class Slice; class SliceFriend; class Memory; class SliceQueue; class SliceChannel;
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 /** --------------------------------------------------------------------------------------------------------- Placemat
@@ -164,6 +164,10 @@ public:
         }
         return default_placement_slot();
     }
+    /** ------------------------------------------------------------------------------------------- Shutdown
+     * @brief Stops channel reactors at application quiescence before the process exits.
+     */
+    static void shutdown();
     /** ------------------------------------------------------------------------------------------- Register Change Listener
      * @brief Registers a change listener that will be called when certain events occur.
      * @param context The context pointer to be passed to the callback.
@@ -487,6 +491,11 @@ public:
      */
     template<typename T = uint8_t>
     const T& get_as() const { return *reinterpret_cast<const T*>(data()); }
+    /** ------------------------------------------------------------------------------------------- Novel Backing
+     * @brief Reports whether this slice owns or views a dedicated novel buffer.
+     * @return True when the backing allocation is a novel buffer.
+     */
+    bool is_novel() const noexcept;
     /** ------------------------------------------------------------------------------------------- Root slice
      * @brief Returns a reference to the root slice. This is useful when dealing with nested
      * slices or `SliceType` conceptual objects.
@@ -506,6 +515,8 @@ private:
     void* cached_ = nullptr;
     friend class Buffet;
     friend class Placemat;
+    friend class SliceQueue;
+    friend struct SliceNetworkAccess;
 };
 static_assert(sizeof(Slice) == 16, "Slice must be 16 bytes in size.");
 /** --------------------------------------------------------------------------------------------------------- SliceT
@@ -524,6 +535,11 @@ public:
      * @param size The size of the slice in bytes.
      */
     SliceT(bool initialize = false);
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a SliceT with a specified number of elements of type T.
+     * @param count The number of elements of type T.
+     */
+    SliceT(size_t count);
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT from a Slice. The Slice must have a size that is a multiple of
      * the size of type T.
@@ -716,6 +732,15 @@ SliceT<T>::SliceT(bool initialize) {
     if (initialize) {
         slice_ = Slice(sizeof(T));
     }
+}
+/** --------------------------------------------------------------------------------------------------------- Constructor - From Count
+ * @brief Constructs a SliceT with a specified number of elements of type T.
+ * @param count The number of elements of type T.
+ */
+template <typename T>
+SliceT<T>::SliceT(size_t count) {
+    if (count > SIZE_MAX / sizeof(T)) ALLIGATOR_THROW("SliceT element count exceeds addressable memory");
+    slice_ = Slice(count * sizeof(T));
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Slice
  * @brief Constructs a SliceT from an existing Slice.
@@ -3116,5 +3141,125 @@ public:
         std::memcpy(new_slice.data<uint8_t>() + offset, span_.data() + offset, size);
         return new_slice;
     }
+};
+/** --------------------------------------------------------------------------------------------------------- SliceQueue
+ * @class SliceQueue
+ * @brief Move-only Slice mailboxes with thread-bound producer and consumer handles, backed by
+ * the private C queue's thread-local blocks.
+ */
+class SliceQueue {
+private:
+    void* queue_; ///< Private C queue state.
+    /** ------------------------------------------------------------------------------------------- Release Descriptor
+     * @brief Releases one undelivered descriptor's arena ownership at destruction time.
+     */
+    static void release_descriptor(void* descriptor) noexcept;
+public:
+    static constexpr size_t block_size = 256; ///< Slices per synchronized handoff.
+    /** ------------------------------------------------------------------------------------------- Producer
+     * @brief Owns one producer binding on its calling thread and flushes on destruction.
+     */
+    class Producer {
+    private:
+        void* local_; ///< Cached producer TLS address.
+        explicit Producer(void* local) noexcept : local_(local) {}
+        friend class SliceQueue;
+    public:
+        Producer(const Producer&) = delete;
+        Producer& operator=(const Producer&) = delete;
+        Producer(Producer&&) = delete;
+        Producer& operator=(Producer&&) = delete;
+        ~Producer();
+        /** --------------------------------------------------------------------------------------- Push
+         * @brief Moves one Slice into local staging, blocking for capacity and nulling the source.
+         */
+        void push(Slice&& slice) noexcept;
+        /** --------------------------------------------------------------------------------------- Push Bulk
+         * @brief Moves every Slice in the span into staging and nulls every source.
+         */
+        void push(std::span<Slice> slices) noexcept;
+        /** --------------------------------------------------------------------------------------- Flush
+         * @brief Publishes a partial block at a burst boundary before the producer finishes.
+         */
+        void flush() noexcept;
+    };
+    /** ------------------------------------------------------------------------------------------- Consumer
+     * @brief Owns a thread-bound consumer that must drain its local blocks before destruction.
+     */
+    class Consumer {
+    private:
+        void* local_; ///< Cached consumer TLS address.
+        explicit Consumer(void* local) noexcept : local_(local) {}
+        friend class SliceQueue;
+    public:
+        Consumer(const Consumer&) = delete;
+        Consumer& operator=(const Consumer&) = delete;
+        Consumer(Consumer&&) = delete;
+        Consumer& operator=(Consumer&&) = delete;
+        ~Consumer();
+        /** --------------------------------------------------------------------------------------- Pop
+         * @brief Waits for a Slice and replaces output, returning false unchanged after closure.
+         */
+        bool pop(Slice& output) noexcept;
+        /** --------------------------------------------------------------------------------------- Pop Bulk
+         * @brief Replaces up to one block of outputs, returning zero for closure or an empty span.
+         */
+        size_t pop(std::span<Slice> output) noexcept;
+    };
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Allocates fixed worker pools with capacity per producer in multiples of block_size.
+     */
+    SliceQueue(size_t producers, size_t consumers, size_t capacity = 4096);
+    SliceQueue(const SliceQueue&) = delete;
+    SliceQueue& operator=(const SliceQueue&) = delete;
+    SliceQueue(SliceQueue&&) = delete;
+    SliceQueue& operator=(SliceQueue&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Releases undelivered Slices after all worker handles have been destroyed.
+     */
+    ~SliceQueue();
+    /** ------------------------------------------------------------------------------------------- Bind Producer
+     * @brief Binds a unique producer index with at most one producer binding per calling thread.
+     */
+    Producer producer(size_t index);
+    /** ------------------------------------------------------------------------------------------- Bind Consumer
+     * @brief Binds a unique consumer index with all configured consumers participating until drain.
+     */
+    Consumer consumer(size_t index);
+    /** ------------------------------------------------------------------------------------------- Close
+     * @brief Wakes consumers after all producers have finished and flushed their partial blocks.
+     */
+    void close() noexcept;
+    /** ------------------------------------------------------------------------------------------- Reset
+     * @brief Reopens a fully drained queue while every worker is quiescent.
+     */
+    void reset() noexcept;
+};
+/** --------------------------------------------------------------------------------------------------------- SliceChannel
+ * @class SliceChannel
+ * @brief Exchanges Slices across the network through listeners, one-shot sends, and replies.
+ */
+class SliceChannel {
+public:
+    enum class Protocol : uint8_t {
+        TCP, UDP, RDMA, EncryptedTCP = 128, EncryptedUDP, EncryptedRDMA
+    };
+    SliceChannel() = delete;
+    /** ------------------------------------------------------------------------------------------- Listen
+     * @brief Starts receiving Slices on a port and protocol, invoking recv on the channel thread.
+     */
+    static void listen(uint16_t port, Protocol protocol, void (*recv)(Slice));
+    /** ------------------------------------------------------------------------------------------- Close
+     * @brief Closes the listener and pending exchanges for a port and protocol.
+     */
+    static void close(uint16_t port, Protocol protocol);
+    /** ------------------------------------------------------------------------------------------- Send
+     * @brief Sends a Slice, using an empty address inside recv to reply to its sender.
+     * @param resp Receives the peer's reply or a null Slice on transport failure.
+     */
+    static void send(
+        Slice slice, std::string address, uint16_t port, Protocol protocol,
+        void (*resp)(Slice) = nullptr
+    );
 };
 } // namespace buffetalligator
