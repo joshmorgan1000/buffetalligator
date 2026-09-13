@@ -2444,11 +2444,21 @@ public:
             if (row != 0) hazard_release_row(row);
         }
     };
+    /// @brief Type-erased payload destructor a typed row runs before its claim is released.
+    using Finalizer = void (*)(void*);
     struct Row {
         int64_t id;
         Slice payload;
-        Row(const int64_t& row_id, Slice&& claim)
-        : id(row_id), payload(std::move(claim)) {}
+        Finalizer finalizer;
+        Row(const int64_t& row_id, Slice&& claim, Finalizer finalize = nullptr)
+        : id(row_id), payload(std::move(claim)), finalizer(finalize) {}
+        /** --------------------------------------------------------------------------------------- Destructor
+         * @brief Runs the payload's finalizer while the claim is still live; the claim itself is
+         * released by the member destructor that follows.
+         */
+        ~Row() {
+            if (finalizer != nullptr) finalizer(payload.data<void>());
+        }
     };
     struct OrphanBatch {
         static constexpr size_t kCapacity = 32;
@@ -2531,7 +2541,8 @@ public:
         return *this;
     }
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Frees every row still in its slot; retired rows are owned by the reclamation lists.
+     * @brief Frees every row still in its slot, running each row's payload finalizer first;
+     * retired rows are owned by the reclamation lists.
      */
     ~SliceMap() {
         if (slots_) {
@@ -2592,7 +2603,7 @@ public:
     template<typename ID>
         requires std::is_convertible_v<ID, int64_t>
     int64_t find(const ID& id) const {
-        return find_internal(id);
+        return find_internal(static_cast<int64_t>(id));
     }
     /** ------------------------------------------------------------------------------------------- Get Slice by ID
      * @brief Copies a published row's payload out by ID, sharing the underlying claim; safe under
@@ -2603,7 +2614,7 @@ public:
     template<typename ID>
         requires std::is_convertible_v<ID, int64_t>
     Slice get_slice(ID id) {
-        return get_slice_internal(id);
+        return get_slice_internal(static_cast<int64_t>(id));
     }
     /** ------------------------------------------------------------------------------------------- Data Access
      * @brief The kernel-facing pointer list: one payload data pointer per slot, in slot order,
@@ -2736,6 +2747,19 @@ public:
      * @brief Periodic reclamation helper: frees retired rows no thread currently hazard-claims.
      */
     static void gc() { thread_retired().scan_and_reclaim(); }
+protected:
+    /** ------------------------------------------------------------------------------------------- Add Finalized Slice
+     * @brief Claims and publishes one row whose payload already holds a constructed object; the
+     * finalizer runs that object's destructor when the row is destroyed or reclaimed, before the
+     * claim is released. The object's lifetime is the row's: a claim shared out through
+     * `get_slice` or `slice_at` keeps the bytes alive, not the object.
+     * @param id The identifier for the row.
+     * @param slice The row's payload claim, moved in.
+     * @param finalizer The payload's type-erased destructor.
+     */
+    void add_finalized(const int64_t& id, Slice&& slice, Finalizer finalizer) {
+        publish_row(claim(), id, std::move(slice), finalizer);
+    }
 private:
     /// @brief Unpublished-slot marker; all-ones is never a valid ID in either category.
     static constexpr int64_t SENTINEL = -1;
@@ -2806,9 +2830,12 @@ private:
      * @param slot The claimed slot.
      * @param id The row's ID.
      * @param slice The row's payload, moved in.
+     * @param finalizer The payload's destructor to run when the row is destroyed, or null.
      */
-    void publish_row(const size_t& slot, const int64_t& id, Slice&& slice) {
-        Row* row = new Row(id, std::move(slice));
+    void publish_row(
+        const size_t& slot, const int64_t& id, Slice&& slice, Finalizer finalizer = nullptr
+    ) {
+        Row* row = new Row(id, std::move(slice), finalizer);
         raws()[slot] = row->payload.data<void>();
         slot_row(slot).store(row, std::memory_order_relaxed);
         std::atomic_ref<int64_t>(ids()[slot]).store(id, std::memory_order_release);
@@ -2966,8 +2993,11 @@ public:
     SliceMapT& operator=(SliceMapT&& other) noexcept = default;
     /** ------------------------------------------------------------------------------------------- Emplace
      * @brief Constructs a typed row in place from its arguments and publishes it under `id`.
+     * When `T` has a non-trivial destructor the row registers it, so `~T()` runs when the row
+     * is destroyed, reset, or reclaimed, before the payload claim is released; trivially
+     * destructible payloads take the plain add_slice protocol with no finalizer.
      * Total atomic operations: the add_slice protocol
-     * Total branches: 0
+     * Total branches: 0 (the finalizer choice resolves at compile time)
      * @param id The identifier for the row. Must be convertible to int64_t.
      * @param args Arguments forwarded to T's constructor.
      */
@@ -2976,7 +3006,11 @@ public:
     void emplace(ID id, Args&&... args) {
         Slice payload(sizeof(T));
         new (payload.data<void>()) T(std::forward<Args>(args)...);
-        add_slice(id, std::move(payload));
+        if constexpr (std::is_trivially_destructible_v<T>) {
+            add_slice(id, std::move(payload));
+        } else {
+            add_finalized(static_cast<int64_t>(id), std::move(payload), &finalize);
+        }
     }
     /** ------------------------------------------------------------------------------------------- Access Payload as T
      * @brief Access the payload at the given slot as its native type.
@@ -2985,6 +3019,14 @@ public:
      */
     T& as(size_t index) {
         return SliceMap::as<T>(index);
+    }
+private:
+    /** ------------------------------------------------------------------------------------------- Finalize
+     * @brief Type-erased destructor for emplaced payloads; the row calls it before releasing its claim.
+     * @param object The payload bytes holding a constructed T.
+     */
+    static void finalize(void* object) {
+        static_cast<T*>(object)->~T();
     }
 };
 /** --------------------------------------------------------------------------------------------------------- WeakSlice
