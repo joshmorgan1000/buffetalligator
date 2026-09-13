@@ -1237,8 +1237,9 @@ public:
      * @brief Destructor - cleans up owned storage.
      */
     ~AtomicContainer() {
-        if (ptr_ != nullptr && type_info_ != nullptr && type_info_->deleter_method_ != nullptr
-            && type_info_->is_pointer_ == false) {
+        // The deleter frees only the storage this container allocated: for pointer types that is
+        // the std::atomic<T*> wrapper, never the pointee, so it runs for pointer types too.
+        if (ptr_ != nullptr && type_info_ != nullptr && type_info_->deleter_method_ != nullptr) {
             type_info_->deleter_method_(ptr_);
         }
         if (type_info_ != nullptr) {
