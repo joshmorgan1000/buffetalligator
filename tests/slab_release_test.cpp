@@ -2,7 +2,8 @@
  * @file slab_release_test.cpp
  * @brief Checks that chain slabs are returned to their placement once the chain has moved past them
  * and every Slice claimed from them is gone. Guards the slab reference ledger: the root Slice is
- * the slab's only self-reference, and deleting it at eviction must let the last claim free the slab.
+ * the slab's self-reference and the crossing thread's pin must be released before it returns, so
+ * that deleting the root at eviction lets the last claim free the slab.
  */
 #include <alligator.hpp>
 #include <memory/tracker.hpp>
