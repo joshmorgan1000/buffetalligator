@@ -61,6 +61,7 @@ int ba_net_encode(const ba_slice_t* slice, unsigned flags, const unsigned char t
     if (slice->meta == BA_NULL_META) return UV_EINVAL;
     const size_t bytes = (size_t)(slice->meta >> BA_SLOT_BITS);
     const char* name = ba_placement_name(ba_slice_placement(slice));
+    if (!name) return UV_EINVAL;
     const size_t names = strlen(name);
     if (!bytes || bytes > BA_NET_LIMIT || !names || names > 255) return UV_EMSGSIZE;
     const size_t plain_size = names + bytes;

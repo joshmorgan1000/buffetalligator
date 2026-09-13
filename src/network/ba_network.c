@@ -207,6 +207,11 @@ void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
  */
 void ba_net_stream(ba_net_peer* peer, const unsigned char* data, size_t size) {
     while (size && !peer->closing) {
+        if (peer->server && !peer->listener && peer->finish_writes) {
+            /// This exchange already delivered its one frame; anything further is a protocol error.
+            ba_net_peer_close(peer, UV_EPROTO);
+            return;
+        }
         if (peer->received < BA_NET_HEADER) {
             size_t bytes = BA_NET_HEADER - peer->received;
             if (bytes > size) bytes = size;
@@ -235,9 +240,13 @@ void ba_net_stream(ba_net_peer* peer, const unsigned char* data, size_t size) {
         size -= bytes;
         if (peer->received == peer->expected) {
             unsigned char* complete = peer->incoming;
+            const size_t complete_size = peer->expected;
             peer->incoming = NULL;
-            ba_net_received(peer, complete, peer->expected, NULL);
+            peer->received = 0;
+            peer->expected = 0;
+            ba_net_received(peer, complete, complete_size, NULL);
             free(complete);
+            if (size && !peer->closing) ba_net_peer_close(peer, UV_EPROTO);
             return;
         }
     }
@@ -299,6 +308,25 @@ static int ba_network_datagram_buffers(ba_net_peer* peer) {
     if (!status) status = uv_recv_buffer_size((uv_handle_t*)&peer->udp, &bytes);
     return status;
 }
+/** --------------------------------------------------------------------------------------------------------- Discarded
+ * @brief Frees the throwaway handle used to drop a connection the reactor could not host.
+ */
+static void ba_network_discarded(uv_handle_t* handle) { free(handle); }
+/** --------------------------------------------------------------------------------------------------------- Discard
+ * @brief Accepts and immediately closes a pending connection when no exchange can be created for
+ * it; libuv stops polling the listener until the pending connection is consumed, so leaving it
+ * unaccepted would silently stall every later connection.
+ */
+static void ba_network_discard(uv_stream_t* server) {
+    uv_tcp_t* discard = malloc(sizeof(*discard));
+    if (!discard) return;
+    if (uv_tcp_init(server->loop, discard)) {
+        free(discard);
+        return;
+    }
+    (void)uv_accept(server, (uv_stream_t*)discard);
+    uv_close((uv_handle_t*)discard, ba_network_discarded);
+}
 /** --------------------------------------------------------------------------------------------------------- Accept
  * @brief Accepts a TCP exchange using the listener's callback and encryption policy.
  */
@@ -311,16 +339,43 @@ static void ba_network_accept(uv_stream_t* server, int status) {
     ba_net_peer* peer = ba_net_peer_create(listener->loop, listener->port, listener->protocol);
     if (!peer) {
         ba_net_log("Cannot allocate incoming Slice exchange");
+        ba_network_discard(server);
         return;
     }
     peer->server = 1;
     peer->callback = listener->callback;
     memcpy(peer->key, listener->key, 32);
     status = ba_network_handle(peer);
-    if (!status) status = uv_accept(server, (uv_stream_t*)&peer->tcp);
+    if (status) {
+        ba_network_discard(server);
+        ba_net_peer_close(peer, status);
+        return;
+    }
+    status = uv_accept(server, (uv_stream_t*)&peer->tcp);
     if (!status)
         status = uv_read_start((uv_stream_t*)&peer->tcp, ba_network_allocate, ba_network_tcp_read);
     if (status) ba_net_peer_close(peer, status);
+}
+/** --------------------------------------------------------------------------------------------------------- Bind
+ * @brief Binds a listener to every local address: the dual-stack IPv6 wildcard where the host
+ * supports it, otherwise the IPv4 wildcard.
+ */
+static int ba_network_bind(ba_net_peer* peer) {
+    struct sockaddr_in6 wildcard6;
+    struct sockaddr_in wildcard4;
+    const int udp = (peer->protocol & 127) == 1;
+    int status = uv_ip6_addr("::", peer->port, &wildcard6);
+    if (!status)
+        status = udp ? uv_udp_bind(&peer->udp, (const struct sockaddr*)&wildcard6, 0)
+                     : uv_tcp_bind(&peer->tcp, (const struct sockaddr*)&wildcard6, 0);
+    if (status == UV_EAFNOSUPPORT || status == UV_EADDRNOTAVAIL || status == UV_EPROTONOSUPPORT) {
+        int fallback = uv_ip4_addr("0.0.0.0", peer->port, &wildcard4);
+        if (!fallback)
+            fallback = udp ? uv_udp_bind(&peer->udp, (const struct sockaddr*)&wildcard4, 0)
+                           : uv_tcp_bind(&peer->tcp, (const struct sockaddr*)&wildcard4, 0);
+        if (!fallback) status = 0;
+    }
+    return status;
 }
 /** --------------------------------------------------------------------------------------------------------- Connected
  * @brief Sends the queued frame after a successful TCP connection.
@@ -434,18 +489,15 @@ static void ba_network_execute(ba_net_command* command) {
         peer->callback = command->callback;
         if ((peer->protocol & 127) == 2) status = ba_fabric_listen(peer);
         else {
-            struct sockaddr_in6 address;
-            status = uv_ip6_addr("::", peer->port, &address);
-            if (!status) status = ba_network_handle(peer);
+            status = ba_network_handle(peer);
+            if (!status) status = ba_network_bind(peer);
             if (!status && (peer->protocol & 127) == 1) {
-                status = uv_udp_bind(&peer->udp, (struct sockaddr*)&address, 0);
-                if (!status) status = ba_network_datagram_buffers(peer);
+                status = ba_network_datagram_buffers(peer);
                 if (!status)
                     status =
                         uv_udp_recv_start(&peer->udp, ba_network_allocate, ba_network_udp_read);
             } else if (!status) {
-                status = uv_tcp_bind(&peer->tcp, (struct sockaddr*)&address, 0);
-                if (!status) status = uv_listen((uv_stream_t*)&peer->tcp, 128, ba_network_accept);
+                status = uv_listen((uv_stream_t*)&peer->tcp, 128, ba_network_accept);
             }
         }
     } else if (!status) {
