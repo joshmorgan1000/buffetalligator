@@ -182,13 +182,11 @@ Slice Buffet::claim(size_t size_requested) {
         if (start_offset >= size()) {
             return next()->claim(size_requested);
         }
-        int32_t refs = ref_count_.fetch_add(1, std::memory_order_relaxed);
-        if (refs == 0) {
-            ref_count_.fetch_sub(1, std::memory_order_relaxed);
-            return next()->claim(size_requested);
-        }
         // We are the thread that crossed the boundary. Atomics mean it is impossible that
-        // any other thread could claim any more from this buffer.
+        // any other thread could claim any more from this buffer. No extra reference is
+        // taken here: the slab's root Slice is its self-reference, and it stays alive until
+        // the slab is evicted from the previous-pool slot below (one generation later).
+        // Deleting that root is the only release, so the last Slice out frees the slab.
         std::atomic<Buffet*>& current_pool = *Alligator::instance().pool_current_[cold_->placement->type()];
         std::atomic<Buffet*>& previous_pool = *Alligator::instance().pool_previous_[cold_->placement->type()];
         if (current_pool.load(std::memory_order_acquire) == this) {
