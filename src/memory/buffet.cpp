@@ -126,7 +126,7 @@ void Buffet::deallocate(Buffet* buffer) {
  */
 Buffet* Buffet::next() {
     Buffet* current = cold_->next.load(std::memory_order_acquire);
-    if (current == NOVEL_NEXT_SENTINEL) {
+    if (current == NOVEL_NEXT_SENTINEL) [[unlikely]] {
         ALLIGATOR_THROW("Buffer::next: Attempted to get next buffer from a novel buffer");
     }
     while (current == nullptr || current == SWAP_SENTINEL) {
@@ -186,8 +186,9 @@ Slice Buffet::claim(size_t size_requested) {
         // while we rotate the pools; the pin is released by the free() on each exit below.
         int32_t refs = ref_count_.fetch_add(1, std::memory_order_relaxed);
         if (refs == 0) {
-            ref_count_.fetch_sub(1, std::memory_order_relaxed);
-            return next()->claim(size_requested);
+            Slice result = next()->claim(size_requested);
+            free();
+            return result;
         }
         // We are the thread that crossed the boundary. Atomics mean it is impossible that
         // any other thread could claim any more from this buffer.
