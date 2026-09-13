@@ -2451,6 +2451,12 @@ public:
         int64_t id;
         Slice payload;
         Finalizer finalizer;
+        /** --------------------------------------------------------------------------------------- Constructor
+         * @brief Binds a row's ID, payload claim, and optional payload finalizer.
+         * @param row_id The row's identifier.
+         * @param claim The payload claim, moved in.
+         * @param finalize The payload's destructor, or null for a trivial payload.
+         */
         Row(const int64_t& row_id, Slice&& claim, Finalizer finalize = nullptr)
         : id(row_id), payload(std::move(claim)), finalizer(finalize) {}
         /** --------------------------------------------------------------------------------------- Destructor
@@ -2750,10 +2756,8 @@ public:
     static void gc() { thread_retired().scan_and_reclaim(); }
 protected:
     /** ------------------------------------------------------------------------------------------- Add Finalized Slice
-     * @brief Claims and publishes one row whose payload already holds a constructed object; the
-     * finalizer runs that object's destructor when the row is destroyed or reclaimed, before the
-     * claim is released. The object's lifetime is the row's: a claim shared out through
-     * `get_slice` or `slice_at` keeps the bytes alive, not the object.
+     * @brief Claims and publishes one row whose payload holds a constructed object, registering
+     * the finalizer that destroys it before the claim is released.
      * @param id The identifier for the row.
      * @param slice The row's payload claim, moved in.
      * @param finalizer The payload's type-erased destructor.
@@ -2993,10 +2997,8 @@ public:
     SliceMapT(SliceMapT&& other) noexcept = default;
     SliceMapT& operator=(SliceMapT&& other) noexcept = default;
     /** ------------------------------------------------------------------------------------------- Emplace
-     * @brief Constructs a typed row in place from its arguments and publishes it under `id`.
-     * When `T` has a non-trivial destructor the row registers it, so `~T()` runs when the row
-     * is destroyed, reset, or reclaimed, before the payload claim is released; trivially
-     * destructible payloads take the plain add_slice protocol with no finalizer.
+     * @brief Constructs a typed row in place and publishes it under `id`, registering `~T()` as
+     * the row's finalizer unless `T` is trivially destructible.
      * Total atomic operations: the add_slice protocol
      * Total branches: 0 (the finalizer choice resolves at compile time)
      * @param id The identifier for the row. Must be convertible to int64_t.
