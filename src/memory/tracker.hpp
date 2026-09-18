@@ -6,6 +6,11 @@
  * their results here.
  */
 #include <alligator.hpp>
+#include <optional>
+#include <source_location>
+#ifndef BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+#define BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING 0
+#endif
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Memory
@@ -14,6 +19,16 @@ namespace buffetalligator {
  * performs no allocation itself; call sites report their own results here.
  */
 class Memory {
+public:
+    /** ------------------------------------------------------------------------------------------- Allocation Info
+     * @brief Describes one completed backing allocation without owning its storage.
+     */
+    struct AllocationInfo {
+        uint64_t timestamp;
+        size_t size;
+        uint16_t placement;
+        std::source_location location;
+    };
 private:
     /** ------------------------------------------------------------------------------------------- PlacematDetails
      * @struct PlacematDetails
@@ -30,6 +45,12 @@ private:
     AtomicContainer* total_freed_;
     /// @brief Per-placement allocation totals, indexed by Placemat::type().
     std::vector<PlacematDetails> placemat_details_;
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+    /// @brief Live backing allocations keyed by their stable placement handles.
+    std::unordered_map<const Placemat::Handle*, AllocationInfo> allocations_;
+    /// @brief Serializes location records shared by allocating threads and the teardown worker.
+    AtomicMutex allocations_mutex_;
+#endif
     /** ------------------------------------------------------------------------------------------- Constructor - Private
      * @brief Private constructor for singleton pattern.
      */
@@ -65,6 +86,64 @@ public:
     Memory(Memory&&) = delete;
     Memory& operator=(Memory&&) = delete;
     ~Memory() = default;
+    /** ------------------------------------------------------------------------------------------- Record Code Location
+     * @brief Records one live allocation's source location when detailed tracking is enabled.
+     * @param placement The placement owning the backing allocation.
+     * @param size The backing allocation size in bytes.
+     * @param handle The stable placement handle identifying the allocation.
+     * @param location The completed allocation's source location.
+     */
+    static void record_code_location(
+        const Placemat& placement,
+        size_t size,
+        const Placemat::Handle* handle,
+        const std::source_location& location = std::source_location::current()
+    ) {
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+        Memory& tracker = instance();
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
+        tracker.allocations_.emplace(handle, AllocationInfo{
+            static_cast<uint64_t>(timestamp), size, placement.type(), location
+        });
+#else
+        (void)placement;
+        (void)size;
+        (void)handle;
+        (void)location;
+#endif
+    }
+    /** ------------------------------------------------------------------------------------------- Forget Code Location
+     * @brief Retires a completed deallocation's location record when detailed tracking is enabled.
+     * @param handle The placement handle whose backing allocation has been released.
+     */
+    static void forget_code_location(const Placemat::Handle* handle) {
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+        Memory& tracker = instance();
+        std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
+        tracker.allocations_.erase(handle);
+#else
+        (void)handle;
+#endif
+    }
+    /** ------------------------------------------------------------------------------------------- Allocation Info
+     * @brief Returns a live allocation record or no value when absent or detailed tracking is disabled.
+     * @param handle The placement handle identifying the allocation.
+     * @return A snapshot of the allocation's recorded details.
+     */
+    static std::optional<AllocationInfo> allocation_info(const Placemat::Handle* handle) {
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+        Memory& tracker = instance();
+        std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
+        const auto found = tracker.allocations_.find(handle);
+        if (found == tracker.allocations_.end()) return std::nullopt;
+        return found->second;
+#else
+        (void)handle;
+        return std::nullopt;
+#endif
+    }
     /** ------------------------------------------------------------------------------------------- Record Allocation
      * @brief Records one completed slab allocation for the owning placement.
      * @param placement The placement that allocated the slab.

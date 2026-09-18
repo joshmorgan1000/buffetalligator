@@ -1,5 +1,5 @@
 /** --------------------------------------------------------------------------------------------------------- Slice Queue
- * @file slice_queue.cpp
+ * @file slicequeue.cpp
  * @brief Exposes the C TLS queue through move-only Slice ownership and thread-bound handles.
  */
 #include <alligator.hpp>

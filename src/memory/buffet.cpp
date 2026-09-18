@@ -4,6 +4,7 @@
  */
 #include <alligator.hpp>
 #include <memory/alligator.hpp>
+#include <memory/pressure.hpp>
 #include <memory/slicefriend.hpp>
 #include <memory/tracker.hpp>
 #include <bit>
@@ -19,19 +20,25 @@ Buffet::Buffet(
     void* context,
     size_t size,
     bool is_novel
-) : cold_(
-    new Entree{
+) {
+    MemoryPressure::Reservation reservation(placement, size);
+    const Placemat* backing = reservation.placement();
+    void* backing_context = backing == placement ? context : backing->get_context_();
+    cold_ = new Entree{
         .next = nullptr,
-        .placement = placement,
-        .handle = placement->alligator_(size, context),
-        .context = context,
-    }
-), host_(placement->get_host_ptr_(cold_->handle)) {
+        .placement = backing,
+        .chain_placement = placement,
+        .handle = backing->alligator_(size, backing_context),
+        .context = backing_context,
+    };
+    host_ = backing->get_host_ptr_(cold_->handle);
     size_ = size << 17;
     if (is_novel) {
         bump_offset_.store(size << 6, std::memory_order_release);
         cold_->next.store(NOVEL_NEXT_SENTINEL, std::memory_order_release);
     }
+    Memory::record_allocation(*backing, size);
+    Memory::record_code_location(*backing, size, cold_->handle);
 }
 struct DeleteCold {
     Buffet::Entree* cold_ = nullptr;
@@ -43,11 +50,12 @@ inline static void* delete_cold(void* ptr) {
     if (deleter->cold_ != nullptr) {
         if (deleter->cold_->handle != nullptr) {
             if (deleter->cold_->placement != nullptr) {
-                Memory::record_deallocation(*deleter->cold_->placement, deleter->buffet_->size());
                 void* de_all = const_cast<Placemat*>(deleter->cold_->placement)->deallocate();
                 void (*deallocate)(Placemat::Handle* handle, void* context) = 
                     reinterpret_cast<void (*)(Placemat::Handle* handle, void* context)>(de_all);
                 deallocate(deleter->cold_->handle, deleter->cold_->context);
+                Memory::forget_code_location(deleter->cold_->handle);
+                Memory::record_deallocation(*deleter->cold_->placement, deleter->buffet_->size());
             }
             delete deleter->cold_->handle;
             deleter->cold_->handle = nullptr;
@@ -111,6 +119,8 @@ void Buffet::deallocate(Buffet* buffer) {
                         buffer->cold_->handle,
                         buffer->cold_->context
                     );
+                    Memory::forget_code_location(buffer->cold_->handle);
+                    Memory::record_deallocation(*buffer->cold_->placement, buffer->size());
                 }
                 delete buffer->cold_->handle;
                 buffer->cold_->handle = nullptr;
@@ -132,10 +142,16 @@ Buffet* Buffet::next() {
     while (current == nullptr || current == SWAP_SENTINEL) {
         Buffet* expected = nullptr;
         if (cold_->next.compare_exchange_strong(expected, SWAP_SENTINEL, std::memory_order_acq_rel)) {
-            Buffet* fresh = new Buffet(cold_->placement, cold_->context, size(), false);
-            Alligator::instance().get_next_free_slot(fresh);
-            cold_->next.store(fresh, std::memory_order_release);
-            return fresh;
+            try {
+                const Placemat* chain = cold_->chain_placement;
+                Buffet* fresh = new Buffet(chain, chain->get_context_(), size(), false);
+                Alligator::instance().get_next_free_slot(fresh);
+                cold_->next.store(fresh, std::memory_order_release);
+                return fresh;
+            } catch (...) {
+                cold_->next.store(nullptr, std::memory_order_release);
+                throw;
+            }
         }
         std::this_thread::yield();
         current = cold_->next.load(std::memory_order_acquire);
@@ -175,7 +191,8 @@ Slice Buffet::claim(size_t size_requested) {
         return Slice();
     }
     if (size_they_ll_get >= size()) {
-        return novel_slice(size_they_ll_get, cold_->placement, cold_->context);
+        const Placemat* chain = cold_->chain_placement;
+        return novel_slice(size_they_ll_get, chain, chain->get_context_());
     }
     size_t start_offset = (bump_offset_.fetch_add(size_they_ll_get >> 6, std::memory_order_relaxed)) << 6;
     if (start_offset + size_they_ll_get >= size()) {
@@ -192,8 +209,9 @@ Slice Buffet::claim(size_t size_requested) {
         }
         // We are the thread that crossed the boundary. Atomics mean it is impossible that
         // any other thread could claim any more from this buffer.
-        std::atomic<Buffet*>& current_pool = *Alligator::instance().pool_current_[cold_->placement->type()];
-        std::atomic<Buffet*>& previous_pool = *Alligator::instance().pool_previous_[cold_->placement->type()];
+        const uint16_t chain_type = cold_->chain_placement->type();
+        std::atomic<Buffet*>& current_pool = *Alligator::instance().pool_current_[chain_type];
+        std::atomic<Buffet*>& previous_pool = *Alligator::instance().pool_previous_[chain_type];
         if (current_pool.load(std::memory_order_acquire) == this) {
             Buffet* nxt = next();
             current_pool.store(nxt, std::memory_order_release);
@@ -222,7 +240,8 @@ Slice Buffet::claim(size_t size_requested) {
  */
 Slice Buffet::claim(size_t size, bool novel_buffer) {
     if (novel_buffer) {
-        return novel_slice(size, cold_->placement, cold_->context);
+        const Placemat* chain = cold_->chain_placement;
+        return novel_slice(size, chain, chain->get_context_());
     }
     return claim(size);
 }

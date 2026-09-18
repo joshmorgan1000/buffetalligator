@@ -16,6 +16,9 @@ else()
     set(BUFFETALLIGATOR_BUILD_TESTS_DEFAULT OFF)
 endif()
 option(BUFFETALLIGATOR_BUILD_TESTS "Build the BuffetAlligator tests" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
+option(BUFFETALLIGATOR_BUILD_BENCHMARKS "Build Slice container benchmarks" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
+option(BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS "Build allocator integration tests" ${BUFFETALLIGATOR_BUILD_TESTS})
+option(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING "Track source locations of live backing allocations" OFF)
 set(BUFFETALLIGATOR_DEPS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/src" CACHE PATH "Dependency source directory")
 set(BUFFETALLIGATOR_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps" CACHE PATH "Built dependency directory")
 set(THREADSAFE_LOGGER_SOURCE_DIR "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/threadsafe-logger")
@@ -28,14 +31,20 @@ if(NOT TARGET logging::logging)
     add_subdirectory("${THREADSAFE_LOGGER_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/deps/threadsafe-logger")
     set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
 endif()
+find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
+include(GNUInstallDirs)
 include(cmake/NetworkDependencies.cmake)
 add_library(alligator STATIC
     src/memory/slice.cpp
     src/memory/buffet.cpp
     src/memory/alligator.cpp
     src/memory/heapbuffet.cpp
-    src/memory/slice_queue.cpp
+    src/memory/host_memory.cpp
+    src/memory/pressure.cpp
+    src/memory/mmap_allocator.cpp
+    src/containers/slicequeue.cpp
+    src/containers/slicemap.cpp
     src/core/ba_queue.c
     src/network/ba_wire.c
     src/network/ba_network.c
@@ -43,6 +52,7 @@ add_library(alligator STATIC
     src/network/slice_channel.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
+include(cmake/AllocatorBackends.cmake)
 target_include_directories(alligator
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -51,7 +61,9 @@ target_include_directories(alligator
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_features(alligator PUBLIC cxx_std_20)
-target_link_libraries(alligator PUBLIC logging::logging Threads::Threads
+target_compile_definitions(alligator PUBLIC
+    BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=$<BOOL:${BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING}>)
+target_link_libraries(alligator PUBLIC logging::logging Threads::Threads OpenSSL::SSL OpenSSL::Crypto
     PRIVATE alligator::uv alligator::sodium alligator::fabric)
 if(UNIX AND NOT APPLE)
     set_source_files_properties(src/network/ba_network.c src/network/ba_wire.c
@@ -67,12 +79,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
     target_compile_options(alligator PRIVATE /W4)
 endif()
-if(BUFFETALLIGATOR_BUILD_TESTS)
+if(BUFFETALLIGATOR_BUILD_TESTS OR BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS)
     enable_testing()
+endif()
+if(BUFFETALLIGATOR_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
+if(BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS)
+    add_subdirectory(tests/allocators)
+endif()
+if(BUFFETALLIGATOR_BUILD_BENCHMARKS)
+    add_subdirectory(tests/benchmarks)
+endif()
 include(CMakePackageConfigHelpers)
-include(GNUInstallDirs)
 set(BUFFETALLIGATOR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/alligator")
 install(TARGETS alligator
     EXPORT alligatorTargets

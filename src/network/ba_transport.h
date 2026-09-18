@@ -15,6 +15,8 @@ typedef struct ba_net_peer {
     uv_udp_t udp;
     uv_getaddrinfo_t resolver;
     uv_connect_t connect;
+    uv_timer_t deadline;
+    struct ba_net_challenge* challenges;
     void* fabric;
     ba_net_callback callback;
     ba_net_frame outgoing;
@@ -26,11 +28,14 @@ typedef struct ba_net_peer {
     unsigned char key[32];
     uint16_t port;
     uint8_t protocol;
+    uint64_t timeout_ms;
     unsigned references;
     unsigned writes;
     int listener;
     int server;
     int initialized;
+    int deadline_initialized;
+    int challenged;
     int resolving;
     int closing;
     int finish_writes;
@@ -42,6 +47,8 @@ ba_net_peer* ba_net_peer_create(uv_loop_t* loop, uint16_t port, uint8_t protocol
 void ba_net_peer_retain(ba_net_peer* peer);
 void ba_net_peer_release(ba_net_peer* peer);
 void ba_net_peer_close(ba_net_peer* peer, int status);
+int ba_net_peer_deadline(ba_net_peer* peer, uint64_t timeout_ms);
+int ba_net_connected(ba_net_peer* peer);
 void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
                      const struct sockaddr* address);
 void ba_net_stream(ba_net_peer* peer, const unsigned char* data, size_t size);

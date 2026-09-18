@@ -17,6 +17,7 @@ typedef struct ba_net_command {
     const char* address;
     uint16_t port;
     uint8_t protocol;
+    uint64_t timeout_ms;
     ba_net_callback callback;
     const ba_slice_t* slice;
     uv_sem_t completion;
@@ -41,6 +42,19 @@ typedef struct ba_net_write {
     ba_net_peer* peer;
     ba_net_frame frame;
 } ba_net_write;
+/** --------------------------------------------------------------------------------------------------------- Datagram Challenge
+ * @brief Owns one expiring, single-use UDP challenge on the network loop.
+ */
+typedef struct ba_net_challenge {
+    struct ba_net_challenge* next;
+    struct ba_net_challenge** previous;
+    struct ba_net_challenge* owner_next;
+    struct ba_net_challenge** owner_previous;
+    ba_net_peer* peer;
+    uv_timer_t deadline;
+    unsigned char token[16];
+} ba_net_challenge;
+static ba_net_challenge* ba_network_challenges[4096];
 static uv_once_t ba_network_once = UV_ONCE_INIT;
 static uv_loop_t ba_network_loop;
 static uv_thread_t ba_network_thread;
@@ -86,6 +100,96 @@ ba_net_peer* ba_net_peer_create(uv_loop_t* loop, uint16_t port, uint8_t protocol
  * @brief Releases the reference held by a libuv handle.
  */
 static void ba_network_closed(uv_handle_t* handle) { ba_net_peer_release(handle->data); }
+/** --------------------------------------------------------------------------------------------------------- Exchange Expired
+ * @brief Completes an unfinished exchange with one timeout failure.
+ */
+static void ba_network_expired(uv_timer_t* timer) {
+    ba_net_peer_close(timer->data, UV_ETIMEDOUT);
+}
+/** --------------------------------------------------------------------------------------------------------- Exchange Deadline
+ * @brief Bounds connection setup, handshake, transfer, and response waiting with one timer.
+ */
+int ba_net_peer_deadline(ba_net_peer* peer, uint64_t timeout_ms) {
+    peer->timeout_ms = timeout_ms;
+    int status = uv_timer_init(peer->loop, &peer->deadline);
+    if (status) return status;
+    peer->deadline.data = peer;
+    peer->deadline_initialized = 1;
+    ba_net_peer_retain(peer);
+    uv_update_time(peer->loop);
+    return uv_timer_start(&peer->deadline, ba_network_expired, timeout_ms, 0);
+}
+/** --------------------------------------------------------------------------------------------------------- Challenge Bucket
+ * @brief Indexes uniformly random receiver tokens without sharing state across threads.
+ */
+static size_t ba_network_challenge_bucket(const unsigned char token[16]) {
+    return ((size_t)token[0] << 4) | (token[1] & 15u);
+}
+/** --------------------------------------------------------------------------------------------------------- Challenge Released
+ * @brief Releases the listener after its challenge timer has retired.
+ */
+static void ba_network_challenge_released(uv_handle_t* timer) {
+    ba_net_challenge* challenge = timer->data;
+    ba_net_peer_release(challenge->peer);
+    free(challenge);
+}
+/** --------------------------------------------------------------------------------------------------------- Challenge Remove
+ * @brief Consumes or expires a challenge before application delivery can reenter the channel.
+ */
+static void ba_network_challenge_remove(ba_net_challenge* challenge) {
+    *challenge->previous = challenge->next;
+    if (challenge->next) challenge->next->previous = challenge->previous;
+    *challenge->owner_previous = challenge->owner_next;
+    if (challenge->owner_next) challenge->owner_next->owner_previous = challenge->owner_previous;
+    uv_close((uv_handle_t*)&challenge->deadline, ba_network_challenge_released);
+}
+/** --------------------------------------------------------------------------------------------------------- Challenge Expired
+ * @brief Drops unused UDP challenges when their listener's exchange deadline expires.
+ */
+static void ba_network_challenge_expired(uv_timer_t* timer) {
+    ba_network_challenge_remove(timer->data);
+}
+/** --------------------------------------------------------------------------------------------------------- Challenge Create
+ * @brief Registers a fresh receiver nonce until one authenticated request consumes it.
+ */
+static int ba_network_challenge_create(ba_net_peer* peer, const unsigned char token[16]) {
+    ba_net_challenge* challenge = calloc(1, sizeof(*challenge));
+    if (!challenge) return UV_ENOMEM;
+    int status = uv_timer_init(peer->loop, &challenge->deadline);
+    if (status) {
+        free(challenge);
+        return status;
+    }
+    challenge->peer = peer;
+    memcpy(challenge->token, token, 16);
+    challenge->deadline.data = challenge;
+    ba_net_peer_retain(peer);
+    challenge->previous = &ba_network_challenges[ba_network_challenge_bucket(token)];
+    challenge->next = *challenge->previous;
+    if (challenge->next) challenge->next->previous = &challenge->next;
+    *challenge->previous = challenge;
+    challenge->owner_previous = &peer->challenges;
+    challenge->owner_next = peer->challenges;
+    if (challenge->owner_next) challenge->owner_next->owner_previous = &challenge->owner_next;
+    peer->challenges = challenge;
+    uv_update_time(peer->loop);
+    status = uv_timer_start(
+        &challenge->deadline, ba_network_challenge_expired, peer->timeout_ms, 0
+    );
+    if (status) ba_network_challenge_remove(challenge);
+    return status;
+}
+/** --------------------------------------------------------------------------------------------------------- Challenge Consume
+ * @brief Accepts a UDP receiver nonce once on the listener that issued it.
+ */
+static int ba_network_challenge_consume(ba_net_peer* peer, const unsigned char token[16]) {
+    ba_net_challenge* challenge = ba_network_challenges[ba_network_challenge_bucket(token)];
+    while (challenge && (challenge->peer != peer || sodium_memcmp(challenge->token, token, 16)))
+        challenge = challenge->next;
+    if (!challenge) return UV_EACCES;
+    ba_network_challenge_remove(challenge);
+    return 0;
+}
 /** --------------------------------------------------------------------------------------------------------- Close Peer
  * @brief Cancels operations and reports each pending response failure exactly once.
  */
@@ -95,6 +199,9 @@ void ba_net_peer_close(ba_net_peer* peer, int status) {
     ba_net_peer** position = &ba_network_peers;
     while (*position != peer) position = &(*position)->next;
     *position = peer->next;
+    while (peer->challenges) ba_network_challenge_remove(peer->challenges);
+    if (peer->deadline_initialized)
+        uv_close((uv_handle_t*)&peer->deadline, ba_network_closed);
     if (peer->resolving) uv_cancel((uv_req_t*)&peer->resolver);
     if (peer->initialized) {
         uv_handle_t* handle =
@@ -164,11 +271,70 @@ static int ba_network_write(ba_net_peer* peer, ba_net_frame* frame,
     ba_net_peer_retain(peer);
     return 0;
 }
+/** --------------------------------------------------------------------------------------------------------- Send Payload
+ * @brief Encrypts the saved payload after its receiver challenge is known.
+ */
+static int ba_network_payload(ba_net_peer* peer) {
+    ba_net_seal(&peer->outgoing, peer->token, peer->key);
+    peer->finish_writes = !peer->callback;
+    return ba_network_write(peer, &peer->outgoing, NULL);
+}
+/** --------------------------------------------------------------------------------------------------------- Start Exchange
+ * @brief Requests a receiver challenge for encrypted exchanges before transmitting application bytes.
+ */
+int ba_net_connected(ba_net_peer* peer) {
+    if (!(peer->protocol & 128)) return ba_network_payload(peer);
+    unsigned char empty[16] = {0};
+    ba_net_frame hello = {0};
+    int status = ba_net_control_encode(BA_NET_HELLO, peer->token, empty, peer->key, &hello);
+    if (!status) status = ba_network_write(peer, &hello, NULL);
+    free(hello.data);
+    return status;
+}
+/** --------------------------------------------------------------------------------------------------------- Handshake
+ * @brief Authenticates challenge exchange messages without publishing them to application callbacks.
+ */
+static int ba_network_handshake(ba_net_peer* peer, const unsigned char* data, size_t size,
+                                const struct sockaddr* address) {
+    unsigned char challenge[16];
+    if (!(peer->protocol & 128)) return UV_EACCES;
+    int status = ba_net_control_decode(data, size, peer->key, challenge);
+    if (status) return status;
+    if (peer->server) {
+        if (!(data[5] & BA_NET_HELLO) || (!peer->listener && peer->challenged)) return UV_EPROTO;
+        randombytes_buf(challenge, 16);
+        if (peer->listener) status = ba_network_challenge_create(peer, challenge);
+        else {
+            memcpy(peer->token, challenge, 16);
+            peer->challenged = 1;
+        }
+        ba_net_frame reply = {0};
+        if (!status)
+            status = ba_net_control_encode(
+                BA_NET_CHALLENGE, data + 16, challenge, peer->key, &reply
+            );
+        if (!status) status = ba_network_write(peer, &reply, address);
+        free(reply.data);
+        return status;
+    }
+    if (!(data[5] & BA_NET_CHALLENGE)) return UV_EPROTO;
+    if (peer->challenged && (peer->protocol & 127) == 1) return 0;
+    if (peer->challenged || sodium_memcmp(data + 16, peer->token, 16)) return UV_EPROTO;
+    memcpy(peer->token, challenge, 16);
+    peer->challenged = 1;
+    return ba_network_payload(peer);
+}
 /** --------------------------------------------------------------------------------------------------------- Receive Frame
  * @brief Publishes a complete Slice and scopes implicit replies to its receive callback.
  */
 void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
                      const struct sockaddr* address) {
+    if (size >= BA_NET_HEADER && (data[5] & BA_NET_CONTROL)) {
+        int status = ba_network_handshake(peer, data, size, address);
+        if (status && peer->listener) ba_net_log(uv_strerror(status));
+        else if (status) ba_net_peer_close(peer, status);
+        return;
+    }
     ba_slice_t slice;
     const int status = ba_net_decode(data, size, peer->protocol, peer->key, &slice);
     if (status) {
@@ -181,6 +347,16 @@ void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
         ba_release(&slice);
         if (!peer->listener) ba_net_peer_close(peer, UV_EPROTO);
         return;
+    }
+    if (peer->protocol & 128) {
+        int accepted = peer->server && peer->listener
+                           ? !ba_network_challenge_consume(peer, data + 16)
+                           : peer->challenged && !sodium_memcmp(data + 16, peer->token, 16);
+        if (!accepted) {
+            ba_release(&slice);
+            if (!peer->listener) ba_net_peer_close(peer, UV_EACCES);
+            return;
+        }
     }
     ba_net_peer_retain(peer);
     if (!peer->server) {
@@ -221,6 +397,8 @@ void ba_net_stream(ba_net_peer* peer, const unsigned char* data, size_t size) {
             size -= bytes;
             if (peer->received < BA_NET_HEADER) return;
             int status = ba_net_frame_size(peer->header, &peer->expected);
+            if (!status && !!(peer->header[5] & BA_NET_SECURE) != !!(peer->protocol & 128))
+                status = UV_EACCES;
             if (status) {
                 ba_net_peer_close(peer, status);
                 return;
@@ -241,13 +419,16 @@ void ba_net_stream(ba_net_peer* peer, const unsigned char* data, size_t size) {
         if (peer->received == peer->expected) {
             unsigned char* complete = peer->incoming;
             const size_t complete_size = peer->expected;
+            const int control = !!(complete[5] & BA_NET_CONTROL);
             peer->incoming = NULL;
             peer->received = 0;
             peer->expected = 0;
             ba_net_received(peer, complete, complete_size, NULL);
             free(complete);
-            if (size && !peer->closing) ba_net_peer_close(peer, UV_EPROTO);
-            return;
+            if (!control) {
+                if (size && !peer->closing) ba_net_peer_close(peer, UV_EPROTO);
+                return;
+            }
         }
     }
 }
@@ -352,6 +533,7 @@ static void ba_network_accept(uv_stream_t* server, int status) {
         return;
     }
     status = uv_accept(server, (uv_stream_t*)&peer->tcp);
+    if (!status) status = ba_net_peer_deadline(peer, listener->timeout_ms);
     if (!status)
         status = uv_read_start((uv_stream_t*)&peer->tcp, ba_network_allocate, ba_network_tcp_read);
     if (status) ba_net_peer_close(peer, status);
@@ -384,7 +566,7 @@ static void ba_network_connected(uv_connect_t* request, int status) {
     ba_net_peer* peer = request->data;
     if (!status && !peer->closing) {
         status = uv_read_start((uv_stream_t*)&peer->tcp, ba_network_allocate, ba_network_tcp_read);
-        if (!status) status = ba_network_write(peer, &peer->outgoing, NULL);
+        if (!status) status = ba_net_connected(peer);
     }
     if (status) ba_net_peer_close(peer, status);
     ba_net_peer_release(peer);
@@ -403,7 +585,7 @@ static void ba_network_resolved(uv_getaddrinfo_t* request, int status,
             if (!status) status = ba_network_datagram_buffers(peer);
             if (!status)
                 status = uv_udp_recv_start(&peer->udp, ba_network_allocate, ba_network_udp_read);
-            if (!status) status = ba_network_write(peer, &peer->outgoing, NULL);
+            if (!status) status = ba_net_connected(peer);
         } else if (!status) {
             peer->connect.data = peer;
             status = uv_tcp_connect(&peer->connect, &peer->tcp, addresses->ai_addr,
@@ -465,6 +647,10 @@ static void ba_network_execute(ba_net_command* command) {
         command->status = ba_network_respond(command);
         return;
     }
+    if (!command->timeout_ms) {
+        command->status = UV_EINVAL;
+        return;
+    }
     if (command->operation == 0) {
         if (!command->callback) {
             command->status = UV_EINVAL;
@@ -484,6 +670,7 @@ static void ba_network_execute(ba_net_command* command) {
         return;
     }
     peer->server = peer->listener = command->operation == 0;
+    peer->timeout_ms = command->timeout_ms;
     int status = (command->protocol & 128) ? ba_net_key(peer->key) : 0;
     if (!status && command->operation == 0) {
         peer->callback = command->callback;
@@ -504,8 +691,8 @@ static void ba_network_execute(ba_net_command* command) {
         randombytes_buf(peer->token, 16);
         unsigned flags = (peer->protocol & 128) ? BA_NET_SECURE : 0;
         if (command->callback) flags |= BA_NET_REPLY;
-        status = ba_net_encode(command->slice, flags, peer->token, peer->key, &peer->outgoing);
-        peer->finish_writes = !command->callback;
+        status = ba_net_snapshot(command->slice, flags, &peer->outgoing);
+        if (!status) status = ba_net_peer_deadline(peer, command->timeout_ms);
         if (!status && (peer->protocol & 127) == 1 && peer->outgoing.size > 65507)
             status = UV_EMSGSIZE;
         if (!status && (peer->protocol & 127) == 2)
@@ -619,8 +806,9 @@ static int ba_network_submit(ba_net_command* command) {
 /** --------------------------------------------------------------------------------------------------------- Listen
  * @brief Returns only after the listener has bound or produced a synchronous error.
  */
-int ba_net_listen(uint16_t port, uint8_t protocol, ba_net_callback callback) {
-    ba_net_command command = {.port = port, .protocol = protocol, .callback = callback};
+int ba_net_listen(uint16_t port, uint8_t protocol, ba_net_callback callback, uint64_t timeout_ms) {
+    ba_net_command command = {.port = port, .protocol = protocol, .timeout_ms = timeout_ms,
+                              .callback = callback};
     return ba_network_submit(&command);
 }
 /** --------------------------------------------------------------------------------------------------------- Close
@@ -634,11 +822,12 @@ int ba_net_close(uint16_t port, uint8_t protocol) {
  * @brief Snapshots the Slice before returning and completes any response asynchronously.
  */
 int ba_net_send(const ba_slice_t* slice, const char* address, uint16_t port, uint8_t protocol,
-                ba_net_callback callback) {
+                ba_net_callback callback, uint64_t timeout_ms) {
     ba_net_command command = {.operation = 2,
                               .address = address,
                               .port = port,
                               .protocol = protocol,
+                              .timeout_ms = timeout_ms,
                               .callback = callback,
                               .slice = slice};
     return ba_network_submit(&command);

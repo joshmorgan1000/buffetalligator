@@ -152,12 +152,11 @@ struct Child {
         waitpid(process, &status, 0);
     }
 };
-/** --------------------------------------------------------------------------------------------------------- Round Trips
+/** --------------------------------------------------------------------------------------------------------- Exercise Peer
  * @brief Checks multi-threaded payload, subview, novel backing, and placement preservation.
  */
-void round_trips(const char* executable, Protocol selected) {
-    uint16_t number = unused_port();
-    Child server(executable, selected, number);
+void exercise_peer(const char* address, const char* concurrent_address, uint16_t number,
+                    Protocol selected) {
     std::printf("Testing protocol %u across processes on port %u\n",
                 static_cast<unsigned>(selected), number);
     const bool datagram = (static_cast<unsigned>(selected) & 127) == 1;
@@ -167,7 +166,7 @@ void round_trips(const char* executable, Protocol selected) {
         Slice view = backing.slice(7, bytes);
         for (size_t index = 0; index < bytes; ++index)
             view.data<unsigned char>()[index] = index % 251;
-        SliceChannel::send(std::move(view), "127.0.0.1", number, selected, response);
+        SliceChannel::send(std::move(view), address, number, selected, response);
         backing.free();
         require(completed.try_acquire_for(std::chrono::seconds(15)), "response did not arrive");
         Slice result;
@@ -193,7 +192,7 @@ void round_trips(const char* executable, Protocol selected) {
             for (unsigned message = 0; message < 4; ++message) {
                 Slice slice(1024);
                 std::memset(slice.raw(), index + message + 1, slice.size_bytes());
-                SliceChannel::send(std::move(slice), "localhost", number, selected, response);
+                SliceChannel::send(std::move(slice), concurrent_address, number, selected, response);
             }
         });
     for (auto& worker : workers) worker.join();
@@ -211,6 +210,14 @@ void round_trips(const char* executable, Protocol selected) {
         results.clear();
     }
     SliceChannel::close(number, selected);
+}
+/** --------------------------------------------------------------------------------------------------------- Round Trips
+ * @brief Runs the peer contract with a separately executed local server.
+ */
+void round_trips(const char* executable, Protocol selected) {
+    const uint16_t number = unused_port();
+    Child server(executable, selected, number);
+    exercise_peer("127.0.0.1", "localhost", number, selected);
 }
 /** --------------------------------------------------------------------------------------------------------- Wire Validation
  * @brief Exercises the real decoder against tampered authentication, mismatched modes, and corrupt lengths.
@@ -297,22 +304,38 @@ int main(int count, char** arguments) {
     try {
         setenv("ALLIGATOR_NETWORK_KEY",
                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", 1);
-        if (count == 6 && !std::strcmp(arguments[1], "server")) {
+        const bool remote_server = count == 4 && !std::strcmp(arguments[1], "--listen");
+        if ((count == 6 && !std::strcmp(arguments[1], "server")) || remote_server) {
             protocol = static_cast<Protocol>(std::stoi(arguments[2]));
             port = static_cast<uint16_t>(std::stoi(arguments[3]));
             register_placement("Padding");
             register_placement("NetworkTest");
             SliceChannel::listen(port, protocol, receive);
-            const char ready = 'R';
-            require(write(std::stoi(arguments[4]), &ready, 1) == 1, "ready signal failed");
-            ::close(std::stoi(arguments[4]));
-            char command;
-            (void)read(std::stoi(arguments[5]), &command, 1);
+            if (remote_server) {
+                std::printf("Protocol %u ready on port %u; press Enter to stop\n",
+                            static_cast<unsigned>(protocol), port);
+                std::fflush(stdout);
+                (void)std::getchar();
+            } else {
+                const char ready = 'R';
+                require(write(std::stoi(arguments[4]), &ready, 1) == 1, "ready signal failed");
+                ::close(std::stoi(arguments[4]));
+                char command;
+                (void)read(std::stoi(arguments[5]), &command, 1);
+            }
             SliceChannel::close(port, protocol);
             BuffetMenu::shutdown();
             return 0;
         }
         register_placement("NetworkTest");
+        if (count == 5 && !std::strcmp(arguments[1], "--connect")) {
+            protocol = static_cast<Protocol>(std::stoi(arguments[2]));
+            port = static_cast<uint16_t>(std::stoi(arguments[3]));
+            exercise_peer(arguments[4], arguments[4], port, protocol);
+            BuffetMenu::shutdown();
+            std::puts("Remote network contracts passed");
+            return 0;
+        }
         SliceT<uint64_t> typed(size_t{19});
         require(typed.size_bytes() == sizeof(uint64_t) * 19,
                 "SliceT count constructor allocated wrong size");

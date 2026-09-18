@@ -76,9 +76,18 @@ int main() {
         true
     );
     require(type == 2, "custom placement did not receive the expected stable identifier");
+    require(buffetalligator::BuffetMenu::count() == 3,
+        "placement registry count differs after registration");
+    require(buffetalligator::BuffetMenu::get("test_placement") ==
+        buffetalligator::BuffetMenu::get(type), "placement name lookup lost its identity");
+    require(buffetalligator::BuffetMenu::get("missing_placement") == nullptr,
+        "missing placement lookup returned a value");
     buffetalligator::Slice bytes(4096);
     require(sizeof(bytes) == 16, "Slice is not 16 bytes");
     require(bytes.placement()->type() == type, "default strategy did not select the custom placement");
+    auto* backing = buffetalligator::Placemat::get_for(&bytes);
+    require(backing != nullptr && backing->substrate_handle != nullptr,
+        "placement handle lookup failed for a live allocation");
     require(background_allocation.load(std::memory_order_relaxed),
         "the dedicated allocator thread did not preallocate the successor");
     require(std::all_of(bytes.data<uint8_t>(), bytes.data<uint8_t>() + bytes.size_bytes(),
@@ -91,6 +100,8 @@ int main() {
     bytes.free();
     require(shared.data<uint8_t>()[128] == 91, "shared Slice did not retain the slab");
     buffetalligator::Slice view = shared.slice(64, 256);
+    require(buffetalligator::Placemat::get_for(&view) == backing,
+        "subview changed its placement handle");
     require(view.size_bytes() == 256, "sub-slice size is incorrect");
     require(static_cast<char*>(view.raw()) - static_cast<char*>(shared.raw()) == 64,
         "sub-slice offset is incorrect");

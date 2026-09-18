@@ -26,6 +26,8 @@ private:
         std::atomic<Buffet*> next{nullptr};
         /// @brief The placement factory that owns this buffer.
         const Placemat* placement = nullptr;
+        /// @brief The requested placement whose chain owns this slab.
+        const Placemat* chain_placement = nullptr;
         /// @brief The handle to the placement allocation.
         Placemat::Handle* handle = nullptr;
         /// @brief Context pointer for arbitrary user data.

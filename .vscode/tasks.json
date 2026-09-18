@@ -4,19 +4,11 @@
         {
             "label": "CMake Debug",
             "type": "shell",
-            "command": "cmake",
+            "command": "${workspaceFolder}/run_build.sh",
             "args": [
-                "-S",
-                "${workspaceFolder}",
-                "-B",
-                "${workspaceFolder}/build",
-                "-G",
-                "Ninja",
-                "-DCMAKE_BUILD_TYPE=Debug",
-                "&&",
-                "cmake",
-                "--build",
-                "${workspaceFolder}/build"
+                "--skip-tests",
+                "-DBUFFETALLIGATOR_BUILD_TESTS=ON",
+                "-DCMAKE_BUILD_TYPE=Debug"
             ],
             "group": {
                 "kind": "build",
@@ -24,36 +16,19 @@
             },
             "problemMatcher": [
                 "$gcc"
-            ]
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
         },
         {
             "label": "CMake Optimized",
             "type": "shell",
-            "command": "cmake",
+            "command": "${workspaceFolder}/run_build.sh",
             "args": [
-                "-E",
-                "rm",
-                "-rf",
-                "${workspaceFolder}/build",
-                "&&",
-                "cmake",
-                "-E",
-                "make_directory",
-                "${workspaceFolder}/build",
-                "&&",
-                "cmake",
-                "-S",
-                "${workspaceFolder}",
-                "-B",
-                "${workspaceFolder}/build",
-                "-G",
-                "Ninja",
-                "-DCMAKE_BUILD_TYPE=Release",
-                "&&",
-                "cmake",
-                "--build",
-                "${workspaceFolder}/build",
-                "-j16"
+                "--skip-tests",
+                "-DBUFFETALLIGATOR_BUILD_TESTS=ON",
+                "-DCMAKE_BUILD_TYPE=Release"
             ],
             "group": {
                 "kind": "build",
@@ -61,7 +36,10 @@
             },
             "problemMatcher": [
                 "$gcc"
-            ]
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
         }
     ]
 }

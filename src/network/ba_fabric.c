@@ -45,10 +45,12 @@ typedef struct ba_fabric_state {
     int progress_initialized;
     int transmitting;
     int closing;
+    int disconnected;
     size_t chunk;
     size_t sent;
     size_t pending;
     ba_net_frame transmit;
+    ba_net_frame queued;
     unsigned char receive[65536];
 } ba_fabric_state;
 static void ba_fabric_drain_events(ba_fabric_state* state);
@@ -76,6 +78,7 @@ static void ba_fabric_destroy(ba_fabric_state* state) {
         free(state->root);
     }
     free(state->transmit.data);
+    free(state->queued.data);
     ba_net_peer* peer = state->peer;
     peer->fabric = NULL;
     free(state);
@@ -136,25 +139,33 @@ static int ba_fabric_transmit(ba_fabric_state* state) {
     if (!status) state->transmitting = 1;
     return status;
 }
-/** --------------------------------------------------------------------------------------------------------- Write
- * @brief Registers an encoded frame until its final transmit completion.
+/** --------------------------------------------------------------------------------------------------------- Start Frame
+ * @brief Registers one queued frame until its final transmit completion.
  */
-int ba_fabric_write(ba_net_peer* peer, ba_net_frame* frame) {
-    ba_fabric_state* state = peer->fabric;
-    if (state->transmit.data) return UV_EBUSY;
+static int ba_fabric_start(ba_fabric_state* state, ba_net_frame* frame) {
     int status = fi_mr_reg(state->domain, frame->data, frame->size, FI_SEND, 0, 2, 0,
                            &state->transmit_memory, NULL);
     if (status) return ba_fabric_error(status);
     state->transmit = *frame;
     state->sent = 0;
     *frame = (ba_net_frame){0};
-    ++peer->writes;
     status = ba_fabric_transmit(state);
-    if (status) {
-        ba_net_peer_close(peer, ba_fabric_error(status));
-        return UV_EIO;
-    }
-    return 0;
+    return status ? ba_fabric_error(status) : 0;
+}
+/** --------------------------------------------------------------------------------------------------------- Write
+ * @brief Preserves the next protocol frame while the preceding handshake transmission completes.
+ */
+int ba_fabric_write(ba_net_peer* peer, ba_net_frame* frame) {
+    ba_fabric_state* state = peer->fabric;
+    if (state->disconnected) return UV_ENOTCONN;
+    if (state->queued.data) return UV_EBUSY;
+    int status = 0;
+    if (state->transmit.data) {
+        state->queued = *frame;
+        *frame = (ba_net_frame){0};
+    } else status = ba_fabric_start(state, frame);
+    if (!status) ++peer->writes;
+    return status;
 }
 /** --------------------------------------------------------------------------------------------------------- Completions
  * @brief Advances received stream fragments and retires transmitted registered frames.
@@ -166,7 +177,7 @@ static void ba_fabric_drain_completions(ba_fabric_state* state) {
     while (!state->closing && (result = fi_cq_read(state->completions, &entry, 1)) > 0) {
         if (entry.op_context == &state->receive_context) {
             ba_net_stream(state->peer, state->receive, entry.len);
-            if (!state->closing && !state->peer->finish_writes) {
+            if (!state->closing && !state->disconnected && !state->peer->finish_writes) {
                 int status = ba_fabric_receive(state);
                 if (status) ba_net_peer_close(state->peer, ba_fabric_error(status));
             }
@@ -179,11 +190,16 @@ static void ba_fabric_drain_completions(ba_fabric_state* state) {
                 free(state->transmit.data);
                 state->transmit = (ba_net_frame){0};
                 --state->peer->writes;
-                if (state->peer->finish_writes) ba_net_peer_close(state->peer, 0);
+                if (state->queued.data && !state->disconnected) {
+                    int status = ba_fabric_start(state, &state->queued);
+                    if (status) ba_net_peer_close(state->peer, status);
+                }
+                if (state->peer->finish_writes && !state->peer->writes)
+                    ba_net_peer_close(state->peer, 0);
             }
         }
     }
-    if (state->closing) return;
+    if (state->closing || state->disconnected) return;
     if (result == -FI_EAVAIL) {
         struct fi_cq_err_entry error = {0};
         fi_cq_readerr(state->completions, &error, 0);
@@ -339,7 +355,8 @@ static void ba_fabric_drain_events(ba_fabric_state* state) {
                 peer->server = 1;
                 peer->callback = state->peer->callback;
                 memcpy(peer->key, state->peer->key, 32);
-                status = ba_fabric_active(peer, entry.info, state->root);
+                status = ba_net_peer_deadline(peer, state->peer->timeout_ms);
+                if (!status) status = ba_fabric_active(peer, entry.info, state->root);
                 if (!status)
                     status = fi_accept(((ba_fabric_state*)peer->fabric)->endpoint, NULL, 0);
             }
@@ -350,10 +367,14 @@ static void ba_fabric_drain_events(ba_fabric_state* state) {
             fi_freeinfo(entry.info);
         } else if (event == FI_CONNECTED) {
             if (state->peer->outgoing.data) {
-                int status = ba_fabric_write(state->peer, &state->peer->outgoing);
+                int status = ba_net_connected(state->peer);
                 if (status) ba_net_peer_close(state->peer, status);
             }
-        } else if (event == FI_SHUTDOWN) ba_net_peer_close(state->peer, UV_EOF);
+        } else if (event == FI_SHUTDOWN) {
+            state->disconnected = 1;
+            ba_fabric_drain_completions(state);
+            ba_net_peer_close(state->peer, UV_EOF);
+        }
     }
     if (state->closing) return;
     if (result == -FI_EAVAIL) {

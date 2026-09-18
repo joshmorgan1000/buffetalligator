@@ -1,7 +1,7 @@
 /** --------------------------------------------------------------------------------------------------------- Slice Map Test
  * @file slice_map_test.cpp
  * @brief Checks that SliceMap releases row claims and that SliceMapT destroys emplaced payloads
- * on destruction, reset, merge, move, and hazard-deferred reclamation.
+ * on destruction, reset, merge, move, and reset with a pinned lookup.
  */
 #include <alligator.hpp>
 #include <memory/tracker.hpp>
@@ -30,13 +30,18 @@ static void require(bool condition, const char* message) {
  */
 struct Tracked {
     static inline std::atomic<int> live{0};
+    static inline std::atomic<uint64_t> live_tags{0};
     std::string name;
     uint64_t tag;
     Tracked(uint64_t value)
     : name("row-" + std::to_string(value) + "-padding-to-defeat-small-string-optimization"), tag(value) {
         live.fetch_add(1, std::memory_order_relaxed);
+        live_tags.fetch_or(uint64_t{1} << value, std::memory_order_relaxed);
     }
-    ~Tracked() { live.fetch_sub(1, std::memory_order_relaxed); }
+    ~Tracked() {
+        live.fetch_sub(1, std::memory_order_relaxed);
+        live_tags.fetch_and(~(uint64_t{1} << tag), std::memory_order_relaxed);
+    }
 };
 static_assert(!std::is_trivially_destructible_v<Tracked>, "Tracked must exercise the finalizer path");
 /** --------------------------------------------------------------------------------------------------------- Untyped Rows Release
@@ -124,25 +129,27 @@ static void typed_move() {
     }
     require(Tracked::live.load() == 0, "moved map leaked payloads on destruction");
 }
-/** --------------------------------------------------------------------------------------------------------- Typed Hazard Reclaim
- * @brief Checks that a row held under a hazard claim survives reset and is finalized once the
- * claim moves on and the retired list is scanned. `find` leaves its hazard claim held by design,
- * so this is the only test that calls it before a reset.
+/** --------------------------------------------------------------------------------------------------------- Typed Find Pins Row
+ * @brief Checks that a row located by `find` survives reset on the looking thread until its next
+ * lookup, and is finalized once the lookup moves on and the retired state is collected.
  */
-static void typed_hazard_reclaim() {
+static void typed_find_pins_row() {
     {
         SliceMapT<Tracked> map(4);
         for (uint64_t index = 0; index < 4; ++index) map.emplace(index, index);
         require(map.find(2) == 2, "find missed a landed row");
         map.reset();
-        require(Tracked::live.load() == 1, "reset reclaimed a hazard-protected row or leaked an unprotected one");
+        require(map.size() == 0, "reset did not rewind the landed count");
+        require((Tracked::live_tags.load() & (uint64_t{1} << 2)) != 0,
+            "reset finalized a row pinned by find");
         map.emplace(uint64_t{2}, uint64_t{20});
-        require(map.find(2) == 0, "republished row did not land in the first slot");
+        require(map.find(2) == 0, "republished row did not land in the first position");
         SliceMap::gc();
-        require(Tracked::live.load() == 1, "released hazard claim did not let the retired row finalize");
+        require(Tracked::live.load() == 1 && Tracked::live_tags.load() == (uint64_t{1} << 20),
+            "released lookup pin did not let the retired rows finalize");
         require(map.as(0).tag == 20, "republished payload read back the wrong value");
     }
-    require(Tracked::live.load() == 0, "hazard test leaked payloads on destruction");
+    require(Tracked::live.load() == 0, "destroying the map on the looking thread deferred finalizers");
 }
 /** --------------------------------------------------------------------------------------------------------- Trivial Payloads
  * @brief Checks that trivially destructible payloads still emplace and read back through the plain path.
@@ -161,7 +168,7 @@ int main() {
     typed_reset();
     typed_merge();
     typed_move();
-    typed_hazard_reclaim();
+    typed_find_pins_row();
     trivial_payloads();
     std::printf("slice map tests passed\n");
     return 0;

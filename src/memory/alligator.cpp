@@ -5,14 +5,15 @@
 #include <alligator.hpp>
 #include <memory/alligator.hpp>
 #include <memory/buffet.hpp>
+#include <memory/pressure.hpp>
 #include <memory/slicefriend.hpp>
-#include <memory/tracker.hpp>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Constructor & Destructor
  * @brief Implements the Alligator's constructor and destructor.
  */
 Alligator::Alligator() {
+    MemoryPressure::start();
     worker_thread_ = std::thread(&Alligator::worker_loop, this);
     ensure_chains();
     BuffetMenu::register_change_listener(
@@ -127,7 +128,6 @@ void Alligator::get_next_free_slot(Buffet* buffer) {
                 if (buffer->cold_->next.load(std::memory_order_acquire) != Buffet::NOVEL_NEXT_SENTINEL) {
                     buffer->cold_->root.store(new Slice(buffer->slice()), std::memory_order_release);
                 }
-                Memory::record_allocation(*buffer->cold_->placement, buffer->size());
                 return;
             }
         }

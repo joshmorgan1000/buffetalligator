@@ -97,7 +97,7 @@ struct SliceNetworkAccess {
 void SliceChannel::listen(uint16_t port, Protocol protocol, void (*recv)(Slice)) {
     (void)Slice::default_placement();
     check_network(ba_net_listen(port, static_cast<uint8_t>(protocol),
-                                reinterpret_cast<ba_net_callback>(recv)));
+                                reinterpret_cast<ba_net_callback>(recv), 30000));
 }
 /** --------------------------------------------------------------------------------------------------------- Close
  * @brief Cancels listener and exchange activity for the requested channel.
@@ -114,7 +114,7 @@ void SliceChannel::send(Slice slice, std::string address, uint16_t port, Protoco
         ALLIGATOR_THROW("Slice address contains a null byte");
     check_network(ba_net_send(reinterpret_cast<const ba_slice_t*>(&slice), address.c_str(), port,
                               static_cast<uint8_t>(protocol),
-                              reinterpret_cast<ba_net_callback>(resp)));
+                              reinterpret_cast<ba_net_callback>(resp), 30000));
 }
 } // namespace buffetalligator
 /** --------------------------------------------------------------------------------------------------------- Arena Bridge
