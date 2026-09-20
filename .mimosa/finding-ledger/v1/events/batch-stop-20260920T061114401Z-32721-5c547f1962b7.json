@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260920T061114401Z-32721-5c547f1962b7",
+  "runId": "20260920T061114401Z-32721-5c547f1962b7",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "bash_discovery_incomplete",
+        "stage": "bash-discovery",
+        "target": "deps/src/libfabric/prov/psm3/psm3/psm_mq_internal.h",
+        "detail": "project enumeration exceeded 5000 reviewable files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": "deps/src/libfabric/prov/psm3/psm3/psm_mq_internal.h",
+        "detail": "baseline exceeded 5000 candidate files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": "deps/src/libfabric/prov/psm3/psm3/psm_mq_internal.h",
+        "detail": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": "deps/src/libfabric/prov/psm3/psm3/psm_mq_internal.h",
+        "detail": "baseline_partial: baseline exceeded 5000 candidate files",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "5dd93170f5abd941b9e7df3022fc0a2114691df8",
+  "diffHash": "c972e91a636dd536b2961989262f42716bbd826f8bf7b8056697cb0512e62c82",
+  "rulesVersion": "unavailable",
+  "sessionHash": "1587ef486d4bfbe852bd95ecc50467e6343d2d6311dc6b2ca09d4cc19835219b",
+  "reportRef": ".mimosa/reports/task-review-sess_5cb6ca13-bf14-4177-9db5-5423e02f8034-20260920T061114401Z-32721-5c547f1962b7.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/memory/alligator.hpp",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "include/alligator.hpp",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-20T06:11:14.650Z"
+}

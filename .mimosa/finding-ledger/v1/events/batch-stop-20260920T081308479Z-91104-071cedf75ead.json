@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260920T081308479Z-91104-071cedf75ead",
+  "runId": "20260920T081308479Z-91104-071cedf75ead",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": [
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": "deps/src/libfabric/prov/psm3/psm3/psm_mq_utils.c",
+        "detail": "baseline exceeded 5000 candidate files",
+        "affectsCompletion": false
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "5dd93170f5abd941b9e7df3022fc0a2114691df8",
+  "diffHash": "aed6056705fe4f913ce5f7222f7ffdf22f3cb0ca1bc0ebbc165e68646a8b9493",
+  "rulesVersion": "unavailable",
+  "sessionHash": "1587ef486d4bfbe852bd95ecc50467e6343d2d6311dc6b2ca09d4cc19835219b",
+  "reportRef": ".mimosa/reports/task-review-sess_5cb6ca13-bf14-4177-9db5-5423e02f8034-20260920T081308479Z-91104-071cedf75ead.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/vulkan/vulkanbuffer.hpp",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-20T08:13:08.732Z"
+}

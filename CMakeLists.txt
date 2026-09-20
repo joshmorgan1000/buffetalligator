@@ -56,6 +56,8 @@ include(cmake/AllocatorBackends.cmake)
 target_include_directories(alligator
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${BUFFETALLIGATOR_DEPS_DIR}/concurrentqueue/include>
+        $<BUILD_INTERFACE:${BUFFETALLIGATOR_DEPS_DIR}/readerwriterqueue/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -101,6 +103,9 @@ install(TARGETS alligator
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 install(FILES include/alligator.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/concurrentqueue/include/moodycamel"
+        "${BUFFETALLIGATOR_DEPS_DIR}/readerwriterqueue/include/moodycamel"
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 if(BUFFETALLIGATOR_OWNS_LOGGING_TARGET)
     set(BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS "../logging/loggingTargets.cmake")
 else()
