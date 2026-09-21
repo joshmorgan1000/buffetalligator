@@ -4,7 +4,9 @@
 
 # BuffetAlligator
 
-BuffetAlligator is a C++20 memory arena that serves 16-byte `Slice` handles from preallocated, zeroed slabs. Claims are 64-byte-granular atomic bump-pointer operations; exhausted slabs advance through successors prepared by one dedicated allocator thread.
+*It was supposed to be "Buffer Allocator" but voice-to-text thought differently, and the name stuck.*
+
+BuffetAlligator is a C++20 memory arena that serves 32-bit `Slice` handles from preallocated, zeroed slabs. Claims are 64-byte-granular atomic bump-pointer operations; exhausted slabs advance through successors in a linked list pre-allocated ahead of necessity.
 
 The project is pre-release. API and ABI compatibility are not guaranteed until 1.0.
 
