@@ -1101,8 +1101,8 @@ static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
 class PotentialSlice {
 private:
     struct Details;
-    /// @brief Shared pointer to the internal details of the PotentialSlice.
-    std::shared_ptr<Details> details_ = std::make_shared<Details>();
+    /// @brief Shared pointer to the internal details of the PotentialSlice, created in slice.cpp where Details is complete.
+    std::shared_ptr<Details> details_;
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Default constructor for PotentialSlice.

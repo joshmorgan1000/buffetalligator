@@ -463,7 +463,7 @@ PotentialSlice::PotentialSlice(
     Slice (*fullfillment_method)(void* context),
     void* context,
     void (*context_deleter)(void* context)
-) {
+) : details_(std::make_shared<Details>()) {
     details_->fullfillment_method = fullfillment_method;
     details_->context = context;
     details_->context_deleter = context_deleter;
