@@ -253,7 +253,7 @@ struct SIMDMisc {
 #endif
         // Check remaining elements
         for (; i < size; ++i) {
-            if (ids[i] == id) {
+            if (ids[i] == static_cast<T>(id)) {
                 return static_cast<int64_t>(i);
             }
         }

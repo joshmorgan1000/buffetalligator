@@ -173,22 +173,22 @@ public:
      * @brief Returns the allocation method associated with this placemat.
      * @return The allocation method.
      */
-    const AllocateMethod allocate() const { return allocator_; }
+    AllocateMethod allocate() const { return allocator_; }
     /** ------------------------------------------------------------------------------------------- Deallocate
      * @brief Returns the deallocation method associated with this placemat.
      * @return The deallocation method.
      */
-    const DeallocateMethod deallocate() const { return deallocator_; }
+    DeallocateMethod deallocate() const { return deallocator_; }
     /** ------------------------------------------------------------------------------------------- GetContext
      * @brief Returns the method used to retrieve the context associated with this placemat.
      * @return The context retrieval method.
      */
-    const GetContextMethod get_context() const { return get_context_; }
+    GetContextMethod get_context() const { return get_context_; }
     /** ------------------------------------------------------------------------------------------- DeviceAddress
      * @brief Returns the method that maps a substrate handle to its device address.
      * @return The device address method.
      */
-    const DeviceAddressMethod device_address() const { return device_address_; }
+    DeviceAddressMethod device_address() const { return device_address_; }
     /** ------------------------------------------------------------------------------------------- Type
      * @brief Returns the registry identifier assigned to this placement.
      * @return The placement registry identifier.
