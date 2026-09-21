@@ -538,6 +538,25 @@ const Placemat* VulkanContext::buffer_placement() {
     if (!instance().device_present_) return BuffetMenu::get("heap");
     return VulkanPlacements::rung<6>("vulkan_buffer");
 }
+/** --------------------------------------------------------------------------------------------------------- ensure_device_default_slow
+ * @brief Probes the device once and, under unified memory, makes the buffer rung the default
+ * placement unless a registration already chose one; a caller that loses the claim waits.
+ */
+void BuffetMenu::ensure_device_default_slow() {
+    BuffetMenu& menu = instance();
+    bool unclaimed = false;
+    if (!menu.device_default_claimed_.compare_exchange_strong(unclaimed, true, std::memory_order_acq_rel)) {
+        while (!menu.device_default_ready_.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        return;
+    }
+    if (GPU::unified_memory() && default_placement_slot() == get("aligned_heap")) {
+        VulkanPlacements::prime();
+        default_placement_slot() = VulkanContext::buffer_placement();
+    }
+    menu.device_default_ready_.store(true, std::memory_order_release);
+}
 /** --------------------------------------------------------------------------------------------------------- queue_count
  * @brief Compute queues across all compute families, for GPU worker-count decisions.
  * @return Queue count, or 0 without a device.

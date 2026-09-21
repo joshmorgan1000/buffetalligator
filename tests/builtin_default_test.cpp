@@ -19,7 +19,10 @@ int main() {
     require(std::strcmp(buffetalligator::BuffetMenu::get(0)->name(), "heap") == 0, "heap is not placement 0");
     require(std::strcmp(buffetalligator::BuffetMenu::get(1)->name(), "aligned_heap") == 0,
         "aligned_heap is not placement 1");
-    require(bytes.placement()->type() == 1, "aligned heap is not the default placement");
+    const buffetalligator::Placemat* expected_default = buffetalligator::GPU::unified_memory()
+        ? buffetalligator::VulkanContext::buffer_placement()
+        : buffetalligator::BuffetMenu::get(1);
+    require(bytes.placement() == expected_default, "the default placement does not follow unified memory");
     require(reinterpret_cast<uintptr_t>(bytes.raw()) % 64 == 0, "the default claim is not 64 byte aligned");
     buffetalligator::Slice heap(1024, buffetalligator::BuffetMenu::get(0));
     require(heap.placement()->type() == 0, "an explicit heap claim came from the wrong placement");

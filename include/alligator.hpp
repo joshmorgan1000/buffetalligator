@@ -713,6 +713,9 @@ public:
         if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
             ensure_builtins_slow();
         }
+        if (!instance().device_default_ready_.load(std::memory_order_acquire)) {
+            ensure_device_default_slow();
+        }
         return default_placement_slot();
     }
     /** ------------------------------------------------------------------------------------------- Shutdown
@@ -755,10 +758,19 @@ private:
     std::atomic<bool> builtins_claimed_{false};
     /// @brief Set once the built-in placements hold their stable identifiers.
     std::atomic<bool> builtins_ready_{false};
+    /// @brief Set while the device probe decides the default placement.
+    std::atomic<bool> device_default_claimed_{false};
+    /// @brief Set once the device probe has decided the default placement.
+    std::atomic<bool> device_default_ready_{false};
     /** ------------------------------------------------------------------------------------------- Ensure Builtins Slow
      * @brief Slow path that registers the built-in placements; defined in the library.
      */
     static void ensure_builtins_slow();
+    /** ------------------------------------------------------------------------------------------- Ensure Device Default Slow
+     * @brief Slow path that makes the probed buffer placement the default under unified memory
+     * when no registration chose one; defined beside the Vulkan context.
+     */
+    static void ensure_device_default_slow();
     /** ------------------------------------------------------------------------------------------- Default Placement Slot
      * @brief The storage behind default_placement(), reachable without the built-in check.
      * @return The default Placemat pointer slot.
@@ -1086,6 +1098,39 @@ public:
      * @return The pool slot index.
      */
     uint32_t pool_index() const { return id_; }
+    /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
+     * @brief Implicitly converts the slice to its pool index.
+     * @return The pool index of the slice.
+     */
+    operator uint32_t() const { return pool_index(); }
+    /** ------------------------------------------------------------------------------------------- Arrow Operator
+     * @brief Provides access to the underlying data as a pointer of type T.
+     * @tparam T The type to cast the raw pointer to.
+     * @return A pointer to the underlying data cast to type T.
+     */
+    template<typename T>
+    T* operator->() { return static_cast<T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- Arrow Operator (const)
+     * @brief Provides access to the underlying data as a pointer of type T for const slices.
+     * @tparam T The type to cast the raw pointer to.
+     * @return A const pointer to the underlying data cast to type T.
+     */
+    template<typename T>
+    const T* operator->() const { return static_cast<const T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- Dereference Operator
+     * @brief Provides access to the underlying data as a reference of type T.
+     * @tparam T The type to cast the raw pointer to.
+     * @return A reference to the underlying data cast to type T.
+     */
+    template<typename T>
+    T& operator*() { return *static_cast<T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- Dereference Operator (const)
+     * @brief Provides access to the underlying data as a reference of type T for const slices.
+     * @tparam T The type to cast the raw pointer to.
+     * @return A const reference to the underlying data cast to type T.
+     */
+    template<typename T>
+    const T& operator*() const { return *static_cast<const T*>(raw()); }
 private:
     SliceId id_;
     friend class Buffet;
@@ -1428,6 +1473,20 @@ public:
             return slice_.size_bytes() / sizeof(typename T::value_type);
         }
         return slice_.size_bytes() / sizeof(T);
+    }
+    /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
+     * @brief Implicitly converts the SliceT to its pool index.
+     * @return The pool index of the slice.
+     */
+    uint32_t pool_index() const {
+        return slice_.pool_index();
+    }
+    /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
+     * @brief Implicitly converts the SliceT to its pool index.
+     * @return The pool index of the slice.
+     */
+    operator uint32_t() const {
+        return pool_index();
     }
 };
 static_assert(sizeof(SliceT<uint8_t>) == sizeof(Slice), "SliceT must be the same size as Slice.");
