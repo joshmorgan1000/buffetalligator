@@ -1,11 +1,17 @@
 @PACKAGE_INIT@
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
+find_dependency(OpenSSL)
 if(NOT TARGET alligator::vulkan)
     add_library(alligator::vulkan SHARED IMPORTED)
     set_target_properties(alligator::vulkan PROPERTIES
         IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/@BUFFETALLIGATOR_VULKAN_FILENAME@"
         INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+endif()
+if(NOT TARGET alligator::shaderc)
+    add_library(alligator::shaderc STATIC IMPORTED)
+    set_target_properties(alligator::shaderc PROPERTIES
+        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/libshaderc_combined.a")
 endif()
 foreach(dependency IN ITEMS uv sodium fabric)
     if(NOT TARGET alligator::${dependency})

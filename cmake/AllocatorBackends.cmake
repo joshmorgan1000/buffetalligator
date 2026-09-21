@@ -25,5 +25,7 @@ target_link_libraries(alligator PUBLIC alligator::vulkan PRIVATE alligator::shad
 file(REAL_PATH "${BUFFETALLIGATOR_VULKAN_RUNTIME}" BUFFETALLIGATOR_VULKAN_REAL_RUNTIME)
 install(FILES "${BUFFETALLIGATOR_VULKAN_REAL_RUNTIME}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/alligator
     RENAME "${BUFFETALLIGATOR_VULKAN_FILENAME}")
+install(FILES "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/build/libshaderc/libshaderc_combined.a"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/alligator)
 install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/vulkan-headers/include/vulkan"
     "${BUFFETALLIGATOR_DEPS_DIR}/vulkan-headers/include/vk_video" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
