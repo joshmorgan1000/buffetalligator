@@ -30,10 +30,10 @@ struct SliceNetworkAccess {
      */
     static Slice take(ba_slice_t* descriptor) noexcept {
         Slice slice;
-        slice.meta_ = descriptor->meta;
-        slice.cached_ = descriptor->ptr;
-        descriptor->meta = BA_NULL_META;
-        descriptor->ptr = nullptr;
+        if (descriptor->id != BA_NULL_ID) {
+            slice.id_ = static_cast<SliceId>(descriptor->id);
+        }
+        descriptor->id = BA_NULL_ID;
         return slice;
     }
     /** ------------------------------------------------------------------------------------------- Claim
@@ -44,10 +44,8 @@ struct SliceNetworkAccess {
             const Placemat* placement = BuffetMenu::get(static_cast<uint16_t>(type));
             if (!placement) return -1;
             Slice slice(bytes, (flags & BA_CLAIM_NOVEL) != 0, placement);
-            out->meta = slice.meta_;
-            out->ptr = slice.cached_;
-            slice.meta_ = BA_NULL_META;
-            slice.cached_ = nullptr;
+            out->id = slice.pool_index();
+            slice.id_ = 0xFFFFFFFFu;
             return 0;
         } catch (...) {
             return -1;
@@ -57,38 +55,55 @@ struct SliceNetworkAccess {
      * @brief Drops one descriptor's arena ownership and nulls it.
      */
     static void release(ba_slice_t* descriptor) noexcept {
+        if (descriptor->id == BA_NULL_ID) return;
         Slice slice;
-        slice.meta_ = descriptor->meta;
-        slice.cached_ = descriptor->ptr;
+        slice.id_ = static_cast<SliceId>(descriptor->id);
+        descriptor->id = BA_NULL_ID;
         slice.free();
-        descriptor->meta = BA_NULL_META;
-        descriptor->ptr = nullptr;
     }
     /** ------------------------------------------------------------------------------------------- Placement Of
      * @brief Resolves the owning placement identifier of a live descriptor.
      */
     static uint32_t placement_of(const ba_slice_t* descriptor) noexcept {
-        if (descriptor->meta == BA_NULL_META || !descriptor->ptr) return UINT32_MAX;
+        if (descriptor->id == BA_NULL_ID) return UINT32_MAX;
         Slice view;
-        view.meta_ = descriptor->meta;
-        view.cached_ = descriptor->ptr;
+        view.id_ = static_cast<SliceId>(descriptor->id);
         const Placemat* placement = view.placement();
-        view.meta_ = BA_NULL_META;
-        view.cached_ = nullptr;
+        view.id_ = 0xFFFFFFFFu;
         return placement ? placement->type() : UINT32_MAX;
     }
     /** ------------------------------------------------------------------------------------------- Novel Of
      * @brief Reports whether a live descriptor's backing is a dedicated novel buffer.
      */
     static int novel_of(const ba_slice_t* descriptor) noexcept {
-        if (descriptor->meta == BA_NULL_META || !descriptor->ptr) return 0;
+        if (descriptor->id == BA_NULL_ID) return 0;
         Slice view;
-        view.meta_ = descriptor->meta;
-        view.cached_ = descriptor->ptr;
+        view.id_ = static_cast<SliceId>(descriptor->id);
         const int novel = view.is_novel() ? 1 : 0;
-        view.meta_ = BA_NULL_META;
-        view.cached_ = nullptr;
+        view.id_ = 0xFFFFFFFFu;
         return novel;
+    }
+    /** ------------------------------------------------------------------------------------------- Size Of
+     * @brief Resolves a live descriptor's byte size without taking its ownership.
+     */
+    static size_t size_of(const ba_slice_t* descriptor) noexcept {
+        if (descriptor->id == BA_NULL_ID) return 0;
+        Slice view;
+        view.id_ = static_cast<SliceId>(descriptor->id);
+        const size_t bytes = view.size_bytes();
+        view.id_ = 0xFFFFFFFFu;
+        return bytes;
+    }
+    /** ------------------------------------------------------------------------------------------- Ptr Of
+     * @brief Resolves a live descriptor's host pointer without taking its ownership.
+     */
+    static void* ptr_of(const ba_slice_t* descriptor) noexcept {
+        if (descriptor->id == BA_NULL_ID) return nullptr;
+        Slice view;
+        view.id_ = static_cast<SliceId>(descriptor->id);
+        void* ptr = view.raw();
+        view.id_ = 0xFFFFFFFFu;
+        return ptr;
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Listen
@@ -132,6 +147,12 @@ uint32_t ba_slice_placement(const ba_slice_t* descriptor) {
 }
 int ba_slice_is_novel(const ba_slice_t* descriptor) {
     return buffetalligator::SliceNetworkAccess::novel_of(descriptor);
+}
+size_t ba_slice_size(const ba_slice_t* descriptor) {
+    return buffetalligator::SliceNetworkAccess::size_of(descriptor);
+}
+void* ba_slice_ptr(const ba_slice_t* descriptor) {
+    return buffetalligator::SliceNetworkAccess::ptr_of(descriptor);
 }
 const char* ba_placement_name(uint32_t type) {
     const size_t count = buffetalligator::BuffetMenu::count();

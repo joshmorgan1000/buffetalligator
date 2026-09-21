@@ -1264,7 +1264,7 @@ public:
             if (node->identifier != identifier) continue;
             return retain(node);
         }
-        return {};
+        return Slice();
     }
     /** ------------------------------------------------------------------------------------------- Retain
      * @brief Copies the current version's claim inside a hazard window.

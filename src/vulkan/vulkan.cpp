@@ -11,7 +11,7 @@
 #include <vulkan/vulkanbuffer.hpp>
 #include <vulkan/vulkankernel.hpp>
 #include <vulkan/vulkanglsl.hpp>
-#include <memory/buffetmanager.hpp>
+#include <vulkan/shaderstate.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
@@ -302,7 +302,7 @@ struct ShaderState::Impl {
             const auto command = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
                 command_pool, vk::CommandBufferLevel::ePrimary, 1))[0];
             commands.push_back(command);
-            const KernelPush push{address, GlobalPool::instance().gpu_pool_address()};
+            const KernelPush push{address, VulkanKernel::gpu_pool_address()};
             static_cast<void>(command.begin(vk::CommandBufferBeginInfo{}));
             command.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
             command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
@@ -604,33 +604,31 @@ void VulkanStaticMethods::prepare_runtime() {
  * @brief Allocates one mapped, device-addressable slab on the rung named by `context`.
  * @param size The slab size in bytes.
  * @param context The rung index (from the Placemat's `get_context`).
- * @return The handle whose substrate_handle is the VulkanBuffer.
+ * @return The host mapping and the VulkanBuffer handle pair.
  */
-Placemat::Handle* VulkanStaticMethods::vulkan_allocator(size_t size, void* context) {
+std::pair<void*, void*> VulkanStaticMethods::vulkan_allocator(size_t size, void* context) {
     const uint8_t rung = *static_cast<const uint8_t*>(context);
     VulkanBuffer* slab = new VulkanBuffer(size, VulkanContext::instance().placement_type_indices_[rung]);
-    Placemat::Handle* handle = new Placemat::Handle();
-    handle->substrate_handle = slab;
-    handle->context = context;
-    return handle;
+    return {slab->host(), slab};
 }
 /** --------------------------------------------------------------------------------------------------------- Deallocate
- * @brief Destroys the slab behind a handle; the alligator deletes the handle itself afterwards.
- * @param handle The handle to release.
- * @param context The rung index (unused; the slab knows its own memory).
+ * @brief Destroys the slab behind a handle.
+ * @param host_ptr The host mapping of the slab.
+ * @param substrate_handle The VulkanBuffer handle backing the mapping.
+ * @return The cleared host pointer and substrate handle pair.
  */
-void VulkanStaticMethods::vulkan_deallocate(Placemat::Handle* handle, void* context) {
-    static_cast<void>(context);
-    delete static_cast<VulkanBuffer*>(handle->substrate_handle);
-    handle->substrate_handle = nullptr;
+std::pair<void*, void*> VulkanStaticMethods::vulkan_deallocate(void* host_ptr, void* substrate_handle) {
+    static_cast<void>(host_ptr);
+    delete static_cast<VulkanBuffer*>(substrate_handle);
+    return {nullptr, nullptr};
 }
-/** --------------------------------------------------------------------------------------------------------- Get Host Pointer
- * @brief The slab's persistent CPU mapping.
- * @param handle The handle to resolve.
- * @return The mapped host pointer.
+/** --------------------------------------------------------------------------------------------------------- Device Address
+ * @brief The device address of a slab's first byte.
+ * @param substrate_handle The VulkanBuffer handle backing the slab.
+ * @return The buffer device address.
  */
-void* VulkanStaticMethods::vulkan_get_host_ptr(Placemat::Handle* handle) {
-    return static_cast<VulkanBuffer*>(handle->substrate_handle)->host_;
+uint64_t VulkanStaticMethods::vulkan_device_address(void* substrate_handle) {
+    return static_cast<const VulkanBuffer*>(substrate_handle)->address();
 }
 /** --------------------------------------------------------------------------------------------------------- Get Vulkan Context
  * @brief The un-rung'd context hook: the default rung index.
@@ -640,35 +638,22 @@ void* VulkanStaticMethods::vulkan_get_context() {
     return VulkanPlacements::rung_context<static_cast<uint8_t>(PlacementIndex::HOST_VISIBLE)>();
 }
 /** --------------------------------------------------------------------------------------------------------- Placement table
- * @brief The Placemat behind each nebula placement: the heap built-in for the host-only rungs,
+ * @brief The Placemat behind each alligator placement: the heap built-in for the host-only rungs,
  * one Vulkan Placemat per device rung.
  */
-const Placemat* const Placement::HOST = BuffetMenu::get("heap");
-const Placemat* const Placement::HOST_VISIBLE = VulkanPlacements::rung<1>("vulkan_host_visible");
-const Placemat* const Placement::HOST_CACHEABLE = VulkanPlacements::rung<2>("vulkan_host_cacheable");
-const Placemat* const Placement::DEVICE = VulkanPlacements::rung<3>("vulkan_device");
-const Placemat* const Placement::UNIFIED = VulkanPlacements::rung<4>("vulkan_unified");
-const Placemat* const Placement::BASIC_HEAP = BuffetMenu::get("heap");
-namespace {
-/** --------------------------------------------------------------------------------------------------------- Publish GPU Slice
- * @brief Publishes a slice under a fresh pool reference so its CPU and GPU halves are index-linked.
- * @param slice The slice to publish.
- * @return The pool reference.
- */
-uint32_t publish_gpu_slice(Slice slice) {
-    CPUBufRef* reference = GlobalPool::instance().new_buf();
-    reference->set(std::move(slice));
-    return reference->my_idx();
-}
-} // namespace
+const Placemat* const Placemat::HOST = BuffetMenu::get("heap");
+const Placemat* const Placemat::HOST_VISIBLE = VulkanPlacements::rung<1>("vulkan_host_visible");
+const Placemat* const Placemat::HOST_CACHEABLE = VulkanPlacements::rung<2>("vulkan_host_cacheable");
+const Placemat* const Placemat::DEVICE = VulkanPlacements::rung<3>("vulkan_device");
+const Placemat* const Placemat::UNIFIED = VulkanPlacements::rung<4>("vulkan_unified");
+const Placemat* const Placemat::BASIC_HEAP = BuffetMenu::get("heap");
 /** --------------------------------------------------------------------------------------------------------- GPUSlice Constructor
  * @brief Constructs a new `GPUSlice` with the specified size.
  * @param size The size of the slice in bytes.
  * @param novel_buffer If true, the slice is allocated as a novel buffer. Default is false.
  */
-GPUSlice::GPUSlice(size_t size, bool novel_buffer) {
-    meta_ = publish_gpu_slice(Slice(size, novel_buffer, VulkanContext::buffer_placement()));
-}
+GPUSlice::GPUSlice(size_t size, bool novel_buffer)
+: slice_(size, novel_buffer, VulkanContext::buffer_placement()) {}
 /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
  * @brief Copies data from an external memory location into a new slice of memory in the
  * buffet alligator.
@@ -682,24 +667,19 @@ GPUSlice::GPUSlice(
     const void* copy_from,
     size_t size,
     bool novel_buffer
-) {
-    meta_ = publish_gpu_slice(Slice(size, novel_buffer, VulkanContext::buffer_placement()));
-    std::memcpy(raw(), copy_from, size);
+) : slice_(copy_from, size, novel_buffer, VulkanContext::buffer_placement()) {
 }
 /** ------------------------------------------------------------------------------------------- Constructor - From Slice
  * @brief Constructs a `GPUSlice` from an existing `Slice` object.
  * @param slice The `Slice` object to construct from.
  */
-GPUSlice::GPUSlice(Slice slice) {
-    meta_ = publish_gpu_slice(std::move(slice));
-}
+GPUSlice::GPUSlice(Slice slice) : slice_(std::move(slice)) {}
 /** ------------------------------------------------------------------------------------------- Assignment - From Slice
  * @brief Assigns a `Slice` object to the `GPUSlice`.
  * @param slice The `Slice` object to assign from.
  */
 GPUSlice& GPUSlice::operator=(Slice slice) {
-    free();
-    meta_ = publish_gpu_slice(std::move(slice));
+    slice_ = std::move(slice);
     return *this;
 }
 /** ------------------------------------------------------------------------------------------- Conversion - To Slice
@@ -707,40 +687,33 @@ GPUSlice& GPUSlice::operator=(Slice slice) {
  * @return A `Slice` object representing the same memory as the `GPUSlice`.
  */
 GPUSlice::operator Slice&() {
-    if (meta_ == 0xFFFFFFFFu) [[unlikely]] {
+    if (slice_.is_null()) [[unlikely]] {
         GPU_THROW("GPUSlice::operator Slice&() called on a null or freed GPUSlice");
     }
-    return *GlobalPool::instance().get(meta_)->slice_ref();
+    return slice_;
 }
 /** ------------------------------------------------------------------------------------------- Conversion - To Const Slice
  * @brief Converts the `GPUSlice` to a const `Slice` object.
  * @return A const `Slice` object representing the same memory as the `GPUSlice`.
  */
 GPUSlice::operator const Slice&() const {
-    if (meta_ == 0xFFFFFFFFu) {
-        static const Slice* null_slice = const_cast<const Slice*>(new Slice());
-        return *null_slice;
-    }
-    return *GlobalPool::instance().get(meta_)->slice_ref();
+    return slice_;
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Copy from GPUSlice
  * @brief Constructs a `GPUSlice` by copying from another `GPUSlice`.
  * @param other The `GPUSlice` to copy from.
  */
 GPUSlice::GPUSlice(const GPUSlice& other)
-: meta_(
-    other.meta_ == 0xFFFFFFFFu ? 0xFFFFFFFFu : publish_gpu_slice(static_cast<const Slice&>(other))
-) {}
+: slice_(other.slice_) {}
 /** ------------------------------------------------------------------------------------------- Assignment - From GPUSlice
  * @brief Assigns a `GPUSlice` object to the current `GPUSlice`.
- * @param other The `GPUSlice` object to assign from.
+ * @param other The `GPUSlice` to assign from.
  */
 GPUSlice& GPUSlice::operator=(const GPUSlice& other) {
     if (this == &other) {
         return *this;
     }
-    free();
-    meta_ = other.meta_ == 0xFFFFFFFFu ? 0xFFFFFFFFu : publish_gpu_slice(static_cast<const Slice&>(other));
+    slice_ = other.slice_;
     return *this;
 }
 /** ------------------------------------------------------------------------------------------- Constructor - Move from GPUSlice
@@ -748,16 +721,14 @@ GPUSlice& GPUSlice::operator=(const GPUSlice& other) {
  * @param other The `GPUSlice` to move from.
  */
 GPUSlice::GPUSlice(GPUSlice&& other) noexcept
-: meta_(other.meta_) { other.meta_ = 0xFFFFFFFFu; }
+: slice_(std::move(other.slice_)) {}
 /** ------------------------------------------------------------------------------------------- Assignment - Move from GPUSlice
  * @brief Assigns a `GPUSlice` object to the current `GPUSlice` by moving from another
  * `GPUSlice`.
- * @param other The `GPUSlice` object to move from.
+ * @param other The `GPUSlice` to move from.
  */
 GPUSlice& GPUSlice::operator=(GPUSlice&& other) noexcept {
-    free();
-    meta_ = other.meta_;
-    other.meta_ = 0xFFFFFFFFu;
+    slice_ = std::move(other.slice_);
     return *this;
 }
 /** ------------------------------------------------------------------------------------------- Placement
@@ -765,7 +736,7 @@ GPUSlice& GPUSlice::operator=(GPUSlice&& other) noexcept {
  * @return The `Placement` enum value representing the slice's memory placement.
  */
 const Placemat* GPUSlice::placement() const {
-    return meta_ == UINT32_MAX ? nullptr : GlobalPool::instance().get(meta_)->slice_ref()->placement();
+    return slice_.placement();
 }
 /** ------------------------------------------------------------------------------------------- Raw accessors
  * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
@@ -773,7 +744,7 @@ const Placemat* GPUSlice::placement() const {
  * @return A pointer to the underlying memory of the slice.
  */
 void* GPUSlice::raw() {
-    return meta_ == 0xFFFFFFFFu ? nullptr : GlobalPool::instance().get(meta_)->ptr();
+    return slice_.raw();
 }
 /** ------------------------------------------------------------------------------------------- Raw accessors - const
  * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
@@ -781,7 +752,7 @@ void* GPUSlice::raw() {
  * @return A read-only pointer to the underlying memory of the slice.
  */
 const void* GPUSlice::raw() const {
-    return meta_ == 0xFFFFFFFFu ? nullptr : GlobalPool::instance().get(meta_)->ptr();
+    return slice_.raw();
 }
 /** ------------------------------------------------------------------------------------------- Create new view
  * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
@@ -795,19 +766,17 @@ const void* GPUSlice::raw() const {
  * @return A new `GPUSlice` object that is a view of the original slice.
  */
 GPUSlice GPUSlice::slice(size_t offset, size_t length) const {
-    if (meta_ == 0xFFFFFFFFu) [[unlikely]] {
+    if (slice_.is_null()) [[unlikely]] {
         GPU_THROW("GPUSlice::slice: Attempted to slice a null or freed GPUSlice.");
     }
-    GPUSlice view;
-    view.meta_ = publish_gpu_slice(GlobalPool::instance().get(meta_)->slice_ref()->slice(offset, length));
-    return view;
+    return GPUSlice(slice_.slice(offset, length));
 }
 /** ------------------------------------------------------------------------------------------- Size in bytes
  * @brief Returns the size of the slice in bytes.
  * @return The size of the slice in bytes.
  */
 size_t GPUSlice::size_bytes() const {
-    return meta_ == 0xFFFFFFFFu ? 0 : GlobalPool::instance().get(meta_)->size_bytes();
+    return slice_.size_bytes();
 }
 /** ------------------------------------------------------------------------------------------- Resize
  * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
@@ -826,11 +795,7 @@ void GPUSlice::resize(
     bool preserve_data,
     bool novel_buffer
 ) {
-    GPUSlice new_slice(new_size, novel_buffer);
-    if (preserve_data && meta_ != 0xFFFFFFFFu) {
-        std::memcpy(new_slice.raw(), raw(), std::min(size_bytes(), new_size));
-    }
-    *this = std::move(new_slice);
+    slice_.resize(new_size, preserve_data, novel_buffer);
 }
 /** ------------------------------------------------------------------------------------------- Free
  * @brief Frees the underlying memory of the slice. This is called automatically when the
@@ -838,10 +803,7 @@ void GPUSlice::resize(
  * method, the slice will be null.
  */
 void GPUSlice::free() {
-    if (meta_ != 0xFFFFFFFFu) {
-        GlobalPool::instance().erase(meta_);
-        meta_ = 0xFFFFFFFFu;
-    }
+    slice_.free();
 }
 /** ------------------------------------------------------------------------------------------- Root slice
  * @brief Returns a reference to the root slice. This is useful when dealing with nested
@@ -849,7 +811,7 @@ void GPUSlice::free() {
  * @return A reference to the root slice.
  */
 Slice& GPUSlice::root_slice() {
-    return static_cast<Slice&>(*this);
+    return slice_;
 }
 /** ------------------------------------------------------------------------------------------- Root slice (const)
  * @brief Returns a const reference to the root slice. This is useful when dealing with nested
@@ -857,6 +819,6 @@ Slice& GPUSlice::root_slice() {
  * @return A const reference to the root slice.
  */
 const Slice& GPUSlice::root_slice() const {
-    return static_cast<const Slice&>(*this);
+    return slice_;
 }
-} // namespace nebula
+} // namespace buffetalligator

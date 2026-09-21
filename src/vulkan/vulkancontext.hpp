@@ -152,7 +152,7 @@ private:
 #ifdef __APPLE__
         ::setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
 #endif
-        vk::ApplicationInfo app_info("nebula", 1, "nebula", 1, VK_API_VERSION_1_2);
+        vk::ApplicationInfo app_info("alligator", 1, "alligator", 1, VK_API_VERSION_1_2);
         std::vector<const char*> instance_extensions;
         vk::InstanceCreateInfo instance_info{};
         instance_info.pApplicationInfo = &app_info;

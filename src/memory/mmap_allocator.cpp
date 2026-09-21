@@ -48,8 +48,7 @@ MmapContext context;
 /** --------------------------------------------------------------------------------------------------------- Allocate
  * @brief Maps a fresh zero-filled file for one slab without touching its pages.
  */
-Placemat::Handle* mmap_allocate(size_t size, void*) {
-    auto handle = std::make_unique<Placemat::Handle>();
+std::pair<void*, void*> mmap_allocate(size_t size, void*) {
     auto allocation = std::make_unique<MmapAllocation>();
     std::string pattern = context.directory + "/buffetalligator-XXXXXX";
     allocation->descriptor = mkstemp(pattern.data());
@@ -85,20 +84,15 @@ Placemat::Handle* mmap_allocate(size_t size, void*) {
     if (allocation->mapping == MAP_FAILED) {
         throw std::system_error(errno, std::generic_category(), "Mapping scratch slab");
     }
-    handle->substrate_handle = allocation.release();
-    return handle.release();
+    return {allocation->mapping, allocation.release()};
 }
 /** --------------------------------------------------------------------------------------------------------- Deallocate
  * @brief Reclaims one mmap slab through the existing arena cleanup callback.
  */
-void mmap_deallocate(Placemat::Handle* handle, void*) {
-    delete static_cast<MmapAllocation*>(handle->substrate_handle);
-}
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief Returns the persistent host mapping for a completed slab.
- */
-void* mmap_host_pointer(Placemat::Handle* handle) {
-    return static_cast<MmapAllocation*>(handle->substrate_handle)->mapping;
+std::pair<void*, void*> mmap_deallocate(void* host_ptr, void* substrate_handle) {
+    static_cast<void>(host_ptr);
+    delete static_cast<MmapAllocation*>(substrate_handle);
+    return {nullptr, nullptr};
 }
 /** --------------------------------------------------------------------------------------------------------- Context
  * @brief Returns the process-lifetime scratch placement context.
@@ -108,7 +102,8 @@ void* mmap_context() { return &context; }
  * @brief Resolves the owning mmap allocation for a Slice from this placement.
  */
 MmapAllocation& allocation_for(const Slice& slice) {
-    return *static_cast<MmapAllocation*>(Placemat::get_for(&slice)->substrate_handle);
+    return *static_cast<MmapAllocation*>(
+        Alligator::plate_for(slice)->substrate_handle);
 }
 }
 /** --------------------------------------------------------------------------------------------------------- Register Type
@@ -127,8 +122,9 @@ const Placemat* MmapAllocator::register_type(const std::string& directory) {
     context.page_size = static_cast<size_t>(page_size);
     context.placement = BuffetMenu::get(BuffetMenu::register_type(
         "mmap", 64ull * 1024 * 1024, 64, &mmap_allocate, &mmap_deallocate,
-        &mmap_host_pointer, &mmap_context
+        &mmap_context
     ));
+    Placemat::PAGE_ALIGNED = context.placement;
     return context.placement;
 }
 /** --------------------------------------------------------------------------------------------------------- Enable Spillover

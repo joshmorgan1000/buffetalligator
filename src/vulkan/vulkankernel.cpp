@@ -33,16 +33,22 @@ std::string VulkanKernel::device_name() {
  * @return The device address of the Slice's first byte if GPU-visible, otherwise 0.
  */
 uint64_t VulkanKernel::device_address(const Slice& slice) {
-    if (!VulkanContext::device_present()) return 0;
-    const Placemat* placement = slice.placement();
-    const bool vulkan = placement == Placemat::HOST_VISIBLE
-        || placement == Placemat::HOST_CACHEABLE || placement == Placemat::DEVICE
-        || placement == Placemat::UNIFIED || placement == VulkanContext::buffer_placement();
-    if (!vulkan) return 0;
-    Placemat::Handle* handle = Placemat::get_for(&slice);
-    if (handle == nullptr) return 0;
-    const VulkanBuffer* slab = static_cast<const VulkanBuffer*>(handle->substrate_handle);
-    return slab->address() + static_cast<uint64_t>(
-        static_cast<const uint8_t*>(slice.raw()) - static_cast<const uint8_t*>(slab->host()));
+    if (slice.is_null()) return 0;
+    return Alligator::gpubuf_for(slice)->address;
+}
+/** --------------------------------------------------------------------------------------------------------- VulkanKernel::gpu_pool_address
+ * @brief The device address of the alligator's shared GPUBuf table, 0 without a compute device.
+ * @return The table's device address.
+ */
+uint64_t VulkanKernel::gpu_pool_address() {
+    return Alligator::gpu_table_address();
+}
+/** --------------------------------------------------------------------------------------------------------- VulkanKernel::table_placement
+ * @brief The placement the shared GPUBuf table is allocated on: the coherent zero-copy rung with a
+ * device, plain heap without one.
+ * @return The placement.
+ */
+const Placemat* VulkanKernel::table_placement() {
+    return VulkanContext::bit_placement();
 }
 } // namespace buffetalligator

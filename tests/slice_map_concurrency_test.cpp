@@ -3,13 +3,13 @@
  * @brief Checks replacement ownership, bucket growth, shared-key publication, and reclamation.
  */
 #include <alligator.hpp>
-#include <memory/slicefriend.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <barrier>
 #include <chrono>
 #include <bit>
+#include <future>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -48,25 +48,25 @@ void replacement_ownership() {
     LOG_INFO_STREAM << "Checking stable replacement and old Slice deallocation";
     Slice warmup(64);
     SliceMap map(1);
-    const size_t before = SliceFriend::execute_async<size_t>(completed_frees).get();
+    const size_t before = std::async(std::launch::async, completed_frees).get();
     map.add_slice(7, payload(7, 1, true));
     map.add_slice(7, payload(7, 2, true));
-    require(SliceFriend::execute_async<size_t>(completed_frees).get() == before + sizeof(Value),
+    require(std::async(std::launch::async, completed_frees).get() == before + sizeof(Value),
         "replacement did not release the previous unshared Slice");
     require(map.size() == 1 && map.find(7) == 0, "replacement consumed a second position");
     Slice retained = map.get_slice(7);
     map.add_slice(7, payload(7, 3, true));
-    require(SliceFriend::execute_async<size_t>(completed_frees).get() == before + sizeof(Value),
+    require(std::async(std::launch::async, completed_frees).get() == before + sizeof(Value),
         "replacement released backing still held by a retained Slice");
     require(retained.get_as<Value>().version == 2 && map.slice_at(0).get_as<Value>().version == 3,
         "replacement changed a retained payload or missed its stable slot");
     retained.free();
-    require(SliceFriend::execute_async<size_t>(completed_frees).get() == before + 2 * sizeof(Value),
+    require(std::async(std::launch::async, completed_frees).get() == before + 2 * sizeof(Value),
         "last retained view did not release its old backing");
     map.add_slice(7, Slice());
     require(map.size() == 1 && map.find(7) == 0 && !map.get_slice(7),
         "null replacement lost the existing key");
-    require(SliceFriend::execute_async<size_t>(completed_frees).get() == before + 3 * sizeof(Value),
+    require(std::async(std::launch::async, completed_frees).get() == before + 3 * sizeof(Value),
         "null replacement retained the old payload");
     SliceMapT<std::shared_ptr<int>> typed(1), source(1);
     auto object = std::make_shared<int>(10);

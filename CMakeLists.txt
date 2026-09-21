@@ -37,7 +37,6 @@ include(GNUInstallDirs)
 include(cmake/NetworkDependencies.cmake)
 add_library(alligator STATIC
     src/memory/slice.cpp
-    src/memory/buffet.cpp
     src/memory/alligator.cpp
     src/memory/heapbuffet.cpp
     src/memory/host_memory.cpp

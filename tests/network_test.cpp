@@ -42,20 +42,20 @@ void require(bool condition, const char* message) {
 /** --------------------------------------------------------------------------------------------------------- Allocate Test Placement
  * @brief Supplies genuine registered storage whose type differs between the two processes.
  */
-Placemat::Handle* allocate(size_t bytes, void*) {
+std::pair<void*, void*> allocate(size_t bytes, void*) {
     void* pointer = nullptr;
-    if (posix_memalign(&pointer, 64, bytes)) return nullptr;
+    if (posix_memalign(&pointer, 64, bytes)) return {nullptr, nullptr};
     std::memset(pointer, 0, bytes);
-    return new Placemat::Handle{pointer, nullptr};
+    return {pointer, pointer};
 }
 /** --------------------------------------------------------------------------------------------------------- Release Test Placement
  * @brief Releases the placement's allocation through its actual callback.
  */
-void deallocate(Placemat::Handle* handle, void*) { std::free(handle->substrate_handle); }
-/** --------------------------------------------------------------------------------------------------------- Host Test Placement
- * @brief Returns the registered allocation's host address.
- */
-void* host(Placemat::Handle* handle) { return handle->substrate_handle; }
+std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
+    static_cast<void>(host_ptr);
+    std::free(substrate_handle);
+    return {nullptr, nullptr};
+}
 /** --------------------------------------------------------------------------------------------------------- Test Context
  * @brief Supplies the registered placement's empty context.
  */
@@ -64,7 +64,7 @@ void* test_context() { return nullptr; }
  * @brief Registers one named placement for cross-process identifier tests.
  */
 void register_placement(const char* name) {
-    BuffetMenu::register_type(name, 16u * 1024u * 1024u, 64, &allocate, &deallocate, &host,
+    BuffetMenu::register_type(name, 16u * 1024u * 1024u, 64, &allocate, &deallocate,
                               &test_context);
 }
 /** --------------------------------------------------------------------------------------------------------- Response
@@ -234,7 +234,7 @@ void wire_validation() {
     ba_slice_t decoded;
     require(!ba_net_decode(frame.data, frame.size, 128, key, &decoded),
             "authenticated frame rejected");
-    require(std::memcmp(decoded.ptr, source.raw(), source.size_bytes()) == 0,
+    require(std::memcmp(ba_slice_ptr(&decoded), source.raw(), source.size_bytes()) == 0,
             "decoded bytes differ");
     ba_release(&decoded);
     frame.data[frame.size - 1] ^= 1;

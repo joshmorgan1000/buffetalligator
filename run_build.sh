@@ -25,8 +25,7 @@ CLEAN_BUILD=false
 REBUILD_VENDORED=false
 RUN_TESTS=true
 DEPS_ONLY=false
-CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib
-    -DBUFFETALLIGATOR_ENABLE_GPU_ALLOCATORS=OFF)
+CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib)
 while (( $# > 0 )); do
     case "$1" in
         --color)
@@ -90,7 +89,6 @@ while (( $# > 0 )); do
             printf '%s\n' "  --deps-dir DIR       Specify the dependencies directory."
             printf '%s\n' "  --install-dir DIR    Specify the installation directory."
             printf '%s\n' "  -DNAME=VALUE         Override a CMake cache setting (e.g. -DALLIGATOR_SLOT_BITS=20)."
-            printf '%s\n' "  -DBUFFETALLIGATOR_ENABLE_GPU_ALLOCATORS=ON  Include optional GPU buffers."
             printf '%s\n' "  --help               Show this help message."
             exit 0
             ;;
@@ -100,28 +98,6 @@ done
 [[ "${DEPS_DIR}" = /* ]] || DEPS_DIR="${PWD}/${DEPS_DIR}"
 [[ "${INSTALL_DIR}" = /* ]] || INSTALL_DIR="${PWD}/${INSTALL_DIR}"
 BUILD_DIR="${BUILD_ROOT}"
-GPU_ALLOCATORS=OFF
-VULKAN_ALLOCATOR=ON
-if [[ "${CLEAN_BUILD}" == false && -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
-    cached_vulkan=$(sed -n 's/^BUFFETALLIGATOR_ENABLE_VULKAN:BOOL=//p' "${BUILD_DIR}/CMakeCache.txt")
-    if [[ -n "${cached_vulkan}" ]]; then VULKAN_ALLOCATOR="${cached_vulkan}"; fi
-fi
-for argument in "${CMAKE_ARGS[@]}"; do
-    case "${argument}" in
-        -DBUFFETALLIGATOR_ENABLE_GPU_ALLOCATORS=*|-DBUFFETALLIGATOR_ENABLE_GPU_ALLOCATORS:*=*)
-            GPU_ALLOCATORS="${argument#*=}"
-            ;;
-        -DBUFFETALLIGATOR_ENABLE_VULKAN=*|-DBUFFETALLIGATOR_ENABLE_VULKAN:*=*)
-            VULKAN_ALLOCATOR="${argument#*=}"
-            ;;
-    esac
-done
-cmake_enabled() {
-    case "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" in
-        ''|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND|*-NOTFOUND) return 1 ;;
-        *) return 0 ;;
-    esac
-}
 DEPS_SOURCE_DIR="${DEPS_DIR}/src"
 DEPS="${DEPS_DIR}"
 DEPS_SRC="${DEPS_SOURCE_DIR}"
@@ -935,21 +911,15 @@ run_stage "Preparing Abseil" build_abseil_from_source
 run_stage "Preparing Folly" build_folly_from_source
 run_stage "Preparing simdjson" build_simdjson_from_source
 run_stage "Preparing curl" build_curl_from_source
-if cmake_enabled "${GPU_ALLOCATORS}" && cmake_enabled "${VULKAN_ALLOCATOR}"; then
-    run_stage "Preparing Vulkan headers" build_vulkan_headers_from_source
-    if [[ "${REBUILD_VENDORED}" == true ]]; then
-        rm -f "${VULKAN_LOADER_DEPS}/.version" "${MOLTENVK_DEPS}/.version"
-    fi
-    run_stage "Preparing Vulkan runtime" build_vulkan_loader_from_source
-    if [[ "${REBUILD_VENDORED}" == true ]]; then
-        rm -f "${SHADERC_BUILD_DIR}/.head"
-    fi
-    run_stage "Preparing shaderc" build_shaderc_from_source
-elif ! cmake_enabled "${GPU_ALLOCATORS}"; then
-    printf '%s\n' "${CYAN}GPU buffers are disabled; preparing host memory and networking support.${NC}"
-else
-    printf '%s\n' "${CYAN}Vulkan buffers are disabled; their dependencies are not needed.${NC}"
+run_stage "Preparing Vulkan headers" build_vulkan_headers_from_source
+if [[ "${REBUILD_VENDORED}" == true ]]; then
+    rm -f "${VULKAN_LOADER_DEPS}/.version" "${MOLTENVK_DEPS}/.version"
 fi
+run_stage "Preparing Vulkan runtime" build_vulkan_loader_from_source
+if [[ "${REBUILD_VENDORED}" == true ]]; then
+    rm -f "${SHADERC_BUILD_DIR}/.head"
+fi
+run_stage "Preparing shaderc" build_shaderc_from_source
 if [[ "${DEPS_ONLY}" == true ]]; then
     printf '%s\n' "${GREEN}All selected dependencies are ready in ${DEPS_DIR}.${NC}"
     exit 0

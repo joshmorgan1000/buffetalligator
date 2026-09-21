@@ -25,7 +25,7 @@ public:
 /** --------------------------------------------------------------------------------------------------------- Compile Vulkan GLSL
  * @brief Compiles a complete Vulkan 1.2 compute shader into optimized SPIR-V.
  * @param source Complete GLSL source.
- * @param float16 Whether to define NEBULA_FLOAT16 for the source.
+ * @param float16 Whether to define ALLIGATOR_FLOAT16 for the source.
  * @param name Diagnostic shader name.
  * @return Optimized SPIR-V words.
  */

@@ -14,11 +14,10 @@ static_assert(SliceQueue::block_size == BA_QUEUE_BATCH_SIZE);
  */
 void SliceQueue::release_descriptor(void* descriptor) noexcept {
     ba_slice_t* carried = static_cast<ba_slice_t*>(descriptor);
+    if (carried->id == BA_NULL_ID) return;
     Slice slice;
-    slice.meta_ = carried->meta;
-    slice.cached_ = carried->ptr;
-    carried->meta = UINT64_MAX;
-    carried->ptr = nullptr;
+    slice.id_ = static_cast<SliceId>(carried->id);
+    carried->id = BA_NULL_ID;
     slice.free();
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor
@@ -65,8 +64,7 @@ SliceQueue::Producer::~Producer() { ba_queue_unbind(static_cast<ba_queue_local_t
  */
 void SliceQueue::Producer::push(Slice&& slice) noexcept {
     ba_queue_push(static_cast<ba_queue_local_t*>(local_), reinterpret_cast<const ba_slice_t*>(&slice), 1);
-    slice.meta_ = UINT64_MAX;
-    slice.cached_ = nullptr;
+    slice.id_ = 0xFFFFFFFFu;
 }
 /** --------------------------------------------------------------------------------------------------------- Push Bulk
  * @brief Transfers a span of descriptors and clears the moved source handles.
@@ -75,8 +73,7 @@ void SliceQueue::Producer::push(std::span<Slice> slices) noexcept {
     ba_queue_push(static_cast<ba_queue_local_t*>(local_),
         reinterpret_cast<const ba_slice_t*>(slices.data()), slices.size());
     for (auto& slice : slices) {
-        slice.meta_ = UINT64_MAX;
-        slice.cached_ = nullptr;
+        slice.id_ = 0xFFFFFFFFu;
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Flush
@@ -94,8 +91,7 @@ bool SliceQueue::Consumer::pop(Slice& output) noexcept {
     ba_slice_t received;
     if (!ba_queue_pop(static_cast<ba_queue_local_t*>(local_), &received, 1)) return false;
     output.free();
-    output.meta_ = received.meta;
-    output.cached_ = received.ptr;
+    output.id_ = static_cast<SliceId>(received.id);
     return true;
 }
 /** --------------------------------------------------------------------------------------------------------- Pop Bulk
@@ -108,8 +104,7 @@ size_t SliceQueue::Consumer::pop(std::span<Slice> output) noexcept {
         std::min(output.size(), block_size));
     for (size_t index = 0; index < count; ++index) {
         output[index].free();
-        output[index].meta_ = received[index].meta;
-        output[index].cached_ = received[index].ptr;
+        output[index].id_ = static_cast<SliceId>(received[index].id);
     }
     return count;
 }

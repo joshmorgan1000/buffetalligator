@@ -5,7 +5,7 @@
             "name": "Debug",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/tests/buffetalligator_memory_test",
+            "program": "${workspaceFolder}/build/tests/buffetalligator_memory_tracker_test",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake Debug",

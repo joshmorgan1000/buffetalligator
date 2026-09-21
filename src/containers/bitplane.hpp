@@ -38,8 +38,40 @@ public:
  */
 class alignas(16) ConcurrentBitplane {
 private:
+    struct MemAlloc {
+        void* mem;
+        void* unaligned;
+        size_t size;
+        void free() {
+            std::free(unaligned);
+            mem = nullptr;
+            unaligned = nullptr;
+        }
+        void resize(size_t new_size, size_t alignment) {
+            size = new_size;
+            unaligned = std::realloc(unaligned, size + (alignment - 1));
+            mem = reinterpret_cast<void*>(
+                (reinterpret_cast<uintptr_t>(unaligned) + (alignment - 1)) & ~(alignment - 1)
+            );
+        }
+        MemAlloc(size_t init_size, size_t alignment) {
+            size = init_size;
+            unaligned = std::calloc(1, size + (alignment - 1));
+            mem = reinterpret_cast<void*>(
+                (reinterpret_cast<uintptr_t>(unaligned) + (alignment - 1)) & ~(alignment - 1)
+            );
+        }
+        ~MemAlloc() { free(); }
+        void* raw() { return unaligned; }
+        const void* raw() const { return unaligned; }
+        template<typename T>
+        T* data() { return reinterpret_cast<T*>(mem); }
+        template<typename T>
+        const T* data() const { return reinterpret_cast<const T*>(mem); }
+        size_t size_bytes() const { return size; }
+    };
     /// @brief Shared pointer to the atomic slice representing the bitplane.
-    std::shared_ptr<std::atomic<Slice*>> slice_;
+    std::shared_ptr<std::atomic<MemAlloc*>> slice_;
     /** ------------------------------------------------------------------------------------------- Atomic Word Access
      * @brief Access the atomic word at the specified index within the bitplane.
      * @param word_idx The index of the atomic word to access.
@@ -68,7 +100,7 @@ public:
      */
     ConcurrentBitplane(
         size_t size_in_bits = 0
-    ) : slice_(std::make_shared<std::atomic<Slice*>>(new Slice((size_in_bits + 7) >> 3))) {}
+    ) : slice_(std::make_shared<std::atomic<MemAlloc*>>(new MemAlloc((size_in_bits + 7) >> 3, 16))) {}
     /** ------------------------------------------------------------------------------------------- Copy/Move Constructors and Assignment Operators */
     ConcurrentBitplane(const ConcurrentBitplane& other) : slice_(other.slice_) {}
     ConcurrentBitplane& operator=(const ConcurrentBitplane& other) {
@@ -159,23 +191,10 @@ public:
      * @param preserve_data Indicates whether to preserve the existing data.
      * @param novel_buffer Indicates whether to allocate a novel buffer for the resized bitplane.
      */
-    void resize(
-        size_t new_num_bits,
-        bool preserve_data = true,
-        bool novel_buffer = true
-    ) {
+    void resize(size_t new_num_bits) {
         slice_->load(std::memory_order_acquire)->resize(
-            new_num_bits, preserve_data, novel_buffer);
+            (new_num_bits + 7) >> 3, 16
+        );
     }
-    /** ------------------------------------------------------------------------------------------- slice
-     * @brief Returns a pointer to the Slice that holds the bitplane's data.
-     * @return Pointer to the Slice.
-     */
-    Slice& slice() { return *slice_->load(std::memory_order_acquire); }
-    /** ------------------------------------------------------------------------------------------- slice (const)
-     * @brief Returns a const reference to the Slice that holds the bitplane's data.
-     * @return Const reference to the Slice.
-     */
-    const Slice& slice() const { return *slice_->load(std::memory_order_acquire); }
 };
 } // namespace buffetalligator

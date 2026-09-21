@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <concepts>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -79,6 +80,27 @@ using DeallocateMethod = std::pair<void*, void*> (*)(void* host_ptr, void* subst
  * @return A pointer to the context associated with the plate.
  */
 using GetContextMethod = void* (*)();
+/** --------------------------------------------------------------------------------------------------------- DeviceAddressMethod
+ * @brief The method that maps one plate's substrate handle to the device address of its first byte.
+ * @param substrate_handle The substrate handle the allocation method returned.
+ * @return The device address, 0 for memory no device can address.
+ */
+using DeviceAddressMethod = uint64_t (*)(void* substrate_handle);
+/** --------------------------------------------------------------------------------------------------------- host_device_address
+ * @brief The device address method of host-only placements, which have none.
+ * @param substrate_handle The substrate handle, unused.
+ * @return Always 0.
+ */
+inline uint64_t host_device_address(void*) { return 0; }
+/** --------------------------------------------------------------------------------------------------------- ResizeMethod
+ * @brief The method used to attempt an in-place resize of one whole-block allocation. Only
+ * placements whose substrate can honor it (the C heap's realloc, for example) provide one.
+ * @param host_ptr The host pointer of the block.
+ * @param substrate_handle The freeable allocation handle.
+ * @param new_size The requested size in bytes.
+ * @return The resized host and substrate pair, or nulls to fall back to copy-based resizing.
+ */
+using ResizeMethod = std::pair<void*, void*> (*)(void* host_ptr, void* substrate_handle, size_t new_size);
 /** --------------------------------------------------------------------------------------------------------- Comprehension Enforcer
  * @brief Gates non-hot-path methods behind proof the caller read the code. A gated method calls
  * CHECK_read_this(name), which passes only while that gate is armed on the calling thread. Arming is
@@ -161,6 +183,11 @@ public:
      * @return The context retrieval method.
      */
     const GetContextMethod get_context() const { return get_context_; }
+    /** ------------------------------------------------------------------------------------------- DeviceAddress
+     * @brief Returns the method that maps a substrate handle to its device address.
+     * @return The device address method.
+     */
+    const DeviceAddressMethod device_address() const { return device_address_; }
     /** ------------------------------------------------------------------------------------------- Type
      * @brief Returns the registry identifier assigned to this placement.
      * @return The placement registry identifier.
@@ -181,6 +208,16 @@ public:
      * @param plate The plate to be freed.
      */
     static void call_free_later(Plate* plate);
+    /** ------------------------------------------------------------------------------------------- Record Slab Allocation
+     * @brief Reports one completed slab allocation to the memory tracker; defined in slice.cpp.
+     * @param plate The plate that now owns the slab.
+     */
+    static void record_slab_allocation(const Plate* plate);
+    /** ------------------------------------------------------------------------------------------- Record Slab Release
+     * @brief Reports one completed slab release to the memory tracker; defined in slice.cpp.
+     * @param plate The plate whose slab was just returned.
+     */
+    static void record_slab_release(const Plate* plate);
     /** ------------------------------------------------------------------------------------------- Plate
      * @struct Plate
      * @brief A `Plate` is a specific allocation of memory within a given `Placemat`. One might
@@ -197,6 +234,8 @@ public:
         /// @brief The special handle associated with this allocation.
         /// Example: vk::Device for Vulkan, or CUcontext for CUDA.
         void* substrate_handle;
+        /// @brief The device address of the allocation's first byte, 0 for host-only memory.
+        uint64_t device_base;
         /** ----------------------------------------------------------------------------- next atomic
          * @brief We try to pre-allocate a slab or two ahead of the current bump pointer
          * so that contention around boundaries is minimized when allocating new slices.
@@ -219,7 +258,7 @@ public:
                     std::memory_order_acq_rel)
                 ) {
                     auto [host_ptr, substrate_handle] =
-                        placemat->allocate()(size, placemat->get_context());
+                        placemat->allocate()(size, placemat->get_context()());
                     current_next = new Plate(
                         placemat,
                         size,
@@ -227,6 +266,7 @@ public:
                         substrate_handle,
                         false
                     );
+                    record_slab_allocation(current_next);
                     next_buf->store(current_next, std::memory_order_release);
                     break;
                 }
@@ -256,24 +296,21 @@ public:
         /** ----------------------------------------------------------------------------- Free Plate
          * @brief Decrements the reference count and frees the plate if it reaches zero.
          */
+        /// @brief Parked reference count of a released plate, so a late claim can never revive it.
+        inline static constexpr int RELEASED = INT32_MIN / 2;
         void free() {
-            if (ref_count && ref_count->fetch_sub(1, std::memory_order_acquire) == 1) {
+            if (ref_count->fetch_sub(1, std::memory_order_acquire) == 1) {
                 auto [a, b] = placemat->deallocate()(host_ptr, substrate_handle);
                 host_ptr = a;
                 substrate_handle = b;
+                record_slab_release(this);
                 if (slice->load(std::memory_order_acquire) != nullptr) {
                     std::string error_msg = "Hmm... something isn't right. The slice"
                         " should have been nullptr before freeing the plate.";
                     ALLIGATOR_THROW(error_msg);
                 }
-                delete slice;
-                slice = nullptr;
-                delete ref_count;
-                ref_count = nullptr;
-                delete bump;
-                bump = nullptr;
-                delete next_buf;
-                next_buf = nullptr;
+                // The atomics stay allocated so a late walker reads a parked count, never freed memory.
+                ref_count->store(RELEASED, std::memory_order_release);
             }
         }
         /// @brief The bump pointer for this handle, used to slice the slab into smaller
@@ -307,12 +344,13 @@ public:
         , size(final_course ? 0 : size_)
         , host_ptr(host_ptr_)
         , substrate_handle(substrate_handle_)
+        , device_base(placemat_->device_address()(substrate_handle_))
         , next_buf(new std::atomic<Plate*>(nullptr))
         , slice(new std::atomic<Slice*>(nullptr))
-        , ref_count(new std::atomic<int>(1))
+        , ref_count(new std::atomic<int>(0))
         , bump(new std::atomic<size_t>(0)) {
             if (final_course) {
-                bump->store(size, std::memory_order_release);
+                bump->store(size_, std::memory_order_release);
             } else {
                 slice->store(
                     placemat->create_main_slice(this),
@@ -329,6 +367,7 @@ public:
         , size(other.size)
         , host_ptr(other.host_ptr)
         , substrate_handle(other.substrate_handle)
+        , device_base(other.device_base)
         , slice(other.slice)
         , ref_count(other.ref_count)
         , bump(other.bump) {
@@ -347,6 +386,7 @@ public:
                 size = other.size;
                 host_ptr = other.host_ptr;
                 substrate_handle = other.substrate_handle;
+                device_base = other.device_base;
                 slice = other.slice;
                 ref_count = other.ref_count;
                 bump = other.bump;
@@ -362,6 +402,7 @@ public:
         , size(other.size)
         , host_ptr(other.host_ptr)
         , substrate_handle(other.substrate_handle)
+        , device_base(other.device_base)
         , slice(other.slice)
         , ref_count(other.ref_count)
         , bump(other.bump) {
@@ -385,6 +426,7 @@ public:
                 size = other.size;
                 host_ptr = other.host_ptr;
                 substrate_handle = other.substrate_handle;
+                device_base = other.device_base;
                 slice = other.slice;
                 ref_count = other.ref_count;
                 bump = other.bump;
@@ -408,14 +450,43 @@ public:
      * @return Pointer to the current plate.
      */
     Plate* current_plate() const {
-        return current_handle_.load(std::memory_order_acquire);
+        Plate* current = current_handle_.load(std::memory_order_acquire);
+        while (current == nullptr || current == reinterpret_cast<Plate*>(-1ll)) [[unlikely]] {
+            Plate* expected = nullptr;
+            if (current == nullptr && current_handle_.compare_exchange_strong(
+                expected, reinterpret_cast<Plate*>(-1ll),
+                std::memory_order_acq_rel, std::memory_order_acquire)
+            ) {
+                std::pair<void*, void*> allocation;
+                try {
+                    allocation = allocator_(default_slab_size_, get_context_());
+                } catch (...) {
+                    current_handle_.store(nullptr, std::memory_order_release);
+                    throw;
+                }
+                current = new Plate(
+                    const_cast<Placemat*>(this), default_slab_size_,
+                    allocation.first, allocation.second, false);
+                record_slab_allocation(current);
+                current_handle_.store(current, std::memory_order_release);
+                (void)current->next(1);
+                return current;
+            }
+            std::this_thread::yield();
+            current = current_handle_.load(std::memory_order_acquire);
+        }
+        return current;
     }
     /** ------------------------------------------------------------------------------------------- Set Current Plate
-     * @brief Sets the current plate associated with this placemat.
+     * @brief Advances the current plate from the one the caller exhausted to its successor,
+     * refusing when another claimer already advanced it so the chain can never fork.
+     * @param expected The plate the caller found full.
      * @param plate Pointer to the plate to set as current.
+     * @return True when this call performed the swap.
      */
-    void set_current_plate(Plate* plate) {
-        current_handle_.store(plate, std::memory_order_release);
+    bool set_current_plate(Plate* expected, Plate* plate) {
+        return current_handle_.compare_exchange_strong(
+            expected, plate, std::memory_order_acq_rel, std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- No copy/move */
     Placemat(const Placemat&) = delete;
@@ -428,7 +499,7 @@ public:
     /// @brief Heap allocations aligned to 64 bytes for 512-bit registers.
     static const Placemat* const HEAP_ALIGNED;
     /// @brief Heap allocations aligned to the system page size.
-    static const Placemat* const PAGE_ALIGNED;
+    static const Placemat* PAGE_ALIGNED;
     /// @brief Vulkan buffer memory that is unified between host and device.
     static const Placemat* const UNIFIED;
     /// @brief Vulkan buffer memory that is visible to the host.
@@ -439,6 +510,8 @@ public:
     static const Placemat* const HOST_CACHEABLE;
     /// @brief Vulkan buffer memory that resides on the device.
     static const Placemat* const DEVICE;
+    /// @brief The heap built-in backing basic claims.
+    static const Placemat* const BASIC_HEAP;
     /** ------------------------------------------------------------------------------------------- Constructor/Destructor
      * @brief Default constructor and destructor for Placemat. You must arm the placemat_construction
      * gate with set_read_this to prove that you know what you're doing. This prevents language models
@@ -491,14 +564,18 @@ private:
     uint8_t type_ = 0;
     size_t bump_alignment_ = 64;
     size_t default_slab_size_ = 0;
-    std::atomic<Plate*> current_handle_{nullptr};
+    mutable std::atomic<Plate*> current_handle_{nullptr};
     AllocateMethod allocator_ = nullptr;
     DeallocateMethod deallocator_ = nullptr;
     GetContextMethod get_context_ = nullptr;
+    DeviceAddressMethod device_address_ = &host_device_address;
+    /// @brief Optional in-place resize hook; null on placements whose substrate cannot honor it.
+    ResizeMethod resizer_ = nullptr;
     Slice* create_main_slice(const Plate* plate) const;
     Slice create_slice_from(const Plate* plate, size_t offset, size_t size) const;
     friend class BuffetMenu;
     friend class Alligator;
+    friend class Slice;
     friend class Memory;
 };
 /** --------------------------------------------------------------------------------------------------------- SliceId
@@ -507,7 +584,7 @@ private:
  */
 struct alignas(4) SliceId {
 private:
-    uint32_t id_ : POOL_BITS; uint32_t placemat_ : (32 - POOL_BITS);
+    uint32_t id_;
     friend class BuffetMenu; friend class Alligator;
     friend class Slice; friend class Placemat;
 public:
@@ -527,7 +604,7 @@ public:
     SliceId& operator=(const SliceId& other) = default;
     SliceId(SliceId&& other) noexcept { *this = other; other = 0xFFFFFFFFu; }
     SliceId& operator=(SliceId&& other) noexcept { *this = other; other = 0xFFFFFFFFu; return *this; }
-    Placemat* placemat() const; Slice slice(size_t offset = 0, size_t size = SIZE_MAX) const;
+    Slice slice(size_t offset = 0, size_t size = SIZE_MAX) const;
 };
 SETUP_read_this(add_placement, 33 + 66, "You should really call the register_type method instead.")
 /** --------------------------------------------------------------------------------------------------------- BuffetTypeRegistry
@@ -550,6 +627,8 @@ public:
      * @param deallocate The deallocation function for this placement.
      * @param get_context The context retrieval function for this placement.
      * @param set_as_default Whether to set this placement as the default.
+     * @param resize The optional in-place resize hook.
+     * @param device_address The substrate-to-device-address hook, host-only by default.
      * @return The stable placement identifier.
      */
     static uint8_t register_type(
@@ -559,7 +638,9 @@ public:
         AllocateMethod allocate,
         DeallocateMethod deallocate,
         GetContextMethod get_context,
-        bool set_as_default = false
+        bool set_as_default = false,
+        ResizeMethod resize = nullptr,
+        DeviceAddressMethod device_address = &host_device_address
     ) {
         set_read_this(placemat_construction, 4 + 13);
         std::unique_ptr<Placemat> placement = std::make_unique<Placemat>();
@@ -570,14 +651,18 @@ public:
         placement->allocator_ = allocate;
         placement->deallocator_ = deallocate;
         placement->get_context_ = get_context;
+        placement->resizer_ = resize;
+        placement->device_address_ = device_address;
+        placement->type_ = static_cast<uint16_t>(instance().placement_indices_.size());
         if (set_as_default) {
             default_placement_slot() = placement.get();
         }
-        const uint8_t type = static_cast<uint8_t>(instance().placemats().size());
+        const uint8_t type = static_cast<uint8_t>(instance().placement_indices_.size());
         instance().placement_indices_[name] = type;
         set_read_this(add_placement, 90 + 9);
         placemats()[type] = std::move(placement);
         unset_read_this(add_placement);
+        instance().placemat_count_.fetch_add(1, std::memory_order_release);
         return type;
     }
     /** ------------------------------------------------------------------------------------------- Get
@@ -603,7 +688,9 @@ public:
         auto it = instance().placement_indices_.find(name);
         Placemat* placement = nullptr;
         if (it != instance().placement_indices_.end()) {
+            set_read_this(add_placement, 33 + 66);
             placement = instance().placemats().at(it->second).get();
+            unset_read_this(add_placement);
         }
         return placement;
     }
@@ -691,11 +778,13 @@ private:
         AllocateMethod allocate,
         DeallocateMethod deallocate,
         GetContextMethod get_context,
-        bool set_as_default
+        bool set_as_default,
+        ResizeMethod resize = nullptr,
+        DeviceAddressMethod device_address = &host_device_address
     ) {
         if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
         auto& inst = instance();
-        uint16_t type = static_cast<uint16_t>(inst.placemats().size());
+        uint16_t type = static_cast<uint16_t>(inst.placement_indices_.size());
         set_read_this(placemat_construction, 15 + 2);
         auto placement = std::unique_ptr<Placemat>(new Placemat());
         unset_read_this(placemat_construction);
@@ -705,6 +794,8 @@ private:
         placement->bump_alignment_ = bump_alignment;
         placement->deallocator_ = deallocate;
         placement->get_context_ = get_context;
+        placement->resizer_ = resize;
+        placement->device_address_ = device_address;
         placement->type_ = type;
         if (set_as_default || default_placement_slot() == nullptr) {
             default_placement_slot() = placement.get();
@@ -713,6 +804,7 @@ private:
         set_read_this(add_placement, 60 + 39);
         inst.placemats()[static_cast<uint8_t>(type)] = std::move(placement);
         unset_read_this(add_placement);
+        inst.placemat_count_.fetch_add(1, std::memory_order_release);
         inst.notify_change_listeners();
         return type;
     }
@@ -988,6 +1080,11 @@ public:
      * @param other The slice to adopt.
      */
     void adopt(Slice other);
+    /** ------------------------------------------------------------------------------------------- Pool Index
+     * @brief The alligator pool slot this slice occupies; the id bits are all ones when null.
+     * @return The pool slot index.
+     */
+    uint32_t pool_index() const { return id_; }
 private:
     SliceId id_;
     friend class Buffet;
@@ -1412,39 +1509,52 @@ static_assert(SliceType<SliceT<uint8_t>>, "SliceT must satisfy the SliceType con
  * @tparam Func The type of the callable object.
  * @tparam Args The types of the arguments to the callable object.
  */
-template<typename ReturnType = void, typename Func, typename... Args>
-    requires std::is_invocable_r_v<ReturnType, Func, Args...>
+/** --------------------------------------------------------------------------------------------------------- Task
+ * @struct Task
+ * @brief One type-erased unit of executor work: a pair of static operation pointers (run and
+ * destroy, both bound by make_task) plus the packed callable, arguments and promise it owns on
+ * the heap. No virtuals and no std::function; every call lands on a static, concrete method.
+ */
 struct Task {
-    /// @brief The callable object representing the task.
-    Func func; std::tuple<Args...> args;
-    /// @brief The promise used to store the result of the task execution.
-    std::promise<ReturnType> promise;
-    /// @brief The task to be executed after the current task completes.
-    std::unique_ptr<Task<>> after_this_task = nullptr;
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs a new Task object with the given callable and arguments.
-     * @param f The callable object.
-     * @param a The arguments to pass to the callable object.
-     */
-    Task(Func f, Args... a) : func(f), args(std::make_tuple(a...)) {}
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs a new Task object with the given promise, callable, and arguments.
-     * @param p The promise to store the result of the task execution.
-     * @param f The callable object.
-     * @param a The arguments to pass to the callable object.
-     */
-    Task(std::promise<ReturnType> p, Func f, Args... a)
-    : promise(std::move(p)), func(f), args(std::make_tuple(a...)) {}
+    /// @brief Runs the packed state and satisfies its promise; bound by make_task.
+    void (*run_)(Task& task) = nullptr;
+    /// @brief Destroys the packed state; bound by make_task.
+    void (*destroy_)(Task& task) = nullptr;
+    /// @brief The packed callable, arguments and promise owned by this task.
+    void* state_ = nullptr;
+    /// @brief The follow-on task, enqueued by the worker after this one completes.
+    std::unique_ptr<Task> after_this_task = nullptr;
+    Task() = default;
+    Task(Task&& other) noexcept
+    : run_(other.run_)
+    , destroy_(other.destroy_)
+    , state_(std::exchange(other.state_, nullptr))
+    , after_this_task(std::move(other.after_this_task)) {}
+    Task& operator=(Task&& other) noexcept {
+        if (this != &other) {
+            if (state_ != nullptr && destroy_ != nullptr) {
+                destroy_(*this);
+            }
+            run_ = other.run_;
+            destroy_ = other.destroy_;
+            state_ = std::exchange(other.state_, nullptr);
+            after_this_task = std::move(other.after_this_task);
+        }
+        return *this;
+    }
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+    ~Task() {
+        if (state_ != nullptr && destroy_ != nullptr) {
+            destroy_(*this);
+        }
+    }
     /** ------------------------------------------------------------------------------------------- Execute
-     * @brief Executes the task by invoking the callable with the stored arguments and sets the
-     * result in the promise if applicable.
+     * @brief Runs the packed callable with its arguments and satisfies its promise; exceptions
+     * travel to the future.
      */
     void execute() {
-        if constexpr (std::is_same_v<ReturnType, void>) {
-            std::apply(func, args);
-        } else {
-            promise.set_value(std::apply(func, args));
-        }
+        run_(*this);
     }
     /** ------------------------------------------------------------------------------------------- After this
      * @brief Schedules a task to be executed after the current task completes.
@@ -1452,16 +1562,80 @@ struct Task {
      * @tparam Func2 The type of the callable object for the subsequent task.
      * @tparam Args2 The types of the arguments for the subsequent task.
      * @param f The callable object for the subsequent task.
-     * @param a The arguments to pass to the callable object.
+     * @param a The arguments to pass to the subsequent task.
      * @return A future representing the result of the subsequent task.
      */
     template<typename ReturnType2 = void, typename Func2, typename... Args2>
     auto after_this(Func2 f, Args2... a) {
-        auto task = std::make_unique<Task<ReturnType2>>(f, a...);
-        after_this_task = std::move(task);
-        return after_this_task->promise.get_future();
+        auto [task, future] = make_task<ReturnType2>(std::move(f), std::move(a)...);
+        after_this_task = std::make_unique<Task>(std::move(task));
+        return std::move(future);
     }
 };
+/** --------------------------------------------------------------------------------------------------------- Task State
+ * @struct TaskState
+ * @brief The typed heap state behind one Task: the callable, its arguments and its promise, plus
+ * the two static operations the Task carries. One instantiation per make_task call site.
+ * @tparam ReturnType The return type of the callable.
+ * @tparam Func The type of the callable object.
+ * @tparam Args The types of the arguments to the callable.
+ */
+template<typename ReturnType, typename Func, typename... Args>
+    requires std::is_invocable_r_v<ReturnType, Func, Args...>
+struct TaskState {
+    /// @brief The callable object representing the task.
+    Func func;
+    /// @brief The arguments to pass to the callable.
+    std::tuple<Args...> args;
+    /// @brief The promise used to store the result of the task execution.
+    std::promise<ReturnType> promise;
+    /** ------------------------------------------------------------------------------------------- Run
+     * @brief Invokes the packed callable and satisfies the promise, routing exceptions to the future.
+     * @param task The task whose state is being run.
+     */
+    static void run(Task& task) {
+        TaskState* state = static_cast<TaskState*>(task.state_);
+        try {
+            if constexpr (std::is_same_v<ReturnType, void>) {
+                std::apply(state->func, state->args);
+                state->promise.set_value();
+            } else {
+                state->promise.set_value(std::apply(state->func, state->args));
+            }
+        } catch (...) {
+            state->promise.set_exception(std::current_exception());
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Destroy
+     * @brief Destroys the packed state once the task has run or been dropped.
+     * @param task The task whose state is being destroyed.
+     */
+    static void destroy(Task& task) {
+        delete static_cast<TaskState*>(task.state_);
+        task.state_ = nullptr;
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- Make Task
+ * @brief The Task factory: packs one typed unit of work into an erased Task and returns the
+ * future its promise will satisfy.
+ * @tparam ReturnType The return type of the callable.
+ * @tparam Func The type of the callable object.
+ * @tparam Args The types of the arguments to the callable.
+ * @param f The callable object.
+ * @param a The arguments to pass to the callable.
+ * @return The task and its future.
+ */
+template<typename ReturnType = void, typename Func, typename... Args>
+    requires std::is_invocable_r_v<ReturnType, Func, Args...>
+std::pair<Task, std::future<ReturnType>> make_task(Func f, Args... a) {
+    using State = TaskState<ReturnType, Func, Args...>;
+    Task task;
+    task.state_ = new State{std::move(f), std::make_tuple(std::move(a)...), std::promise<ReturnType>()};
+    task.run_ = &State::run;
+    task.destroy_ = &State::destroy;
+    std::future<ReturnType> future = static_cast<State*>(task.state_)->promise.get_future();
+    return {std::move(task), std::move(future)};
+}
 class ConcurrentBitplane;
 /** --------------------------------------------------------------------------------------------------------- Arena
  * @class Alligator
@@ -1471,24 +1645,24 @@ class Alligator {
 private:
     std::atomic<uint64_t> next_slice_{};
     SliceId next_id();
-    std::atomic<size_t> thread_count_{0};
     std::atomic<size_t> requested_thread_count_{1};
     std::atomic<bool> stop_signal_{false};
-    moodycamel::BlockingConcurrentQueue<Task<>> task_queue_;
+    moodycamel::BlockingConcurrentQueue<Task> task_queue_;
     struct WorkerThread;
     std::array<std::atomic<WorkerThread*>, 32> worker_threads_;
-    Slice plates_;
-    Slice host_ptrs_;
-    Slice gpubufs_;
+    struct GatorBuf;
+    GatorBuf* plates_;
+    GatorBuf* host_ptrs_;
+    /// @brief The shared GPUBuf table, one plate the host writes and shaders read in place.
+    Placemat::Plate* gpubufs_;
     std::unique_ptr<ConcurrentBitplane> occupancy_;
     Placemat::Plate*& plate(SliceId slice_id);
     const Placemat::Plate*& plate(const SliceId& slice_id) const;
-    HostPtr*& host_ptr(SliceId slice_id);
-    const HostPtr*& host_ptr(const SliceId& slice_id) const;
-    GPUBuf*& gpubuf(SliceId slice_id);
-    const GPUBuf*& gpubuf(const SliceId& slice_id) const;
+    HostPtr* host_ptr(SliceId slice_id);
+    const HostPtr* host_ptr(const SliceId& slice_id) const;
+    GPUBuf* gpubuf(SliceId slice_id);
+    const GPUBuf* gpubuf(const SliceId& slice_id) const;
     void destroy(SliceId slice_id);
-    std::array<std::atomic<Placemat::Plate*>, 256> current_plates_;
     Alligator();
     ~Alligator();
     static Alligator& inst();
@@ -1497,11 +1671,44 @@ private:
     friend class Slice;
     friend class Memory;
     friend class SliceFriend;
+    friend class VulkanKernel;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
     Alligator(Alligator&&) = delete;
     Alligator& operator=(Alligator&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Plate For
+     * @brief Resolves the plate backing a live slice; the substrate reaches its slab metadata
+     * through the plate's substrate_handle.
+     * @param slice The slice to resolve.
+     * @return The backing plate, or nullptr when the slot is unoccupied.
+     */
+    static Placemat::Plate* plate_for(const Slice& slice) {
+        return inst().plate(static_cast<SliceId>(slice.pool_index()));
+    }
+    /** ------------------------------------------------------------------------------------------- GPUBuf For
+     * @brief The writable GPUBuf half for a live slice, nullptr when the slot is unoccupied.
+     * @param slice The slice to resolve.
+     * @return The slice's GPUBuf entry.
+     */
+    static GPUBuf* gpubuf_for(const Slice& slice) {
+        return inst().gpubuf(static_cast<SliceId>(slice.pool_index()));
+    }
+    /** ------------------------------------------------------------------------------------------- Host Table
+     * @brief The host pointer table's first entry; kernels index it by pool index at an 8-byte stride.
+     * @return The table base.
+     */
+    static const HostPtr* host_table();
+    /** ------------------------------------------------------------------------------------------- GPU Table
+     * @brief The shared GPUBuf table's host mapping, the same bytes shaders read at gpu_table_address().
+     * @return The table base.
+     */
+    static const GPUBuf* gpu_table();
+    /** ------------------------------------------------------------------------------------------- GPU Table Address
+     * @brief The shared GPUBuf table's device address for the kernel push block.
+     * @return The device address, 0 without a compute device.
+     */
+    static uint64_t gpu_table_address();
     /** ------------------------------------------------------------------------------------------- Submit task
      * @brief Submits a task to the Alligator.
      * @tparam ReturnType The return type of the task.
@@ -1514,25 +1721,17 @@ public:
     template<typename ReturnType = void, typename Func, typename... Args>
         requires std::is_invocable_r_v<ReturnType, Func, Args...>
     auto submit(Func f, Args... a) {
-        std::promise<ReturnType> promise;
-        auto task = Task<ReturnType>(std::move(promise), f, a...);
-        task_queue_.enqueue(task);
-        return task.promise.get_future();
+        auto [task, future] = make_task<ReturnType>(std::move(f), std::move(a)...);
+        task_queue_.enqueue(std::move(task));
+        return std::move(future);
     }
     /** ------------------------------------------------------------------------------------------- Submit task (pre-constructed)
-     * @brief Submits a pre-constructed task to the Alligator.
-     * @tparam ReturnType The return type of the task.
-     * @tparam Func The type of the callable object.
-     * @tparam Args The types of the arguments to the callable object.
+     * @brief Submits a pre-constructed erased task to the Alligator; hold the future make_task
+     * already returned for it.
      * @param task The pre-constructed task to be submitted.
-     * @return A std::future representing the result of the submitted task.
      */
-    template<typename ReturnType = void, typename Func, typename... Args>
-        requires std::is_invocable_r_v<ReturnType, Func, Args...>
-    auto submit(Task<ReturnType, Func, Args...> task) {
-        std::future<ReturnType> future = task.promise.get_future();
-        task_queue_.enqueue(task);
-        return future;
+    void submit(Task&& task) {
+        task_queue_.enqueue(std::move(task));
     }
 };
 EXCEPTION_CLASS(Atomic)
@@ -4721,29 +4920,6 @@ public:
     static DeviceMemoryUsage memory_usage();
 };
 #endif
-/** --------------------------------------------------------------------------------------------------------- Vulkan Allocator
- * @class VulkanAllocator
- * @brief Allocates mapped coherent slabs on one caller-owned process-lifetime Vulkan device.
- */
-class VulkanAllocator {
-public:
-    /** ------------------------------------------------------------------------------------------- Register Type
-     * @brief Registers a Vulkan 1.1-or-newer device after resolving its coherent buffer memory type.
-     */
-    static const Placemat* register_type(VkPhysicalDevice physical_device, VkDevice device);
-    /** ------------------------------------------------------------------------------------------- Buffer
-     * @brief Returns the borrowed storage and transfer buffer backing a Vulkan Slice's slab.
-     */
-    static VkBuffer buffer(const Slice& slice);
-    /** ------------------------------------------------------------------------------------------- Buffer Offset
-     * @brief Returns a Vulkan Slice's byte offset within its slab buffer.
-     */
-    static VkDeviceSize buffer_offset(const Slice& slice);
-    /** ------------------------------------------------------------------------------------------- Memory Usage
-     * @brief Reports the selected heap's capacity and optional EXT_memory_budget measurements.
-     */
-    static DeviceMemoryUsage memory_usage();
-};
 /** --------------------------------------------------------------------------------------------------------- GPUException
  * @class GPUException
  * @brief A GPUException is thrown when a GPU operation fails.
@@ -4901,14 +5077,15 @@ public:
      * @brief Checks if the slice is null (i.e., has no underlying memory).
      * @return True if the slice is null, false otherwise.
      */
-    bool is_null() const { return meta_ == 0xFFFFFFFFu; }
+    bool is_null() const { return slice_.is_null(); }
     /** ------------------------------------------------------------------------------------------- Check if slice is valid
      * @brief Checks if the slice is valid (i.e., has underlying memory).
      * @return True if the slice is valid, false otherwise.
      */
     bool valid() const { return !is_null(); }
     /// Borrowed pool index; retain this exact GPUSlice until Kernel completion.
-    uint32_t pool_index() const { return meta_; }
+    uint32_t pool_index() const { return slice_.pool_index(); }
+
     /** ------------------------------------------------------------------------------------------- Conversion to bool
      * @brief Allows the slice to be used in boolean contexts.
      * @return True if the slice is valid, false if it is null.
@@ -4948,13 +5125,13 @@ public:
      */
     const Slice& root_slice() const;
 private:
-    uint32_t meta_ = 0xFFFFFFFFu;
+    Slice slice_;
 };
 /// @brief Forward declaration of the internal shader state used by the Shader class.
 class ShaderState;
 /** --------------------------------------------------------------------------------------------------------- Shader
  * @class Shader
- * @brief Prepared `nebula_main(Slice)` GLSL: a call binds a list of slices and each workgroup
+ * @brief Prepared `alligator_main(Slice)` GLSL: a call binds a list of slices and each workgroup
  * column processes its own slice in place.
  */
 class Shader {
@@ -4964,12 +5141,12 @@ private:
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Compiles GLSL and prepares every Vulkan resource used by subsequent calls.
-     * @param source GLSL defining `void nebula_main(Slice slice)`, the slice this workgroup owns.
+     * @param source GLSL defining `void alligator_main(Slice slice)`, the slice this workgroup owns.
      * @param name Diagnostic name reported by shader compilation errors.
      */
     explicit Shader(
         std::string_view source,
-        std::string_view name = "nebula_shader"
+        std::string_view name = "alligator_shader"
     );
     /** ------------------------------------------------------------------------------------------- Move-only ownership */
     Shader(const Shader&) = delete;
@@ -5059,7 +5236,7 @@ struct GPU {
      */
     static void run(const Slice& program, GPUSlice* streams, size_t stream_count);
     /** ------------------------------------------------------------------------------------------- compile_glsl
-     * @brief Compiles a kernel body under the nebula prelude into SPIR-V words held in a Slice.
+     * @brief Compiles a kernel body under the alligator prelude into SPIR-V words held in a Slice.
      * The body defines main() against the prelude's Slice-addressing helpers; the workgroup shape
      * (16x4) and the 8-byte job-table push block are injected.
      * @param body GLSL defining main(); the shape is injected, not authored.

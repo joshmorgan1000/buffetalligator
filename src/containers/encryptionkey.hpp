@@ -563,7 +563,7 @@ public:
         EVP_PKEY_CTX_free(dctx);
         EVP_PKEY_free(ephem);
         unsigned char derived[32];
-        static constexpr uint8_t kInfo[] = "nebula-ecies/v1";
+        static constexpr uint8_t kInfo[] = "alligator-ecies/v1";
         hkdf_sha256_(shared, 32, kInfo, sizeof(kInfo) - 1, derived);
         if (RAND_bytes(out + 32, 12) != 1) {
             ENCRYPTION_THROW("RAND_bytes (ECIES nonce)");
@@ -613,7 +613,7 @@ public:
         EVP_PKEY_CTX_free(dctx);
         EVP_PKEY_free(ephem_pub);
         unsigned char derived[32];
-        static constexpr uint8_t kInfo[] = "nebula-ecies/v1";
+        static constexpr uint8_t kInfo[] = "alligator-ecies/v1";
         hkdf_sha256_(shared, 32, kInfo, sizeof(kInfo) - 1, derived);
         aes_gcm_decrypt_(derived, nonce_copy.data(),
                          in + 44, cipher_len, tag_copy.data(), out);

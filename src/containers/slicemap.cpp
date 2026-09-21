@@ -574,7 +574,7 @@ Slice SliceMap::get_slice_internal(int64_t identifier) const {
     MapHazard state_hazard(0), payload_hazard(1);
     State* state = state_hazard.protect(state_);
     State::Node* node = state->find(State::hash(identifier));
-    if (!node) return {};
+    if (!node) return Slice();
     State::Payload* payload = payload_hazard.protect(node->current);
     return payload->slice;
 }

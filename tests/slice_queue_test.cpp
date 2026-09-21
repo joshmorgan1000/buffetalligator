@@ -163,7 +163,7 @@ static void concurrent(size_t producers, size_t consumers, bool bulk) {
  * @brief Runs the public queue contract without a moodycamel dependency.
  */
 int main() {
-    static_assert(sizeof(Slice) == 16);
+    static_assert(sizeof(Slice) == 4);
     static_assert(!std::is_copy_constructible_v<SliceQueue::Producer>);
     static_assert(!std::is_move_constructible_v<SliceQueue::Consumer>);
     undelivered();

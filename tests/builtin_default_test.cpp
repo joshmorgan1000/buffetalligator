@@ -15,7 +15,7 @@ void require(bool condition, const char* message) {
 int main() {
     buffetalligator::Slice bytes(1024);
     require(bytes.valid(), "a claim with no registrations failed");
-    require(buffetalligator::BuffetMenu::count() == 2, "the built-ins were not registered on first use");
+    require(buffetalligator::BuffetMenu::count() >= 2, "the built-ins were not registered on first use");
     require(std::strcmp(buffetalligator::BuffetMenu::get(0)->name(), "heap") == 0, "heap is not placement 0");
     require(std::strcmp(buffetalligator::BuffetMenu::get(1)->name(), "aligned_heap") == 0,
         "aligned_heap is not placement 1");

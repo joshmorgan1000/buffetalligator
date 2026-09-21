@@ -37,5 +37,17 @@ public:
      * @return The number of bytes currently allocated on the Vulkan device.
      */
     static uint64_t gpu_usage();
+    /** ------------------------------------------------------------------------------------------- gpu_pool_address
+     * @brief The device address of the alligator's GPUBuf table for shader-side slice
+     * resolution; 0 while the table is host-only.
+     * @return The table's device address.
+     */
+    static uint64_t gpu_pool_address();
+    /** ------------------------------------------------------------------------------------------- table_placement
+     * @brief The placement the shared GPUBuf table lives on: the coherent zero-copy rung with a
+     * device, plain heap without one.
+     * @return The placement.
+     */
+    static const Placemat* table_placement();
 };
 } // namespace buffetalligator

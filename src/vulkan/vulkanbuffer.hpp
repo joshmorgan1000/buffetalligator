@@ -1,7 +1,7 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- VulkanBuffer
  * @file vulkanbuffer.hpp
- * @brief Vulkan slab provider for the Nebula Buffer model: allocates mapped, device-addressable,
+ * @brief Vulkan slab provider for the Buffet Alligator Buffer model: allocates mapped, device-addressable,
  * zero-initialized storage buffers and destroys them when a slab's reference count drains.
  */
 #include <logging.hpp>
@@ -22,7 +22,8 @@ private:
     vk::Buffer buffer_{};          ///< Vulkan buffer handle (the compute target).
     vk::DeviceMemory memory_{};    ///< Backing memory allocation.
     void* host_ = nullptr;         ///< Persistent CPU mapping.
-    GPUBuf* gpu_buf_ = nullptr;    ///< Pointer to the GPU buffer representation.
+    uint64_t address_ = 0;         ///< Device address (the shader-side pointer).
+    uint64_t size_ = 0;            ///< Size in bytes.
     VulkanBuffer() = default;
     friend class VulkanContext;
     friend struct VulkanStaticMethods;
@@ -52,17 +53,17 @@ public:
      * @brief Retrieves the device address of the Vulkan buffer.
      * @return The device address.
      */
-    uint64_t address() const;
+    uint64_t address() const { return address_; }
     /** ------------------------------------------------------------------------------------------- size
      * @brief Retrieves the size of the Vulkan buffer.
      * @return The size of the buffer in bytes.
      */
-    uint64_t size() const;
+    uint64_t size() const { return size_; }
     /** ------------------------------------------------------------------------------------------- host
      * @brief Retrieves the host pointer of the Vulkan buffer.
      * @return The host pointer.
      */
-    void* host() const;
+    void* host() const { return host_; }
 };
 /** --------------------------------------------------------------------------------------------------------- Vulkan Static Methods
  * @struct VulkanStaticMethods
@@ -93,6 +94,12 @@ struct VulkanStaticMethods {
      * @return A pointer to the Vulkan context.
      */
     static void* vulkan_get_context();
+    /** ------------------------------------------------------------------------------------------- Device Address
+     * @brief The device address of a slab's first byte.
+     * @param substrate_handle The VulkanBuffer handle backing the slab.
+     * @return The buffer device address.
+     */
+    static uint64_t vulkan_device_address(void* substrate_handle);
 };
 /** --------------------------------------------------------------------------------------------------------- PlacementIndex
  * @enum PlacementIndex
@@ -125,7 +132,8 @@ struct VulkanPlacements {
         static const Placemat* placemat = BuffetMenu::get(BuffetMenu::register_type(
             name, 64 * 1024 * 1024, 4096,
             &VulkanStaticMethods::vulkan_allocator, &VulkanStaticMethods::vulkan_deallocate,
-            &VulkanPlacements::rung_context<Rung>, false));
+            &VulkanPlacements::rung_context<Rung>, false, nullptr,
+            &VulkanStaticMethods::vulkan_device_address));
         return placemat;
     }
     /** ------------------------------------------------------------------------------------------- Prime

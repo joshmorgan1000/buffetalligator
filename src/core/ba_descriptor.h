@@ -7,17 +7,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define BA_SLOT_BITS 17
-#define BA_SLOT_MASK ((1ull << BA_SLOT_BITS) - 1ull)
-#define BA_NULL_META UINT64_MAX
+#define BA_NULL_ID UINT32_MAX
 enum { BA_CLAIM_NOVEL = 1u << 0 };
 /** --------------------------------------------------------------------------------------------------------- Descriptor
- * @brief Mirrors the public Slice's 16-byte layout; consumers transfer descriptors without
- * interpreting their contents.
+ * @brief Carries one alligator pool id; consumers transfer descriptors without interpreting
+ * their contents and resolve size and pointer through the boundary helpers.
  */
 typedef struct ba_slice {
-    uint64_t meta; ///< Opaque descriptor word owned by the C++ arena.
-    void* ptr; ///< Cached host pointer carried beside the descriptor.
+    uint32_t id; ///< The alligator pool slot; BA_NULL_ID when null.
 } ba_slice_t;
 /** --------------------------------------------------------------------------------------------------------- Claim
  * @brief Claims zeroed arena storage for a registered placement or returns nonzero.
@@ -35,6 +32,14 @@ uint32_t ba_slice_placement(const ba_slice_t* descriptor);
  * @brief Reports whether a live descriptor's backing is a dedicated novel buffer.
  */
 int ba_slice_is_novel(const ba_slice_t* descriptor);
+/** --------------------------------------------------------------------------------------------------------- Slice Size
+ * @brief Resolves a live descriptor's byte size; 0 when null.
+ */
+size_t ba_slice_size(const ba_slice_t* descriptor);
+/** --------------------------------------------------------------------------------------------------------- Slice Pointer
+ * @brief Resolves a live descriptor's host pointer; NULL when null.
+ */
+void* ba_slice_ptr(const ba_slice_t* descriptor);
 /** --------------------------------------------------------------------------------------------------------- Placement Name
  * @brief Returns a registered placement's process-lifetime name, or NULL when unknown.
  */

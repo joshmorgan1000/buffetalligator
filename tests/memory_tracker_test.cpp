@@ -3,12 +3,12 @@
  * @brief Checks allocation counters and optional code-location records in both build modes.
  */
 #include <alligator.hpp>
-#include <memory/slicefriend.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <future>
 #include <memory>
 #include <semaphore>
 
@@ -32,35 +32,30 @@ std::binary_semaphore release_deallocation{0};
 /** --------------------------------------------------------------------------------------------------------- Allocate
  * @brief Allocates backing storage and records successful placement callbacks independently.
  */
-Placemat::Handle* allocate(size_t bytes, void*) {
+std::pair<void*, void*> allocate(size_t bytes, void*) {
     if (reject_allocation.exchange(false)) throw std::bad_alloc();
     auto allocation = std::make_unique<Allocation>();
     allocation->bytes = bytes;
     allocation->memory = std::calloc(1, bytes);
     if (!allocation->memory) throw std::bad_alloc();
-    auto handle = std::make_unique<Placemat::Handle>(allocation.get(), nullptr);
-    allocation.release();
+    void* substrate = allocation.release();
     allocated_bytes.fetch_add(bytes, std::memory_order_relaxed);
-    return handle.release();
+    return {static_cast<Allocation*>(substrate)->memory, substrate};
 }
 /** --------------------------------------------------------------------------------------------------------- Deallocate
  * @brief Pauses selected teardown callbacks before recording completed backing releases.
  */
-void deallocate(Placemat::Handle* handle, void*) {
+std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
+    static_cast<void>(host_ptr);
     if (hold_deallocation.exchange(false)) {
         deallocation_entered.release();
         release_deallocation.acquire();
     }
-    auto* allocation = static_cast<Allocation*>(handle->substrate_handle);
+    auto* allocation = static_cast<Allocation*>(substrate_handle);
     const size_t bytes = allocation->bytes;
     delete allocation;
     freed_bytes.fetch_add(bytes, std::memory_order_relaxed);
-}
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief Returns the test allocation's backing address.
- */
-void* host_pointer(Placemat::Handle* handle) {
-    return static_cast<Allocation*>(handle->substrate_handle)->memory;
+    return {nullptr, nullptr};
 }
 /** --------------------------------------------------------------------------------------------------------- Context
  * @brief Returns the unused placement context.
@@ -77,12 +72,12 @@ void tracking() {
     constexpr size_t slab_bytes = 64ull * 1024 * 1024;
     constexpr size_t novel_bytes = 8192;
     const uint16_t type = BuffetMenu::register_type(
-        "tracker_test", slab_bytes, 64, allocate, deallocate, host_pointer, context, true
+        "tracker_test", slab_bytes, 64, allocate, deallocate, context, true
     );
     const Placemat& placement = *BuffetMenu::get(type);
     Slice warmup(64);
     const size_t initial_allocations = allocated_bytes.load(std::memory_order_relaxed);
-    require(initial_allocations == 2 * slab_bytes, "initial slab allocation count differs");
+    require(initial_allocations == 3 * slab_bytes, "initial slab allocation count differs");
     const size_t global_allocations = Memory::total_allocations();
     const size_t global_freed = Memory::total_freed();
     require(Memory::placement_allocations(placement) == initial_allocations,
@@ -97,8 +92,8 @@ void tracking() {
     require(Memory::total_allocations() == global_allocations,
         "tracker counted a failed allocation");
     Slice novel(novel_bytes, true);
-    const Placemat::Handle* handle = Placemat::get_for(&novel);
-    const auto details = Memory::allocation_info(handle);
+    const Placemat::Plate* plate = Alligator::plate_for(novel);
+    const auto details = Memory::allocation_info(plate);
     if constexpr (BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING) {
         require(details.has_value(), "enabled tracking omitted a live allocation record");
         require(details->size == novel_bytes && details->placement == type &&
@@ -123,13 +118,13 @@ void tracking() {
         "last Slice did not schedule its backing deallocation");
     require(Memory::total_freed() == global_freed && Memory::placement_freed(placement) == 0,
         "tracker reported deallocation before the callback completed");
-    require(Memory::allocation_info(handle).has_value() ==
+    require(Memory::allocation_info(plate).has_value() ==
         bool(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING),
         "location record retired before the deallocation callback completed");
     release_deallocation.release();
-    require(SliceFriend::execute_async<size_t>(completed_frees).get() == novel_bytes,
+    require(std::async(std::launch::async, completed_frees).get() == novel_bytes,
         "backing was not deallocated exactly once");
-    require(!Memory::allocation_info(handle), "completed deallocation retained a location record");
+    require(!Memory::allocation_info(plate), "completed deallocation retained a location record");
     require(Memory::total_freed() == global_freed + novel_bytes &&
         Memory::placement_freed(placement) == novel_bytes &&
         Memory::placement_usage(placement) == initial_allocations,
@@ -139,7 +134,7 @@ void tracking() {
         auto producer = queue.producer(0);
         producer.push(Slice(64, true));
     }
-    require(SliceFriend::execute_async<size_t>(completed_frees).get() == novel_bytes + 64,
+    require(std::async(std::launch::async, completed_frees).get() == novel_bytes + 64,
         "queue destruction leaked its undelivered backing");
     require(Memory::placement_allocations(placement) == allocated_bytes.load() &&
         Memory::placement_freed(placement) == freed_bytes.load(),
