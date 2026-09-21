@@ -3,14 +3,38 @@
  * @brief Implements registered placement chains, background replenishment, and Slice lifetime.
  */
 #include <alligator.hpp>
-#include <memory/alligator.hpp>
-#include <memory/buffet.hpp>
-#include <memory/slicefriend.hpp>
+#include <containers/bitplane.hpp>
+#include <memory/tracker.hpp>
 #include <simd.hpp>
 #include <algorithm>
 #include <cstring>
 
 namespace buffetalligator {
+/** --------------------------------------------------------------------------------------------------------- Record Slab Allocation
+ * @brief Reports one completed slab allocation to the memory tracker.
+ * @param plate The plate that now owns the slab.
+ */
+void Placemat::record_slab_allocation(const Plate* plate) {
+    const size_t bytes = plate->size != 0 ? plate->size : plate->bump->load(std::memory_order_acquire);
+    Memory::record_allocation(*plate->placemat, bytes);
+    Memory::record_code_location(*plate->placemat, bytes, plate);
+}
+/** --------------------------------------------------------------------------------------------------------- Record Slab Release
+ * @brief Reports one completed slab release to the memory tracker.
+ * @param plate The plate whose slab was just returned.
+ */
+void Placemat::record_slab_release(const Plate* plate) {
+    const size_t bytes = plate->size != 0 ? plate->size : plate->bump->load(std::memory_order_acquire);
+    Memory::record_deallocation(*plate->placemat, bytes);
+    Memory::forget_code_location(plate);
+}
+/** --------------------------------------------------------------------------------------------------------- Call Free Later
+ * @brief Hands a plate's reference drop to the allocator thread.
+ * @param plate The plate to free.
+ */
+void Placemat::call_free_later(Plate* plate) {
+    Alligator::inst().submit([](Plate* later) { later->free(); }, plate);
+}
 /** --------------------------------------------------------------------------------------------------------- Default Placement
  * @brief Returns the default placement for slices, which is determined by the system's
  * capabilities.
@@ -19,13 +43,89 @@ namespace buffetalligator {
 const Placemat* Slice::default_placement() {
     return BuffetMenu::default_placement();
 }
+/** --------------------------------------------------------------------------------------------------------- Claim
+ * @brief Claims a sub-allocation from this plate if the plate has it available. If it does not, we try the
+ * next plate in the chain. Please do not modify this method without discussing it with the team.
+ * @param size The size of the sub-allocation to claim.
+ * @return A tuple containing the plate pointer, the current bump pointer, and
+ * the size of the allocation - this area in memory is now owned by the caller.
+ */
+Slice Placemat::Plate::claim(size_t size, bool novel_buffer) {
+    // Bump the reference count to ensure this plate isn't freed prematurely.
+    if (ref_count->fetch_add(1, std::memory_order_acquire) < 1) [[unlikely]] {
+        // This plate was already released, so claim through the live head instead.
+        return placemat->current_plate()->claim(size, novel_buffer);
+    }
+    if (size > this->size || novel_buffer) {
+        // The requested size is larger than we normally allocate the entire
+        // plate for, so we're just going to give you your own dedicated
+        // allocation.
+        auto [a, b] = placemat->allocate()(size, placemat->get_context()());
+        SliceId slice_id = Alligator::inst().next_id();
+        Plate* novel = new Plate(placemat, size, a, b, true);
+        record_slab_allocation(novel);
+        Alligator::inst().plate(slice_id) = novel;
+        (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{novel->device_base, static_cast<uint32_t>(size), 0};
+        (*Alligator::inst().host_ptr(slice_id)) = HostPtr{a};
+        Slice result(slice_id);
+        Alligator::inst().submit([](Placemat::Plate* plate) { plate->free(); }, this);
+        return result;
+    }
+    // Claims advance by the placement's alignment so every slice start stays aligned.
+    const size_t alignment = placemat->bump_alignment_;
+    const size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
+    size_t prev_bump = bump->fetch_add(aligned_size, std::memory_order_acquire);
+    if (prev_bump + size > this->size) {
+        // We don't subtract the bump because that can create a race condition.
+        // We'll just call this one full. Here we do our trick where we
+        // delete the slice that we've been holding as a token.
+        // If it weren't for the ref_count add a few lines up, this could
+        // potentially trigger a call to `free()` prematurely.
+        Slice* swap = slice->exchange(nullptr, std::memory_order_acquire);
+        if (swap != nullptr) delete swap;
+        // Publish the ready successor only if this plate is still the head.
+        Plate* successor = next(0);
+        if (placemat->set_current_plate(this, successor)) {
+            // The winner keeps two slabs ahead of the new head.
+            (void)successor->next(1);
+        }
+        // Claim from the successor before releasing the pin on this plate.
+        Slice result = successor->claim(size);
+        // NOW we can safely free this plate without affecting the claim we
+        // just made.
+        Alligator::inst().submit([](Placemat::Plate* plate) { plate->free(); }, this);
+        return result;
+    }
+    // If we reach here, it means we successfully claimed from this plate.
+    SliceId slice_id = Alligator::inst().next_id();
+    Alligator::inst().plate(slice_id) = this;
+    (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{
+        device_base + prev_bump, static_cast<uint32_t>(size), static_cast<uint32_t>(prev_bump)};
+    (*Alligator::inst().host_ptr(slice_id)) = HostPtr{
+        static_cast<uint8_t*>(host_ptr) + prev_bump};
+    Slice result(slice_id);
+    Alligator::inst().submit([](Placemat::Plate* plate) { plate->free(); }, this);
+    return result;
+}
+/** --------------------------------------------------------------------------------------------------------- Constructor - SliceId
+ * @brief Constructs a slice object from an existing SliceId.
+ * @param slice_id The identifier of the slice.
+ */
+Slice::Slice(SliceId slice_id) : id_(slice_id) {
+    if (slice_id == static_cast<SliceId>(0xFFFFFFFFu)) return;
+    if (!Alligator::inst().occupancy_->is_set(slice_id.id_)) {
+        id_ = 0xFFFFFFFFu;
+        return;
+    }
+    Alligator::inst().plate(slice_id)->ref_count->fetch_add(1, std::memory_order_relaxed);
+}
 /** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
- * slice is guaranteed to be zero-initialized.
+ * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
+ * guaranteed to be zero-initialized.
  * @param size The size of the slice in bytes.
  */
 Slice::Slice(size_t size, const Placemat* placement) {
-    *this = Alligator::instance().current_for_placement(placement->type())->claim(size);
+    *this = placement->current_plate()->claim(size, false);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
  * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with
@@ -37,7 +137,7 @@ Slice::Slice(size_t size, const Placemat* placement) {
  * reduce fragmentation in the arena.
  */
 Slice::Slice(size_t size, bool novel_buffer, const Placemat* placement) {
-    *this = Alligator::instance().current_for_placement(placement->type())->claim(size, novel_buffer);
+    *this = placement->current_plate()->claim(size, novel_buffer);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
  * @brief Copies data from an external memory location into a new slice of memory in the
@@ -58,23 +158,24 @@ Slice::Slice(
     if (copy_from == nullptr || size == 0) {
         return;
     }
-    *this = Alligator::instance().current_for_placement(
-        placement->type())->claim(copy_from, size, novel_buffer
-    );
+    *this = placement->current_plate()->claim(size, novel_buffer);
+    std::memcpy(Alligator::inst().host_ptr(id_)->ptr, copy_from, size);
 }
 /** --------------------------------------------------------------------------------------------------------- Copy/move semantics
  * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
  * much like `std::shared_ptr` in that they share the same reference counter and underlying
  * memory. Move semantics transfer ownership without reference-counting traffic.
  */
-Slice::Slice(const Slice& other)
-: meta_(other.meta_)
-, cached_(other.cached_) {
-    if (cached_) {
-        Alligator::instance().get(meta_ & 0x1FFFFu)->ref_count_.fetch_add(
-            1, std::memory_order_acq_rel
-        );
+Slice::Slice(const Slice& other) {
+    if (other.id_ == 0xFFFFFFFFu || Alligator::inst().plate(other.id_) == nullptr) {
+        id_ = 0xFFFFFFFFu;
+        return;
     }
+    id_ = Alligator::inst().next_id();
+    (*Alligator::inst().gpubuf(id_)) = (*Alligator::inst().gpubuf(other.id_));
+    (*Alligator::inst().host_ptr(id_)) = (*Alligator::inst().host_ptr(other.id_));
+    Alligator::inst().plate(id_) = Alligator::inst().plate(other.id_);
+    Alligator::inst().plate(id_)->ref_count->fetch_add(1, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Copy assignment operator
  * @brief Assigns the contents of one `Slice` to another, sharing the same underlying memory
@@ -85,12 +186,8 @@ Slice::Slice(const Slice& other)
 Slice& Slice::operator=(const Slice& other) {
     if (this != &other) {
         free();
-        meta_ = other.meta_;
-        cached_ = other.cached_;
-        if (cached_) {
-            uint32_t slot = meta_ & 0x1FFFFu;
-            Alligator::instance().get(slot)->ref_count_.fetch_add(1, std::memory_order_acq_rel);
-        }
+        Slice other_copy(other);
+        *this = std::move(other_copy);
     }
     return *this;
 }
@@ -99,11 +196,9 @@ Slice& Slice::operator=(const Slice& other) {
  * underlying memory.
  * @param other The `Slice` to move from.
  */
-Slice::Slice(Slice&& other) noexcept
-: meta_(other.meta_)
-, cached_(other.cached_) {
-    other.meta_ = UINT64_MAX;
-    other.cached_ = nullptr;
+Slice::Slice(Slice&& other) noexcept {
+    id_ = other.id_;
+    other.id_ = 0xFFFFFFFFu;
 }
 /** --------------------------------------------------------------------------------------------------------- Move assignment operator
  * @brief Moves the contents of one `Slice` to another, transferring ownership of the
@@ -114,10 +209,8 @@ Slice::Slice(Slice&& other) noexcept
 Slice& Slice::operator=(Slice&& other) noexcept {
     if (this != &other) {
         free();
-        meta_ = other.meta_;
-        cached_ = other.cached_;
-        other.meta_ = UINT64_MAX;
-        other.cached_ = nullptr;
+        id_ = other.id_;
+        other.id_ = 0xFFFFFFFFu;
     }
     return *this;
 }
@@ -126,12 +219,10 @@ Slice& Slice::operator=(Slice&& other) noexcept {
  * @return The `Placement` enum value representing the slice's memory placement.
  */
 const Placemat* Slice::placement() const {
-    if (!cached_) {
+    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
         return nullptr;
     }
-    uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffer = Alligator::instance().get(slot);
-    return buffer ? buffer->placement() : nullptr;
+    return Alligator::inst().plate(id_)->placemat;
 }
 /** --------------------------------------------------------------------------------------------------------- Create new view
  * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new view shares
@@ -147,30 +238,29 @@ Slice Slice::slice(size_t offset, size_t length) const {
         return Slice();
     }
     if (offset == 0 && length == SIZE_MAX) {
-        return *this;
+        return Slice(*this);
     }
-    if (meta_ == UINT64_MAX) {
+    if (is_null()) {
         return Slice();
     }
-    uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffet = Alligator::instance().get(slot);
-    if (buffet == nullptr) {
-        return Slice();
-    }
-    const size_t slice_size = size_bytes();
-    if (offset >= slice_size) {
+    const size_t current_size = size_bytes();
+    if (offset >= current_size) {
         ALLIGATOR_THROW("Slice::slice: offset exceeds slice size");
     }
-    const size_t view_size = slice_size - offset;
-    if (length != SIZE_MAX && length > view_size) {
+    const size_t view_size = current_size - offset;
+    if (length == SIZE_MAX) {
+        length = view_size;
+    } else if (length > view_size) {
         ALLIGATOR_THROW("Slice::slice: length exceeds slice size");
     }
-    const size_t result_size = length == SIZE_MAX ? view_size : length;
-    Slice result;
-    result.meta_ = (static_cast<uint64_t>(result_size) << 17) | (meta_ & 0x1FFFFu);
-    result.cached_ = static_cast<uint8_t*>(cached_) + offset;
-    buffet->ref_count_.fetch_add(1, std::memory_order_acq_rel);
-    return result;
+    Slice view(*this);
+    HostPtr* host = Alligator::inst().host_ptr(view.id_);
+    host->ptr = static_cast<uint8_t*>(host->ptr) + offset;
+    GPUBuf* gpu = Alligator::inst().gpubuf(view.id_);
+    gpu->address += offset;
+    gpu->size = length;
+    gpu->offset += offset;
+    return view;
 }
 /** --------------------------------------------------------------------------------------------------------- Resize
  * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in the slice will
@@ -200,6 +290,30 @@ void Slice::resize(
         *this = std::move(shrunk);
         return;
     }
+    if (preserve_data) {
+        // Whole-block, sole-handle slices on resizable placements grow in place through the
+        // substrate (realloc expands without copying whenever the allocator can).
+        Placemat::Plate* plate = Alligator::inst().plate(id_);
+        const int sole_owner = 1;  // only this handle's count remains on a novel plate
+        if (is_novel() && plate->placemat->resizer_ != nullptr
+            && plate->ref_count->load(std::memory_order_acquire) == sole_owner
+        ) [[likely]] {
+            const size_t old_size = size_bytes();
+            auto [new_host, new_substrate] =
+                plate->placemat->resizer_(plate->host_ptr, plate->substrate_handle, new_size);
+            if (new_host != nullptr) {
+                // realloc leaves the growth uninitialized; the zero-init contract covers it.
+                std::memset(static_cast<uint8_t*>(new_host) + old_size, 0, new_size - old_size);
+                plate->host_ptr = new_host;
+                plate->substrate_handle = new_substrate;
+                Alligator::inst().host_ptr(id_)->ptr = new_host;
+                GPUBuf* gpu = Alligator::inst().gpubuf(id_);
+                gpu->address = reinterpret_cast<uint64_t>(new_host);
+                gpu->size = new_size;
+                return;
+            }
+        }
+    }
     Slice grown(new_size, novel_buffer, placement);
     if (preserve_data && !is_null() && !grown.is_null()) {
         std::memcpy(grown.raw(), raw(), std::min(size_bytes(), new_size));
@@ -211,11 +325,11 @@ void Slice::resize(
  * @return True when the backing allocation is a novel buffer.
  */
 bool Slice::is_novel() const noexcept {
-    if (meta_ == UINT64_MAX || cached_ == nullptr) {
+    if (id_ == 0xFFFFFFFFu) {
         return false;
     }
-    Buffet* buffet = Alligator::instance().get(meta_ & 0x1FFFFu);
-    return buffet != nullptr && buffet->is_novel();
+    const Placemat::Plate* plate = Alligator::inst().plate(id_);
+    return plate != nullptr && plate->size == 0;
 }
 /** --------------------------------------------------------------------------------------------------------- Adopt
  * @brief Adopts the contents of another slice, freeing the current slice if necessary.
@@ -226,10 +340,8 @@ void Slice::adopt(Slice other) {
         return;
     }
     free();
-    meta_ = other.meta_;
-    cached_ = other.cached_;
-    other.meta_ = UINT64_MAX;
-    other.cached_ = nullptr;
+    id_ = other.id_;
+    other.id_ = 0xFFFFFFFFu;
 }
 /** --------------------------------------------------------------------------------------------------------- Free
  * @brief Frees the underlying memory of the slice. This is called automatically when the
@@ -237,33 +349,93 @@ void Slice::adopt(Slice other) {
  * method, the slice will be null.
  */
 void Slice::free() {
-    if (meta_ == UINT64_MAX) {
+    if (id_ == 0xFFFFFFFFu) {
         return;
     }
-    uint32_t slot = meta_ & 0x1FFFFu;
-    Buffet* buffet = Alligator::instance().bufs[slot & 0x1FFFFu].load(std::memory_order_acquire);
-    if (buffet != nullptr) {
-        buffet->free();
+    Alligator::inst().destroy(id_);
+    id_ = 0xFFFFFFFFu;
+}
+/** --------------------------------------------------------------------------------------------------------- Is Null
+ * @brief Checks if the slice is null (i.e., has no underlying memory).
+ * @return True if the slice is null, false otherwise.
+ */
+bool Slice::is_null() const {
+    return id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr;
+}
+/** --------------------------------------------------------------------------------------------------------- Is Valid
+ * @brief Checks if the slice is valid (i.e., has underlying memory).
+ * @return True if the slice is valid, false otherwise.
+ */
+bool Slice::valid() const {
+    return !is_null();
+}
+/** --------------------------------------------------------------------------------------------------------- Conversion to bool
+ * @brief Allows the slice to be used in boolean contexts.
+ * @return True if the slice is valid, false if it is null.
+ */
+Slice::operator bool() const {
+    return !is_null();
+}
+/** --------------------------------------------------------------------------------------------------------- Raw
+ * @brief Returns a raw pointer to the underlying memory of the slice.
+ * @return A pointer to the raw memory, or nullptr if the slice is invalid.
+ */
+void* Slice::raw() {
+    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
+        return nullptr;
     }
-    meta_ = UINT64_MAX;
-    cached_ = nullptr;
+    return Alligator::inst().host_ptr(id_)->ptr;
 }
-/** --------------------------------------------------------------------------------------------------------- Do Something Fun
- * @brief A placeholder function for demonstration purposes.
- * @param ptr A void pointer parameter.
+/** --------------------------------------------------------------------------------------------------------- Raw (const)
+ * @brief Returns a raw pointer to the underlying memory of the slice.
+ * @return A pointer to the raw memory, or nullptr if the slice is invalid.
  */
-void SliceFriend::do_somthing_fun(void* ptr) {
-    Alligator::instance().enqueue_order(ptr);
+const void* Slice::raw() const {
+    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
+        return nullptr;
+    }
+    return Alligator::inst().host_ptr(id_)->ptr;
 }
-/** --------------------------------------------------------------------------------------------------------- Get Placemat Handle for Slice
- * @brief Retrieves the Placemat handle associated with the given slice.
- * @param slice The slice to retrieve the handle for.
- * @return The Placemat handle associated with the slice, or nullptr if not found.
+/** --------------------------------------------------------------------------------------------------------- Size in bytes
+ * @brief Returns the size of the slice in bytes.
+ * @return The size of the slice in bytes.
  */
-Placemat::Handle* Placemat::get_for(const Slice* slice) {
-    uint32_t arena_id = slice->meta_ & 0x1FFFF; // Extract the arena ID from the meta_ field
-    Buffet* buffet = Alligator::instance().get(arena_id);
-    return buffet ? static_cast<Placemat::Handle*>(buffet->handle()) : nullptr;
+size_t Slice::size_bytes() const {
+    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
+        return 0;
+    }
+    return Alligator::inst().gpubuf(id_)->size;
+}
+/** --------------------------------------------------------------------------------------------------------- Create Main Slice
+ * @brief The plate's keep-alive token: one whole-slab Slice whose death at exhaustion releases
+ * the plate's final reference. The token's table entry points at the plate itself.
+ * @param plate The plate the token keeps alive.
+ * @return The heap-allocated token; the plate stores it and deletes it on exhaustion.
+ */
+Slice* Placemat::create_main_slice(const Plate* plate) const {
+    SliceId slice_id = Alligator::inst().next_id();
+    Alligator::inst().plate(slice_id) = const_cast<Plate*>(plate);
+    (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{
+        plate->device_base, static_cast<uint32_t>(plate->size), 0};
+    (*Alligator::inst().host_ptr(slice_id)) = HostPtr{plate->host_ptr};
+    return new Slice(slice_id);
+}
+/** --------------------------------------------------------------------------------------------------------- Create Slice From
+ * @brief Registers a view over an existing plate without claiming fresh bump space.
+ * @param plate The plate backing the view.
+ * @param offset The byte offset into the plate.
+ * @param size The view length in bytes.
+ * @return The registered view.
+ */
+Slice Placemat::create_slice_from(const Plate* plate, size_t offset, size_t size) const {
+    SliceId slice_id = Alligator::inst().next_id();
+    Alligator::inst().plate(slice_id) = const_cast<Plate*>(plate);
+    (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(plate->host_ptr)) + offset,
+        static_cast<uint32_t>(size), static_cast<uint32_t>(offset)};
+    (*Alligator::inst().host_ptr(slice_id)) = HostPtr{
+        static_cast<uint8_t*>(plate->host_ptr) + offset};
+    return Slice(slice_id);
 }
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice Details
  * @struct PotentialSlice::Details

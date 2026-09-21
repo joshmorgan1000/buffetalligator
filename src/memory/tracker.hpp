@@ -47,7 +47,7 @@ private:
     std::vector<PlacematDetails> placemat_details_;
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
     /// @brief Live backing allocations keyed by their stable placement handles.
-    std::unordered_map<const Placemat::Handle*, AllocationInfo> allocations_;
+    std::unordered_map<const Placemat::Plate*, AllocationInfo> allocations_;
     /// @brief Serializes location records shared by allocating threads and the teardown worker.
     AtomicMutex allocations_mutex_;
 #endif
@@ -57,7 +57,7 @@ private:
     Memory() {
         total_allocations_ = AtomicRegistry::create_global<uint64_t>("buffetalligator_allocations", uint64_t(0));
         total_freed_ = AtomicRegistry::create_global<uint64_t>("buffetalligator_freed", uint64_t(0));
-        const size_t placement_count = BuffetMenu::count();
+        constexpr size_t placement_count = 256;
         placemat_details_.reserve(placement_count);
         for (size_t i = 0; i < placement_count; ++i) {
             const std::string prefix = "buffetalligator_placemat_" + std::to_string(i) + "_";
@@ -73,8 +73,8 @@ private:
      * @return Reference to the Memory tracker instance.
      */
     static Memory& instance() {
-        static Memory instance;
-        return instance;
+        static Memory* const instance = new Memory();
+        return *instance;
     }
 public:
     /** ------------------------------------------------------------------------------------------- Deleted Copy/Move
@@ -96,7 +96,7 @@ public:
     static void record_code_location(
         const Placemat& placement,
         size_t size,
-        const Placemat::Handle* handle,
+        const Placemat::Plate* plate,
         const std::source_location& location = std::source_location::current()
     ) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
@@ -104,13 +104,13 @@ public:
         const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
-        tracker.allocations_.emplace(handle, AllocationInfo{
+        tracker.allocations_.emplace(plate, AllocationInfo{
             static_cast<uint64_t>(timestamp), size, placement.type(), location
         });
 #else
         (void)placement;
         (void)size;
-        (void)handle;
+        (void)plate;
         (void)location;
 #endif
     }
@@ -118,13 +118,13 @@ public:
      * @brief Retires a completed deallocation's location record when detailed tracking is enabled.
      * @param handle The placement handle whose backing allocation has been released.
      */
-    static void forget_code_location(const Placemat::Handle* handle) {
+    static void forget_code_location(const Placemat::Plate* plate) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
         Memory& tracker = instance();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
-        tracker.allocations_.erase(handle);
+        tracker.allocations_.erase(plate);
 #else
-        (void)handle;
+        (void)plate;
 #endif
     }
     /** ------------------------------------------------------------------------------------------- Allocation Info
@@ -132,15 +132,15 @@ public:
      * @param handle The placement handle identifying the allocation.
      * @return A snapshot of the allocation's recorded details.
      */
-    static std::optional<AllocationInfo> allocation_info(const Placemat::Handle* handle) {
+    static std::optional<AllocationInfo> allocation_info(const Placemat::Plate* plate) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
         Memory& tracker = instance();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
-        const auto found = tracker.allocations_.find(handle);
+        const auto found = tracker.allocations_.find(plate);
         if (found == tracker.allocations_.end()) return std::nullopt;
         return found->second;
 #else
-        (void)handle;
+        (void)plate;
         return std::nullopt;
 #endif
     }

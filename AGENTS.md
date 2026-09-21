@@ -156,7 +156,6 @@ If and *only* if those apply, you **must** add a comment to the top-level `@file
  * @brief Super-cool header file that does awesome amazing things.
  * 
  * @author Josh Morgan
- * @copyright (c) 2025-2157 Actian Corporation
  * 
  * NOTES:
  * - 3/16/2026 (jm):

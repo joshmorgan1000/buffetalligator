@@ -1,5 +1,5 @@
 #pragma once
-/** --------------------------------------------------------------------------------------------------------- Slice
+/** --------------------------------------------------------------------------------------------------------- BuffetAlligator
  * @file alligator.hpp
  * @brief Unified header for the BuffetAlligator.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <concepts>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -38,12 +39,15 @@
 #if defined(BUFFETALLIGATOR_HAS_CUDA)
 #include <cuda.h>
 #endif
+#include <moodycamel/concurrentqueue.h>
+#include <moodycamel/blockingconcurrentqueue.h>
 
 namespace buffetalligator {
 class Alligator; class Buffet; class BuffetMenu; class Slice;
 class SliceFriend; class Memory; class SliceQueue; class SliceChannel;
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
+inline static constexpr size_t POOL_BITS = 25;
 /** --------------------------------------------------------------------------------------------------------- Host Memory Usage
  * @struct HostMemoryUsage
  * @brief Reports physical capacity, estimated available memory, and this process's resident bytes.
@@ -53,64 +57,556 @@ struct HostMemoryUsage {
     uint64_t available_bytes;
     uint64_t resident_bytes;
 };
+/** --------------------------------------------------------------------------------------------------------- AllocateMethod
+ * @brief The method used to allocate a new handle within this placemat.
+ * @param size The size of the allocation in bytes.
+ * @param global_context The global context associated with the allocation (if applicable).
+ * @return A pair containing the host pointer and the substrate handle of the newly allocated memory.
+ */
+using AllocateMethod = std::pair<void*, void*> (*)(size_t size, void* global_context);
+/** --------------------------------------------------------------------------------------------------------- DeallocateMethod
+ * @brief The method used to deallocate a handle within this placemat.
+ * @param host_ptr The host pointer of the memory to be deallocated.
+ * @param substrate_handle The substrate handle associated with the deallocation.
+ * @return A pair containing the values that the host pointer and the substrate handle should be set to. We
+ * would normally assume these would just be `nullptr`, but we don't like to make too many assumptions about
+ * devices and stuff.
+ */
+using DeallocateMethod = std::pair<void*, void*> (*)(void* host_ptr, void* substrate_handle);
+/** --------------------------------------------------------------------------------------------------------- GetContextMethod
+ * @brief The method used to retrieve the context associated with a plate. This may be something like
+ * `vk::Device` for Vulkan, or `CUcontext` for CUDA, but it must be a static method that the `Placemat` can
+ * use in order to pass into the allocation and deallocation methods.
+ * @return A pointer to the context associated with the plate.
+ */
+using GetContextMethod = void* (*)();
+/** --------------------------------------------------------------------------------------------------------- DeviceAddressMethod
+ * @brief The method that maps one plate's substrate handle to the device address of its first byte.
+ * @param substrate_handle The substrate handle the allocation method returned.
+ * @return The device address, 0 for memory no device can address.
+ */
+using DeviceAddressMethod = uint64_t (*)(void* substrate_handle);
+/** --------------------------------------------------------------------------------------------------------- host_device_address
+ * @brief The device address method of host-only placements, which have none.
+ * @param substrate_handle The substrate handle, unused.
+ * @return Always 0.
+ */
+inline uint64_t host_device_address(void*) { return 0; }
+/** --------------------------------------------------------------------------------------------------------- ResizeMethod
+ * @brief The method used to attempt an in-place resize of one whole-block allocation. Only
+ * placements whose substrate can honor it (the C heap's realloc, for example) provide one.
+ * @param host_ptr The host pointer of the block.
+ * @param substrate_handle The freeable allocation handle.
+ * @param new_size The requested size in bytes.
+ * @return The resized host and substrate pair, or nulls to fall back to copy-based resizing.
+ */
+using ResizeMethod = std::pair<void*, void*> (*)(void* host_ptr, void* substrate_handle, size_t new_size);
+/** --------------------------------------------------------------------------------------------------------- Comprehension Enforcer
+ * @brief Gates non-hot-path methods behind proof the caller read the code. A gated method calls
+ * CHECK_read_this(name), which passes only while that gate is armed on the calling thread. Arming is
+ * set_read_this(name, value) with a value equal to the arithmetic in the gate's SETUP_read_this line;
+ * the comparison is numeric, so any expression evaluating to the gate's number works, but no plaintext
+ * literal exists anywhere to copy — grep the SETUP line and read it to learn the number. A wrong value
+ * leaves the gate disarmed. unset_read_this(name) closes the armed scope. Gates are per-thread and
+ * per-name and stay armed until unset, so an arm must never outlive the scope it was opened for.
+ * @param name The gate name shared by the SETUP, set, unset and CHECK call sites.
+ * @param val The secret arithmetic for the gate; never write it as a plain literal.
+ * @param err_msg The message thrown at callers that skip the reading.
+ */
+#define SETUP_read_this(name, val, err_msg) struct name##_struct { \
+inline static constexpr const char* error_message = err_msg; \
+static bool& armed() { static thread_local bool armed_flag = false; return armed_flag; } \
+static void set(const int v) { armed() = (v == (val)); } \
+static void unset() { armed() = false; } \
+static void enforce() { if (!armed()) { ALLIGATOR_THROW(error_message); } } };
+/** --------------------------------------------------------------------------------------------------------- Check Requirement
+ * @brief Throws unless the named gate is armed on this thread.
+ * @param name The name of the gate to check.
+ */
+#define CHECK_read_this(name) name##_struct::enforce()
+/** --------------------------------------------------------------------------------------------------------- Set Requirement
+ * @brief Arms the named gate on this thread; a wrong value leaves the gate disarmed.
+ * @param name The name of the gate to arm.
+ * @param value Arithmetic that must evaluate to the gate's SETUP_read_this value.
+ */
+#define set_read_this(name, value) name##_struct::set(value)
+/** --------------------------------------------------------------------------------------------------------- Unset Requirement
+ * @brief Disarms the named gate, closing the armed scope.
+ * @param name The name of the gate to unset.
+ */
+#define unset_read_this(name) name##_struct::unset()
+/** --------------------------------------------------------------------------------------------------------- Placemat Construction Gate
+ * @brief The gate guarding Placemat construction and its setters.
+ */
+SETUP_read_this(placemat_construction, 4 + 13, "You must know what you are doing in order to construct a placemat properly.");
+/** --------------------------------------------------------------------------------------------------------- Host Pointer
+ * @struct HostPtr
+ * @brief A simple wrapper around a raw pointer to represent a host memory location.
+ */
+struct HostPtr {
+    void* ptr = nullptr;
+};
+/** --------------------------------------------------------------------------------------------------------- GPUBuf
+ * @struct GPUBuf
+ * @brief Represents a GPU buffer with its address, size, and offset.
+ */
+struct alignas(16) GPUBuf {
+    /// @brief GPU buffer address.
+    uint64_t address = 0;
+    /// @brief Size of the GPU buffer.
+    uint32_t size = 0;
+    /// @brief Offset of the GPU buffer within the memory.
+    uint32_t offset = 0;
+};
 /** --------------------------------------------------------------------------------------------------------- Placemat
  * @class Placemat
- * @brief A substrate for memory allocation within the BuffetAlligator framework.
+ * @brief The `Placemat` or placement of a category of memory allocations within the BuffetAlligator
+ * framework. Where does this memory exist? In heap? On a GPU? On disk? Each gets its own `Placemat`
+ * instance that tells the framework how to talk to the underlying memory.
  */
 class Placemat {
 public:
-    /** ------------------------------------------------------------------------------------------- Handle
-     * @struct Handle
-     * @brief Opaque handle representing an allocation within a Placemat.
+    /// @brief Forward declaration of the `Plate` structure.
+    struct Plate;
+    /** ------------------------------------------------------------------------------------------- Allocate
+     * @brief Returns the allocation method associated with this placemat.
+     * @return The allocation method.
      */
-    struct Handle {
-        /// @brief The buffet instance associated with this allocation.
-        void* substrate_handle = nullptr;
-        /// @brief The special context associated with this allocation.
-        void* context = nullptr;
-    };
-    /** ------------------------------------------------------------------------------------------- Get for Slice
-     * @brief Returns the handle associated with a given Slice.
-     * @param slice The slice for which to retrieve the handle.
-     * @return The handle associated with the slice, or nullptr if not found.
+    const AllocateMethod allocate() const { return allocator_; }
+    /** ------------------------------------------------------------------------------------------- Deallocate
+     * @brief Returns the deallocation method associated with this placemat.
+     * @return The deallocation method.
      */
-    static Handle* get_for(const Slice* slice);
+    const DeallocateMethod deallocate() const { return deallocator_; }
+    /** ------------------------------------------------------------------------------------------- GetContext
+     * @brief Returns the method used to retrieve the context associated with this placemat.
+     * @return The context retrieval method.
+     */
+    const GetContextMethod get_context() const { return get_context_; }
+    /** ------------------------------------------------------------------------------------------- DeviceAddress
+     * @brief Returns the method that maps a substrate handle to its device address.
+     * @return The device address method.
+     */
+    const DeviceAddressMethod device_address() const { return device_address_; }
     /** ------------------------------------------------------------------------------------------- Type
      * @brief Returns the registry identifier assigned to this placement.
      * @return The placement registry identifier.
      */
-    uint16_t type() const { return type_; }
+    uint8_t type() const { return type_; }
     /** ------------------------------------------------------------------------------------------- Name
      * @brief Returns the name of the placement.
      * @return The placement name.
      */
     const char* name() const { return name_; }
-    /** ------------------------------------------------------------------------------------------- Accessors */
-    void* alligator() { return reinterpret_cast<void*>(alligator_); }
-    void* deallocate() { return reinterpret_cast<void*>(deallocate_); }
-    void* get_host_ptr() { return reinterpret_cast<void*>(get_host_ptr_); }
-    void* get_context() { return reinterpret_cast<void*>(get_context_); }
+    /** ------------------------------------------------------------------------------------------- Alignment
+     * @brief Returns the alignment requirement for allocations from this placement.
+     * @return The alignment in bytes.
+     */
+    size_t alignment() const { return bump_alignment_; }
+    /** ------------------------------------------------------------------------------------------- CallFreeLater
+     * @brief Schedules the given plate to be freed at a later time.
+     * @param plate The plate to be freed.
+     */
+    static void call_free_later(Plate* plate);
+    /** ------------------------------------------------------------------------------------------- Record Slab Allocation
+     * @brief Reports one completed slab allocation to the memory tracker; defined in slice.cpp.
+     * @param plate The plate that now owns the slab.
+     */
+    static void record_slab_allocation(const Plate* plate);
+    /** ------------------------------------------------------------------------------------------- Record Slab Release
+     * @brief Reports one completed slab release to the memory tracker; defined in slice.cpp.
+     * @param plate The plate whose slab was just returned.
+     */
+    static void record_slab_release(const Plate* plate);
+    /** ------------------------------------------------------------------------------------------- Plate
+     * @struct Plate
+     * @brief A `Plate` is a specific allocation of memory within a given `Placemat`. One might
+     * call these "slabs" in some contexts, they are large contiguous blocks of memory that the
+     * framework hands out sub-slices of.
+     */
+    struct Plate {
+        /// @brief The placemat that owns this plate.
+        Placemat* placemat;
+        /// @brief The size of the allocation in bytes.
+        size_t size;
+        /// @brief The host-visible base pointer of the allocation.
+        void* host_ptr;
+        /// @brief The special handle associated with this allocation.
+        /// Example: vk::Device for Vulkan, or CUcontext for CUDA.
+        void* substrate_handle;
+        /// @brief The device address of the allocation's first byte, 0 for host-only memory.
+        uint64_t device_base;
+        /** ----------------------------------------------------------------------------- next atomic
+         * @brief We try to pre-allocate a slab or two ahead of the current bump pointer
+         * so that contention around boundaries is minimized when allocating new slices.
+         */
+        std::atomic<Plate*>* next_buf;
+        /** ----------------------------------------------------------------------------- Next
+         * @brief Retrieves or allocates the next handle in the pre-allocated slab
+         * chain, or allocates a new handle if the next handle is not available yet.
+         * @param ahead_alloc The number of plates to make sure are pre-allocated ahead
+         * of the current plate.
+         */
+        Plate* next(size_t ahead_alloc) {
+            Plate* current_next = next_buf->load(std::memory_order_acquire);
+            while (current_next == nullptr
+                || current_next == reinterpret_cast<Plate*>(-1ll)
+            ) {
+                if (next_buf->compare_exchange_strong(
+                    current_next,
+                    reinterpret_cast<Plate*>(-1ll),
+                    std::memory_order_acq_rel)
+                ) {
+                    auto [host_ptr, substrate_handle] =
+                        placemat->allocate()(size, placemat->get_context()());
+                    current_next = new Plate(
+                        placemat,
+                        size,
+                        host_ptr,
+                        substrate_handle,
+                        false
+                    );
+                    record_slab_allocation(current_next);
+                    next_buf->store(current_next, std::memory_order_release);
+                    break;
+                }
+                std::this_thread::yield();
+                current_next = next_buf->load(std::memory_order_acquire);
+            }
+            if (ahead_alloc > 0) {
+                (void)current_next->next(ahead_alloc - 1);
+            }
+            return current_next;
+        }
+        /**
+         * @brief The slice associated with this plate. Now, I know what you're thinking:
+         * "Isn't a slice supposed to be a peice of a handle? That seems kind of circular,
+         * doesn't it?" and you would be correct in wondering that.
+         * This is a trick that we use to keep the `Plate` alive until the final `Slice`
+         * has gone out of scope. What we do is give the `Plate` one giant slice (which
+         * we can then sub-slice), and when the bump pointer reaches the end of the slice,
+         * we simply delete this `Slice` instance which decrements the reference count.
+         * This "frees" the plate but at the same time keeps it alive *if* there are
+         * still other `Slice`s out there referencing it.
+         */
+        std::atomic<Slice*>* slice;
+        /// @brief When this reaches zero, that means nothing is referencing this handle
+        /// anymore, so it gets freed or recycled.
+        std::atomic<int>* ref_count;
+        /** ----------------------------------------------------------------------------- Free Plate
+         * @brief Decrements the reference count and frees the plate if it reaches zero.
+         */
+        /// @brief Parked reference count of a released plate, so a late claim can never revive it.
+        inline static constexpr int RELEASED = INT32_MIN / 2;
+        void free() {
+            if (ref_count->fetch_sub(1, std::memory_order_acquire) == 1) {
+                auto [a, b] = placemat->deallocate()(host_ptr, substrate_handle);
+                host_ptr = a;
+                substrate_handle = b;
+                record_slab_release(this);
+                if (slice->load(std::memory_order_acquire) != nullptr) {
+                    std::string error_msg = "Hmm... something isn't right. The slice"
+                        " should have been nullptr before freeing the plate.";
+                    ALLIGATOR_THROW(error_msg);
+                }
+                // The atomics stay allocated so a late walker reads a parked count, never freed memory.
+                ref_count->store(RELEASED, std::memory_order_release);
+            }
+        }
+        /// @brief The bump pointer for this handle, used to slice the slab into smaller
+        /// allocations.
+        std::atomic<size_t>* bump;
+        /** ----------------------------------------------------------------------------- Claim
+         * @brief Claims a sub-allocation from this plate if the plate has it available.
+         * If it does not, we try the next plate in the chain.
+         * @param size The size of the sub-allocation to claim.
+         * @return A tuple containing the plate pointer, the current bump pointer, and
+         * the size of the allocation - this area in memory is now owned by the caller.
+         */
+        Slice claim(size_t size, bool novel_buffer = false);
+        /** ----------------------------------------------------------------------------- Constructor
+         * @brief Constructs a new Plate object.
+         * @param placemat_ Pointer to the placemat this plate belongs to, so it knows
+         * where it lives.
+         * @param size_ Size of the plate.
+         * @param host_ptr_ Host pointer associated with the plate.
+         * @param substrate_handle_ Substrate handle associated with the plate.
+         * @param final_course Indicates if this is a novel allocation or if it is part
+         * of the chain of buffer allocations.
+         */
+        Plate(
+            Placemat* placemat_,
+            size_t size_,
+            void* host_ptr_,
+            void* substrate_handle_,
+            bool final_course
+        ) : placemat(placemat_)
+        , size(final_course ? 0 : size_)
+        , host_ptr(host_ptr_)
+        , substrate_handle(substrate_handle_)
+        , device_base(placemat_->device_address()(substrate_handle_))
+        , next_buf(new std::atomic<Plate*>(nullptr))
+        , slice(new std::atomic<Slice*>(nullptr))
+        , ref_count(new std::atomic<int>(0))
+        , bump(new std::atomic<size_t>(0)) {
+            if (final_course) {
+                bump->store(size_, std::memory_order_release);
+            } else {
+                slice->store(
+                    placemat->create_main_slice(this),
+                    std::memory_order_release
+                );
+            }
+        }
+        /** ----------------------------------------------------------------------------- Copy Constructor
+         * @brief Constructs a new Plate object as a copy of another.
+         * @param other The Plate object to copy from.
+         */
+        Plate(const Plate& other)
+        : placemat(other.placemat)
+        , size(other.size)
+        , host_ptr(other.host_ptr)
+        , substrate_handle(other.substrate_handle)
+        , device_base(other.device_base)
+        , slice(other.slice)
+        , ref_count(other.ref_count)
+        , bump(other.bump) {
+            ref_count->fetch_add(1, std::memory_order_relaxed);
+        }
+        /** ----------------------------------------------------------------------------- Copy Assignment Operator
+         * @brief Assigns the contents of one Plate object to another.
+         * @param other The Plate object to assign from.
+         * @return Reference to the assigned Plate object.
+         */
+        Plate& operator=(const Plate& other) {
+            if (this != &other) {
+                other.ref_count->fetch_add(1, std::memory_order_relaxed);
+                free();
+                placemat = other.placemat;
+                size = other.size;
+                host_ptr = other.host_ptr;
+                substrate_handle = other.substrate_handle;
+                device_base = other.device_base;
+                slice = other.slice;
+                ref_count = other.ref_count;
+                bump = other.bump;
+            }
+            return *this;
+        }
+        /** ----------------------------------------------------------------------------- Move Constructor
+         * @brief Constructs a new Plate object by moving from another.
+         * @param other The Plate object to move from.
+         */
+        Plate(Plate&& other)
+        : placemat(other.placemat)
+        , size(other.size)
+        , host_ptr(other.host_ptr)
+        , substrate_handle(other.substrate_handle)
+        , device_base(other.device_base)
+        , slice(other.slice)
+        , ref_count(other.ref_count)
+        , bump(other.bump) {
+            other.placemat = nullptr;
+            other.size = 0;
+            other.host_ptr = nullptr;
+            other.substrate_handle = nullptr;
+            other.slice = nullptr;
+            other.ref_count = nullptr;
+            other.bump = nullptr;
+        }
+        /** ----------------------------------------------------------------------------- Move Assignment Operator
+         * @brief Assigns the contents of one Plate object to another by moving.
+         * @param other The Plate object to move from.
+         * @return Reference to the assigned Plate object.
+         */
+        Plate& operator=(Plate&& other) {
+            if (this != &other) {
+                free();
+                placemat = other.placemat;
+                size = other.size;
+                host_ptr = other.host_ptr;
+                substrate_handle = other.substrate_handle;
+                device_base = other.device_base;
+                slice = other.slice;
+                ref_count = other.ref_count;
+                bump = other.bump;
+                other.placemat = nullptr;
+                other.size = 0;
+                other.host_ptr = nullptr;
+                other.substrate_handle = nullptr;
+                other.slice = nullptr;
+                other.ref_count = nullptr;
+                other.bump = nullptr;
+            }
+            return *this;
+        }
+        /** ----------------------------------------------------------------------------- Destructor
+         * @brief Destroys the Plate object and frees its resources.
+         */
+        ~Plate() { free(); }
+    };
+    /** ------------------------------------------------------------------------------------------- Current Handle
+     * @brief Retrieves the current handle (plate) associated with this placemat.
+     * @return Pointer to the current plate.
+     */
+    Plate* current_plate() const {
+        Plate* current = current_handle_.load(std::memory_order_acquire);
+        while (current == nullptr || current == reinterpret_cast<Plate*>(-1ll)) [[unlikely]] {
+            Plate* expected = nullptr;
+            if (current == nullptr && current_handle_.compare_exchange_strong(
+                expected, reinterpret_cast<Plate*>(-1ll),
+                std::memory_order_acq_rel, std::memory_order_acquire)
+            ) {
+                std::pair<void*, void*> allocation;
+                try {
+                    allocation = allocator_(default_slab_size_, get_context_());
+                } catch (...) {
+                    current_handle_.store(nullptr, std::memory_order_release);
+                    throw;
+                }
+                current = new Plate(
+                    const_cast<Placemat*>(this), default_slab_size_,
+                    allocation.first, allocation.second, false);
+                record_slab_allocation(current);
+                current_handle_.store(current, std::memory_order_release);
+                (void)current->next(1);
+                return current;
+            }
+            std::this_thread::yield();
+            current = current_handle_.load(std::memory_order_acquire);
+        }
+        return current;
+    }
+    /** ------------------------------------------------------------------------------------------- Set Current Plate
+     * @brief Advances the current plate from the one the caller exhausted to its successor,
+     * refusing when another claimer already advanced it so the chain can never fork.
+     * @param expected The plate the caller found full.
+     * @param plate Pointer to the plate to set as current.
+     * @return True when this call performed the swap.
+     */
+    bool set_current_plate(Plate* expected, Plate* plate) {
+        return current_handle_.compare_exchange_strong(
+            expected, plate, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
     /** ------------------------------------------------------------------------------------------- No copy/move */
     Placemat(const Placemat&) = delete;
     Placemat& operator=(const Placemat&) = delete;
     Placemat(Placemat&&) = delete;
     Placemat& operator=(Placemat&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Preloaded types */
+    /// @brief Plain ol' heap allocation, calloc'd to zero first.
+    static const Placemat* const HEAP;
+    /// @brief Heap allocations aligned to 64 bytes for 512-bit registers.
+    static const Placemat* const HEAP_ALIGNED;
+    /// @brief Heap allocations aligned to the system page size.
+    static const Placemat* PAGE_ALIGNED;
+    /// @brief Vulkan buffer memory that is unified between host and device.
+    static const Placemat* const UNIFIED;
+    /// @brief Vulkan buffer memory that is visible to the host.
+    static const Placemat* const HOST_VISIBLE;
+    /// @brief Vulkan buffer memory that resides on the host.
+    static const Placemat* const HOST;
+    /// @brief Vulkan buffer memory that is cacheable by the host.
+    static const Placemat* const HOST_CACHEABLE;
+    /// @brief Vulkan buffer memory that resides on the device.
+    static const Placemat* const DEVICE;
+    /// @brief The heap built-in backing basic claims.
+    static const Placemat* const BASIC_HEAP;
+    /** ------------------------------------------------------------------------------------------- Constructor/Destructor
+     * @brief Default constructor and destructor for Placemat. You must arm the placemat_construction
+     * gate with set_read_this to prove that you know what you're doing. This prevents language models
+     * from inappropriately constructing a Placemat to fix a localized bug, not realizing theyre likely
+     * breaking a lot of things while doing so.
+     */
+    Placemat() {
+        CHECK_read_this(placemat_construction);
+    }
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Default destructor for Placemat.
+     */
     ~Placemat() = default;
+    /** ------------------------------------------------------------------------------------------- Set Name
+     * @brief Sets the name of the Placemat. You must know what you are doing to call this method.
+     * @param name The name to set for the Placemat.
+     */
+    void set_name(const char* name) {
+        CHECK_read_this(placemat_construction);
+        name_ = name;
+    }
+    /** ------------------------------------------------------------------------------------------- Set Type
+     * @brief Sets the type of the Placemat. You must know what you are doing to call this method.
+     * @param type The type to set for the Placemat.
+     */
+    void set_type(uint8_t type) {
+        CHECK_read_this(placemat_construction);
+        type_ = type;
+    }
+    /** ------------------------------------------------------------------------------------------- Set Bump Alignment
+     * @brief Sets the bump alignment of the Placemat. You must know what you are doing to call
+     * this method.
+     * @param bump_alignment The bump alignment to set for the Placemat.
+     */
+    void set_bump_alignment(size_t bump_alignment) {
+        CHECK_read_this(placemat_construction);
+        bump_alignment_ = bump_alignment;
+    }
+    /** ------------------------------------------------------------------------------------------- Set Default Slab Size
+     * @brief Sets the default slab size of the Placemat. You must know what you are doing to call
+     * this method.
+     * @param default_slab_size The default slab size to set for the Placemat.
+     */
+    void set_default_slab_size(size_t default_slab_size) {
+        CHECK_read_this(placemat_construction);
+        default_slab_size_ = default_slab_size;
+    }
 private:
     const char* name_ = nullptr;
-    Handle* (*alligator_)(size_t size, void* context);
-    void (*deallocate_)(Handle* handle, void* context);
-    void* (*get_host_ptr_)(Handle* handle);
-    void* (*get_context_)();
-    uint16_t type_ = 0;
-    uint16_t bump_alignment_ = 64;
-    uint32_t default_slab_size_ = 0;
-    Placemat() = default;
+    uint8_t type_ = 0;
+    size_t bump_alignment_ = 64;
+    size_t default_slab_size_ = 0;
+    mutable std::atomic<Plate*> current_handle_{nullptr};
+    AllocateMethod allocator_ = nullptr;
+    DeallocateMethod deallocator_ = nullptr;
+    GetContextMethod get_context_ = nullptr;
+    DeviceAddressMethod device_address_ = &host_device_address;
+    /// @brief Optional in-place resize hook; null on placements whose substrate cannot honor it.
+    ResizeMethod resizer_ = nullptr;
+    Slice* create_main_slice(const Plate* plate) const;
+    Slice create_slice_from(const Plate* plate, size_t offset, size_t size) const;
     friend class BuffetMenu;
-    friend class Buffet;
     friend class Alligator;
+    friend class Slice;
     friend class Memory;
 };
+/** --------------------------------------------------------------------------------------------------------- SliceId
+ * @struct SliceId
+ * @brief A packed identifier for a memory slice.
+ */
+struct alignas(4) SliceId {
+private:
+    uint32_t id_;
+    friend class BuffetMenu; friend class Alligator;
+    friend class Slice; friend class Placemat;
+public:
+    explicit SliceId(uint32_t input = 0xFFFFFFFFu) { *this = reinterpret_cast<SliceId&>(input); }
+    SliceId& operator=(const uint32_t& input) {
+        uint32_t tmp = input; *this = reinterpret_cast<SliceId&>(tmp); return *this; }
+    SliceId& operator=(const size_t& input) { uint32_t tmp = static_cast<uint32_t>(input);
+        *this = reinterpret_cast<SliceId&>(tmp); return *this; }
+    SliceId& operator=(const int& input) { uint32_t tmp = static_cast<uint32_t>(input);
+        *this = reinterpret_cast<SliceId&>(tmp); return *this; }
+    operator uint32_t&() { return *reinterpret_cast<uint32_t*>(this); }
+    operator const uint32_t&() const { return *reinterpret_cast<const uint32_t*>(this); }
+    explicit SliceId(size_t input) { uint32_t tmp = static_cast<uint32_t>(input);
+        *this = reinterpret_cast<SliceId&>(tmp); }
+    explicit SliceId(int input) { uint32_t tmp = static_cast<uint32_t>(input);
+        *this = reinterpret_cast<SliceId&>(tmp); } SliceId(const SliceId& other) = default;
+    SliceId& operator=(const SliceId& other) = default;
+    SliceId(SliceId&& other) noexcept { *this = other; other = 0xFFFFFFFFu; }
+    SliceId& operator=(SliceId&& other) noexcept { *this = other; other = 0xFFFFFFFFu; return *this; }
+    Slice slice(size_t offset = 0, size_t size = SIZE_MAX) const;
+};
+SETUP_read_this(add_placement, 33 + 66, "You should really call the register_type method instead.")
 /** --------------------------------------------------------------------------------------------------------- BuffetTypeRegistry
  * @class BuffetTypeRegistry
  * @brief Startup registry assigning one stable type to each Placemat instance.
@@ -124,37 +620,61 @@ public:
     static HostMemoryUsage memory_usage();
     /** ------------------------------------------------------------------------------------------- Register Type
      * @brief Registers one process-lifetime Placemat before the first Slice is created.
-     * @param placement_factory The factory instance to register.
+     * @param name The name of the placement.
+     * @param default_slab_size The default size of slabs for this placement.
+     * @param bump_alignment The alignment requirement for bump allocations.
+     * @param allocate The allocation function for this placement.
+     * @param deallocate The deallocation function for this placement.
+     * @param get_context The context retrieval function for this placement.
+     * @param set_as_default Whether to set this placement as the default.
+     * @param resize The optional in-place resize hook.
+     * @param device_address The substrate-to-device-address hook, host-only by default.
      * @return The stable placement identifier.
      */
-    static uint16_t register_type(
+    static uint8_t register_type(
         const char* name,
         size_t default_slab_size,
         size_t bump_alignment,
-        Placemat::Handle* (*alligator)(size_t size, void* context),
-        void (*deallocate)(Placemat::Handle* handle, void* context),
-        void* (*get_host_ptr)(Placemat::Handle* handle),
-        void* (*get_context)(),
-        bool set_as_default = false
+        AllocateMethod allocate,
+        DeallocateMethod deallocate,
+        GetContextMethod get_context,
+        bool set_as_default = false,
+        ResizeMethod resize = nullptr,
+        DeviceAddressMethod device_address = &host_device_address
     ) {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
+        set_read_this(placemat_construction, 4 + 13);
+        std::unique_ptr<Placemat> placement = std::make_unique<Placemat>();
+        unset_read_this(placemat_construction);
+        placement->name_ = name;
+        placement->default_slab_size_ = default_slab_size;
+        placement->bump_alignment_ = bump_alignment;
+        placement->allocator_ = allocate;
+        placement->deallocator_ = deallocate;
+        placement->get_context_ = get_context;
+        placement->resizer_ = resize;
+        placement->device_address_ = device_address;
+        placement->type_ = static_cast<uint16_t>(instance().placement_indices_.size());
+        if (set_as_default) {
+            default_placement_slot() = placement.get();
         }
-        return register_type_unchecked(
-            name, default_slab_size, bump_alignment, alligator, deallocate, get_host_ptr,
-            get_context, set_as_default
-        );
+        const uint8_t type = static_cast<uint8_t>(instance().placement_indices_.size());
+        instance().placement_indices_[name] = type;
+        set_read_this(add_placement, 90 + 9);
+        placemats()[type] = std::move(placement);
+        unset_read_this(add_placement);
+        instance().placemat_count_.fetch_add(1, std::memory_order_release);
+        return type;
     }
     /** ------------------------------------------------------------------------------------------- Get
      * @brief Returns the registered Placemat for an identifier.
      * @param type The placement identifier.
      * @return The registered placement factory.
      */
-    static Placemat* get(uint16_t type) {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
-        }
-        return instance().placements_.at(type).get();
+    static Placemat* get(uint8_t type) {
+        set_read_this(add_placement, 33 + 66);
+        Placemat* placement = instance().placemats()[type].get();
+        unset_read_this(add_placement);
+        return placement;
     }
     /** ------------------------------------------------------------------------------------------- Get by Name
      * @brief Returns the registered Placemat for a given name.
@@ -166,10 +686,13 @@ public:
             ensure_builtins_slow();
         }
         auto it = instance().placement_indices_.find(name);
+        Placemat* placement = nullptr;
         if (it != instance().placement_indices_.end()) {
-            return instance().placements_.at(it->second).get();
+            set_read_this(add_placement, 33 + 66);
+            placement = instance().placemats().at(it->second).get();
+            unset_read_this(add_placement);
         }
-        return nullptr;
+        return placement;
     }
     /** ------------------------------------------------------------------------------------------- Count
      * @brief Returns the number of Placemat types registered so far.
@@ -179,7 +702,7 @@ public:
         if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
             ensure_builtins_slow();
         }
-        return instance().placements_.size();
+        return instance().placemat_count_.load(std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Default Placement
      * @brief Returns the default Placemat instance, registering the built-ins first if needed.
@@ -206,6 +729,16 @@ public:
     ) {
         instance().change_listeners_.emplace_back(context, callback);
     }
+    /** ------------------------------------------------------------------------------------------- Placemats
+     * @brief Returns the flat index-to-Placemat table; the registration paths write it, gated
+     * readers use it.
+     * @return The 256-entry placemat table.
+     */
+    static std::array<std::unique_ptr<Placemat>, 256>& placemats() {
+        static std::array<std::unique_ptr<Placemat>, 256> places;
+        CHECK_read_this(add_placement);
+        return places;
+    }
     /** ------------------------------------------------------------------------------------------- No copy/move */
     BuffetMenu(const BuffetMenu&) = delete;
     BuffetMenu& operator=(const BuffetMenu&) = delete;
@@ -213,8 +746,6 @@ public:
     BuffetMenu& operator=(BuffetMenu&&) = delete;
     ~BuffetMenu() = default;
 private:
-    /// @brief Vector of unique pointers to all registered Placemat instances.
-    std::vector<std::unique_ptr<Placemat>> placements_;
     /// @brief Mapping from placement names to their corresponding indices in the placements_ vector.
     std::unordered_map<std::string, size_t> placement_indices_;
     /// @brief List of registered change listeners along with their context pointers.
@@ -244,29 +775,36 @@ private:
         const char* name,
         size_t default_slab_size,
         size_t bump_alignment,
-        Placemat::Handle* (*alligator)(size_t size, void* context),
-        void (*deallocate)(Placemat::Handle* handle, void* context),
-        void* (*get_host_ptr)(Placemat::Handle* handle),
-        void* (*get_context)(),
-        bool set_as_default
+        AllocateMethod allocate,
+        DeallocateMethod deallocate,
+        GetContextMethod get_context,
+        bool set_as_default,
+        ResizeMethod resize = nullptr,
+        DeviceAddressMethod device_address = &host_device_address
     ) {
         if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
         auto& inst = instance();
-        uint16_t type = static_cast<uint16_t>(inst.placements_.size());
+        uint16_t type = static_cast<uint16_t>(inst.placement_indices_.size());
+        set_read_this(placemat_construction, 15 + 2);
         auto placement = std::unique_ptr<Placemat>(new Placemat());
+        unset_read_this(placemat_construction);
         placement->name_ = name;
-        placement->alligator_ = alligator;
+        placement->allocator_ = allocate;
         placement->default_slab_size_ = default_slab_size >> 12;
         placement->bump_alignment_ = bump_alignment;
-        placement->deallocate_ = deallocate;
-        placement->get_host_ptr_ = get_host_ptr;
+        placement->deallocator_ = deallocate;
         placement->get_context_ = get_context;
+        placement->resizer_ = resize;
+        placement->device_address_ = device_address;
         placement->type_ = type;
         if (set_as_default || default_placement_slot() == nullptr) {
             default_placement_slot() = placement.get();
         }
         inst.placement_indices_.emplace(name, type);
-        inst.placements_.emplace_back(std::move(placement));
+        set_read_this(add_placement, 60 + 39);
+        inst.placemats()[static_cast<uint8_t>(type)] = std::move(placement);
+        unset_read_this(add_placement);
+        inst.placemat_count_.fetch_add(1, std::memory_order_release);
         inst.notify_change_listeners();
         return type;
     }
@@ -280,6 +818,7 @@ private:
         }
     }
     BuffetMenu() = default;
+    std::atomic<size_t> placemat_count_{0};
     static BuffetMenu& instance() {
         static BuffetMenu instance;
         return instance;
@@ -350,30 +889,33 @@ public:
      * @return The default `Placement` enum value for slices.
      */
     static const Placemat* default_placement();
-    /** ------------------------------------------------------------------------------------------- Constructor - Default
-     * @brief Constructs a null slice with no underlying memory with an unspecified placement.
+    /** ------------------------------------------------------------------------------------------- Constructor - From SliceId
+     * @brief Constructs a slice object that takes on the identity of the existing slice specified
+     * by `slice_id`. This counts as an additional reference to that slice's underlying memory.
+     * If there is no slice at that ID, then the Slice will not be set to that ID, but instead it
+     * will be set to the null slice sentinel.
+     * @param slice_id The identifier of the existing slice.
      */
-    Slice() = default;
+    explicit Slice(SliceId slice_id = static_cast<SliceId>(0xFFFFFFFFu));
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
-     * guaranteed to be zero-initialized.
+     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
+     * slice is guaranteed to be zero-initialized.
      * @param size The size of the slice in bytes.
      */
-    Slice(size_t size, const Placemat* placement = default_placement());
+    Slice(size_t size, const Placemat* placement);
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with the option to
-     * specify whether the slice should be part of a larger slab or a novel buffer. The slice is
-     * guaranteed to be zero-initialized.
+     * @brief Constructs a slice of memory with the specified size. If not a novel buffer, then
+     * it will be claimed from a pre-allocated slab in the buffet alligator's arena.
      * @param size The size of the slice in bytes.
      * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
      * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
      * reduce fragmentation in the arena.
      */
-    Slice(size_t size, bool novel_buffer, const Placemat* placement = default_placement());
+    Slice(size_t size, bool novel_buffer = false, const Placemat* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
-     * @brief Copies data from an external memory location into a new slice of memory in the buffet alligator.
-     * This can be used to deep-copy a slice, or load data from an external source into the buffet alligator's
-     * memory management system.
+     * @brief Copies data from an external memory location into a new slice of memory in the
+     * buffet alligator, ensuring the data is managed within the buffet alligator's memory system
+     * and aligned properly for SIMD operations.
      * @param copy_from Pointer to the external memory to copy from.
      * @param size The size of the data to copy in bytes.
      * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
@@ -405,15 +947,15 @@ public:
      */
     const Placemat* placement() const;
     /** ------------------------------------------------------------------------------------------- Raw accessors
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory.
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
+     * host-writable pointer to the underlying memory.
      */
-    void* raw() { return cached_; }
+    void* raw();
     /** ------------------------------------------------------------------------------------------- Raw accessors - const
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory, but as a read-only pointer.
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
+     * host-writable pointer to the underlying memory, but as a read-only pointer.
      */
-    const void* raw() const { return cached_; }
+    const void* raw() const;
     /** ------------------------------------------------------------------------------------------- Accessor - Typed
      * @brief Returns a pointer to the underlying data of the slice, cast to the specified type.
      * @tparam T The type to cast the underlying data to. Default is uint8_t.
@@ -445,9 +987,7 @@ public:
      * @brief Returns the size of the slice in bytes.
      * @return The size of the slice in bytes.
      */
-    size_t size_bytes() const {
-        return meta_ == SIZE_MAX ? 0 : (meta_ >> 17) & SIZE_MAX;
-    }
+    size_t size_bytes() const;
     /** ------------------------------------------------------------------------------------------- Size in elements
      * @brief Returns the size of the slice in elements of type T.
      * @tparam T The type of elements in the slice. Default is `uint8_t`.
@@ -486,17 +1026,17 @@ public:
      * @brief Checks if the slice is null (i.e., has no underlying memory).
      * @return True if the slice is null, false otherwise.
      */
-    bool is_null() const { return meta_ == UINT64_MAX; }
+    bool is_null() const;
     /** ------------------------------------------------------------------------------------------- Check if slice is valid
      * @brief Checks if the slice is valid (i.e., has underlying memory).
      * @return True if the slice is valid, false otherwise.
      */
-    bool valid() const { return !is_null(); }
+    bool valid() const;
     /** ------------------------------------------------------------------------------------------- Conversion to bool
      * @brief Allows the slice to be used in boolean contexts.
      * @return True if the slice is valid, false if it is null.
      */
-    operator bool() const { return !is_null(); }
+    operator bool() const;
     /** ------------------------------------------------------------------------------------------- Free
      * @brief Frees the underlying memory of the slice. This is called automatically when the
      * slice is destroyed, but can be called manually to free the memory early. After calling this
@@ -540,17 +1080,19 @@ public:
      * @param other The slice to adopt.
      */
     void adopt(Slice other);
+    /** ------------------------------------------------------------------------------------------- Pool Index
+     * @brief The alligator pool slot this slice occupies; the id bits are all ones when null.
+     * @return The pool slot index.
+     */
+    uint32_t pool_index() const { return id_; }
 private:
-    /// @brief All-ones marks the null slice; otherwise [0..16] arena ID, [17..63] byte-exact size.
-    uint64_t meta_ = UINT64_MAX;
-    /// @brief Cached host pointer to the slice's first byte.
-    void* cached_ = nullptr;
+    SliceId id_;
     friend class Buffet;
     friend class Placemat;
     friend class SliceQueue;
     friend struct SliceNetworkAccess;
 };
-static_assert(sizeof(Slice) == 16, "Slice must be 16 bytes in size.");
+static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice
  * @class PotentialSlice
  * @brief A slice that gets filled lazily by the provided fulfillment method.
@@ -960,6 +1502,238 @@ concept SliceType = requires(T t) {
 } || PrimitiveSliceType<T> || std::is_same_v<T, Slice>;
 static_assert(SliceType<Slice>, "Slice must satisfy the SliceType concept.");
 static_assert(SliceType<SliceT<uint8_t>>, "SliceT must satisfy the SliceType concept.");
+/** --------------------------------------------------------------------------------------------------------- Task
+ * @struct Task<ReturnType, Func, Args...>
+ * @brief Represents a task that can be executed with a return type and arguments.
+ * @tparam ReturnType The return type of the task.
+ * @tparam Func The type of the callable object.
+ * @tparam Args The types of the arguments to the callable object.
+ */
+/** --------------------------------------------------------------------------------------------------------- Task
+ * @struct Task
+ * @brief One type-erased unit of executor work: a pair of static operation pointers (run and
+ * destroy, both bound by make_task) plus the packed callable, arguments and promise it owns on
+ * the heap. No virtuals and no std::function; every call lands on a static, concrete method.
+ */
+struct Task {
+    /// @brief Runs the packed state and satisfies its promise; bound by make_task.
+    void (*run_)(Task& task) = nullptr;
+    /// @brief Destroys the packed state; bound by make_task.
+    void (*destroy_)(Task& task) = nullptr;
+    /// @brief The packed callable, arguments and promise owned by this task.
+    void* state_ = nullptr;
+    /// @brief The follow-on task, enqueued by the worker after this one completes.
+    std::unique_ptr<Task> after_this_task = nullptr;
+    Task() = default;
+    Task(Task&& other) noexcept
+    : run_(other.run_)
+    , destroy_(other.destroy_)
+    , state_(std::exchange(other.state_, nullptr))
+    , after_this_task(std::move(other.after_this_task)) {}
+    Task& operator=(Task&& other) noexcept {
+        if (this != &other) {
+            if (state_ != nullptr && destroy_ != nullptr) {
+                destroy_(*this);
+            }
+            run_ = other.run_;
+            destroy_ = other.destroy_;
+            state_ = std::exchange(other.state_, nullptr);
+            after_this_task = std::move(other.after_this_task);
+        }
+        return *this;
+    }
+    Task(const Task&) = delete;
+    Task& operator=(const Task&) = delete;
+    ~Task() {
+        if (state_ != nullptr && destroy_ != nullptr) {
+            destroy_(*this);
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Execute
+     * @brief Runs the packed callable with its arguments and satisfies its promise; exceptions
+     * travel to the future.
+     */
+    void execute() {
+        run_(*this);
+    }
+    /** ------------------------------------------------------------------------------------------- After this
+     * @brief Schedules a task to be executed after the current task completes.
+     * @tparam ReturnType2 The return type of the subsequent task.
+     * @tparam Func2 The type of the callable object for the subsequent task.
+     * @tparam Args2 The types of the arguments for the subsequent task.
+     * @param f The callable object for the subsequent task.
+     * @param a The arguments to pass to the subsequent task.
+     * @return A future representing the result of the subsequent task.
+     */
+    template<typename ReturnType2 = void, typename Func2, typename... Args2>
+    auto after_this(Func2 f, Args2... a) {
+        auto [task, future] = make_task<ReturnType2>(std::move(f), std::move(a)...);
+        after_this_task = std::make_unique<Task>(std::move(task));
+        return std::move(future);
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- Task State
+ * @struct TaskState
+ * @brief The typed heap state behind one Task: the callable, its arguments and its promise, plus
+ * the two static operations the Task carries. One instantiation per make_task call site.
+ * @tparam ReturnType The return type of the callable.
+ * @tparam Func The type of the callable object.
+ * @tparam Args The types of the arguments to the callable.
+ */
+template<typename ReturnType, typename Func, typename... Args>
+    requires std::is_invocable_r_v<ReturnType, Func, Args...>
+struct TaskState {
+    /// @brief The callable object representing the task.
+    Func func;
+    /// @brief The arguments to pass to the callable.
+    std::tuple<Args...> args;
+    /// @brief The promise used to store the result of the task execution.
+    std::promise<ReturnType> promise;
+    /** ------------------------------------------------------------------------------------------- Run
+     * @brief Invokes the packed callable and satisfies the promise, routing exceptions to the future.
+     * @param task The task whose state is being run.
+     */
+    static void run(Task& task) {
+        TaskState* state = static_cast<TaskState*>(task.state_);
+        try {
+            if constexpr (std::is_same_v<ReturnType, void>) {
+                std::apply(state->func, state->args);
+                state->promise.set_value();
+            } else {
+                state->promise.set_value(std::apply(state->func, state->args));
+            }
+        } catch (...) {
+            state->promise.set_exception(std::current_exception());
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Destroy
+     * @brief Destroys the packed state once the task has run or been dropped.
+     * @param task The task whose state is being destroyed.
+     */
+    static void destroy(Task& task) {
+        delete static_cast<TaskState*>(task.state_);
+        task.state_ = nullptr;
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- Make Task
+ * @brief The Task factory: packs one typed unit of work into an erased Task and returns the
+ * future its promise will satisfy.
+ * @tparam ReturnType The return type of the callable.
+ * @tparam Func The type of the callable object.
+ * @tparam Args The types of the arguments to the callable.
+ * @param f The callable object.
+ * @param a The arguments to pass to the callable.
+ * @return The task and its future.
+ */
+template<typename ReturnType = void, typename Func, typename... Args>
+    requires std::is_invocable_r_v<ReturnType, Func, Args...>
+std::pair<Task, std::future<ReturnType>> make_task(Func f, Args... a) {
+    using State = TaskState<ReturnType, Func, Args...>;
+    Task task;
+    task.state_ = new State{std::move(f), std::make_tuple(std::move(a)...), std::promise<ReturnType>()};
+    task.run_ = &State::run;
+    task.destroy_ = &State::destroy;
+    std::future<ReturnType> future = static_cast<State*>(task.state_)->promise.get_future();
+    return {std::move(task), std::move(future)};
+}
+class ConcurrentBitplane;
+/** --------------------------------------------------------------------------------------------------------- Arena
+ * @class Alligator
+ * @brief Maintains one preallocated Buffer chain per registered Placemat.
+ */
+class Alligator {
+private:
+    std::atomic<uint64_t> next_slice_{};
+    SliceId next_id();
+    std::atomic<size_t> requested_thread_count_{1};
+    std::atomic<bool> stop_signal_{false};
+    moodycamel::BlockingConcurrentQueue<Task> task_queue_;
+    struct WorkerThread;
+    std::array<std::atomic<WorkerThread*>, 32> worker_threads_;
+    struct GatorBuf;
+    GatorBuf* plates_;
+    GatorBuf* host_ptrs_;
+    /// @brief The shared GPUBuf table, one plate the host writes and shaders read in place.
+    Placemat::Plate* gpubufs_;
+    std::unique_ptr<ConcurrentBitplane> occupancy_;
+    Placemat::Plate*& plate(SliceId slice_id);
+    const Placemat::Plate*& plate(const SliceId& slice_id) const;
+    HostPtr* host_ptr(SliceId slice_id);
+    const HostPtr* host_ptr(const SliceId& slice_id) const;
+    GPUBuf* gpubuf(SliceId slice_id);
+    const GPUBuf* gpubuf(const SliceId& slice_id) const;
+    void destroy(SliceId slice_id);
+    Alligator();
+    ~Alligator();
+    static Alligator& inst();
+    friend class Buffet;
+    friend class Placemat;
+    friend class Slice;
+    friend class Memory;
+    friend class SliceFriend;
+    friend class VulkanKernel;
+public:
+    Alligator(const Alligator&) = delete;
+    Alligator& operator=(const Alligator&) = delete;
+    Alligator(Alligator&&) = delete;
+    Alligator& operator=(Alligator&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Plate For
+     * @brief Resolves the plate backing a live slice; the substrate reaches its slab metadata
+     * through the plate's substrate_handle.
+     * @param slice The slice to resolve.
+     * @return The backing plate, or nullptr when the slot is unoccupied.
+     */
+    static Placemat::Plate* plate_for(const Slice& slice) {
+        return inst().plate(static_cast<SliceId>(slice.pool_index()));
+    }
+    /** ------------------------------------------------------------------------------------------- GPUBuf For
+     * @brief The writable GPUBuf half for a live slice, nullptr when the slot is unoccupied.
+     * @param slice The slice to resolve.
+     * @return The slice's GPUBuf entry.
+     */
+    static GPUBuf* gpubuf_for(const Slice& slice) {
+        return inst().gpubuf(static_cast<SliceId>(slice.pool_index()));
+    }
+    /** ------------------------------------------------------------------------------------------- Host Table
+     * @brief The host pointer table's first entry; kernels index it by pool index at an 8-byte stride.
+     * @return The table base.
+     */
+    static const HostPtr* host_table();
+    /** ------------------------------------------------------------------------------------------- GPU Table
+     * @brief The shared GPUBuf table's host mapping, the same bytes shaders read at gpu_table_address().
+     * @return The table base.
+     */
+    static const GPUBuf* gpu_table();
+    /** ------------------------------------------------------------------------------------------- GPU Table Address
+     * @brief The shared GPUBuf table's device address for the kernel push block.
+     * @return The device address, 0 without a compute device.
+     */
+    static uint64_t gpu_table_address();
+    /** ------------------------------------------------------------------------------------------- Submit task
+     * @brief Submits a task to the Alligator.
+     * @tparam ReturnType The return type of the task.
+     * @tparam Func The type of the callable object.
+     * @tparam Args The types of the arguments to the callable object.
+     * @param f The callable object to be submitted.
+     * @param a The arguments to be passed to the callable object.
+     * @return A std::future representing the result of the submitted task.
+     */
+    template<typename ReturnType = void, typename Func, typename... Args>
+        requires std::is_invocable_r_v<ReturnType, Func, Args...>
+    auto submit(Func f, Args... a) {
+        auto [task, future] = make_task<ReturnType>(std::move(f), std::move(a)...);
+        task_queue_.enqueue(std::move(task));
+        return std::move(future);
+    }
+    /** ------------------------------------------------------------------------------------------- Submit task (pre-constructed)
+     * @brief Submits a pre-constructed erased task to the Alligator; hold the future make_task
+     * already returned for it.
+     * @param task The pre-constructed task to be submitted.
+     */
+    void submit(Task&& task) {
+        task_queue_.enqueue(std::move(task));
+    }
+};
 EXCEPTION_CLASS(Atomic)
 #define ATOMIC_THROW(msg) throw AtomicException(msg)
 /** --------------------------------------------------------------------------------------------------------- Concepts
@@ -4146,31 +4920,331 @@ public:
     static DeviceMemoryUsage memory_usage();
 };
 #endif
-#if defined(BUFFETALLIGATOR_HAS_VULKAN)
-/** --------------------------------------------------------------------------------------------------------- Vulkan Allocator
- * @class VulkanAllocator
- * @brief Allocates mapped coherent slabs on one caller-owned process-lifetime Vulkan device.
+/** --------------------------------------------------------------------------------------------------------- GPUException
+ * @class GPUException
+ * @brief A GPUException is thrown when a GPU operation fails.
  */
-class VulkanAllocator {
+class GPUException : public threadsafe_logger::Exception {
 public:
-    /** ------------------------------------------------------------------------------------------- Register Type
-     * @brief Registers a Vulkan 1.1-or-newer device after resolving its coherent buffer memory type.
-     */
-    static const Placemat* register_type(VkPhysicalDevice physical_device, VkDevice device);
-    /** ------------------------------------------------------------------------------------------- Buffer
-     * @brief Returns the borrowed storage and transfer buffer backing a Vulkan Slice's slab.
-     */
-    static VkBuffer buffer(const Slice& slice);
-    /** ------------------------------------------------------------------------------------------- Buffer Offset
-     * @brief Returns a Vulkan Slice's byte offset within its slab buffer.
-     */
-    static VkDeviceSize buffer_offset(const Slice& slice);
-    /** ------------------------------------------------------------------------------------------- Memory Usage
-     * @brief Reports the selected heap's capacity and optional EXT_memory_budget measurements.
-     */
-    static DeviceMemoryUsage memory_usage();
+    using threadsafe_logger::Exception::Exception;
+    using threadsafe_logger::Exception::what;
 };
-#endif
+#define GPU_THROW(msg) throw GPUException(msg)
+/** --------------------------------------------------------------------------------------------------------- GPUSlice
+ * @class GPUSlice
+ * @brief A GPUSlice represents a slice of GPU memory managed by the Vulkan backend.
+ */
+class GPUSlice {
+public:
+    /** ------------------------------------------------------------------------------------------- Constructor - Default
+     * @brief Constructs a null slice with no underlying memory with an unspecified placement.
+     */
+    GPUSlice() = default;
+    /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
+     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
+     * slice is guaranteed to be zero-initialized.
+     * @param size The size of the slice in bytes.
+     */
+    GPUSlice(size_t size, bool novel_buffer = false);
+    /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
+     * @brief Copies data from an external memory location into a new slice of memory in the
+     * buffet alligator.
+     * @param copy_from Pointer to the external memory to copy from.
+     * @param size The size of the data to copy in bytes.
+     * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
+     * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
+     * reduce fragmentation in the arena. Default is false.
+     */
+    GPUSlice(
+        const void* copy_from,
+        size_t size,
+        bool novel_buffer = false
+    );
+    /** ------------------------------------------------------------------------------------------- Constructor - From Slice
+     * @brief Constructs a `GPUSlice` from an existing `Slice` object.
+     * @param slice The `Slice` object to construct from.
+     */
+    GPUSlice(Slice slice);
+    /** ------------------------------------------------------------------------------------------- Assignment - From Slice
+     * @brief Assigns a `Slice` object to the `GPUSlice`.
+     * @param slice The `Slice` object to assign from.
+     */
+    GPUSlice& operator=(Slice slice);
+    /** ------------------------------------------------------------------------------------------- Conversion - To Slice
+     * @brief Converts the `GPUSlice` to a `Slice` object.
+     * @return A `Slice` object representing the same memory as the `GPUSlice`.
+     */
+    operator Slice&();
+    /** ------------------------------------------------------------------------------------------- Conversion - To Const Slice
+     * @brief Converts the `GPUSlice` to a const `Slice` object.
+     * @return A const `Slice` object representing the same memory as the `GPUSlice`.
+     */
+    operator const Slice&() const;
+    /** ------------------------------------------------------------------------------------------- Copy/move semantics
+     * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
+     * much like `std::shared_ptr` in that they share the same reference counter and underlying
+     * memory. The copy constructor and assignment operators are deleted to cut down on unintended
+     * reference counting traffic which can be expensive in high-performance scenarios. Move
+     * semantics are supported to allow efficient transfer of ownership of the underlying memory.
+     */
+    GPUSlice(const GPUSlice& other);
+    GPUSlice& operator=(const GPUSlice& other);
+    GPUSlice(GPUSlice&& other) noexcept;
+    GPUSlice& operator=(GPUSlice&& other) noexcept;
+    /** ------------------------------------------------------------------------------------------- Destructor */
+    ~GPUSlice() { free(); }
+    /** ------------------------------------------------------------------------------------------- Placement
+     * @brief Returns the memory placement type of the slice.
+     * @return The `Placement` enum value representing the slice's memory placement.
+     */
+    const Placemat* placement() const;
+    /** ------------------------------------------------------------------------------------------- Raw accessors
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
+     * pointer to the underlying memory.
+     */
+    void* raw();
+    /** ------------------------------------------------------------------------------------------- Raw accessors - const
+     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
+     * pointer to the underlying memory, but as a read-only pointer.
+     */
+    const void* raw() const;
+    /** ------------------------------------------------------------------------------------------- Accessor - Typed
+     * @brief Returns a pointer to the underlying data of the slice, cast to the specified type.
+     * @tparam T The type to cast the underlying data to. Default is uint8_t.
+     * @return A pointer to the underlying data cast to type T.
+     */
+    template<typename T = uint8_t>
+    T* data() { return static_cast<T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- Accessor - Typed - const
+     * @brief Returns a const pointer to the underlying data of the slice, cast to the specified
+     * type.
+     * @tparam T The type to cast the underlying data to. Default is uint8_t.
+     * @return A const pointer to the underlying data cast to type T.
+     */
+    template<typename T = uint8_t>
+    const T* data() const { return static_cast<const T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- Create new view
+     * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
+     * view shares the same underlying memory and reference counter as the original slice. Using
+     * the default parameters will create a new view that is essentially identical to the original
+     * slice - a shared view that increments the reference counter and will keep the underlying
+     * memory alive until all views are destroyed.
+     * @param offset The offset in bytes from the start of the original slice to the start of the
+     * new view.
+     * @param length The length in bytes of the new view.
+     * @return A new `GPUSlice` object that is a view of the original slice.
+     */
+    GPUSlice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
+    /** ------------------------------------------------------------------------------------------- Size in bytes
+     * @brief Returns the size of the slice in bytes.
+     * @return The size of the slice in bytes.
+     */
+    size_t size_bytes() const;
+    /** ------------------------------------------------------------------------------------------- Size in elements
+     * @brief Returns the size of the slice in elements of type T.
+     * @tparam T The type of elements in the slice. Default is `uint8_t`.
+     * @return The size of the slice in elements of type T.
+     */
+    template<typename T = uint8_t>
+    size_t size() const {
+        if constexpr (sizeof(T) == 8) {
+            return size_bytes() >> 3;
+        } else if constexpr (sizeof(T) == 4) {
+            return size_bytes() >> 2;
+        } else if constexpr (sizeof(T) == 2) {
+            return size_bytes() >> 1;
+        }
+        return size_bytes() / sizeof(T);
+    }
+    /** ------------------------------------------------------------------------------------------- Resize
+     * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
+     * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
+     * is false, the existing data will be discarded and the slice will be reallocated. This can
+     * be called on a freed or null slice, in which case it will behave like a normal constructor
+     * and allocate a new slice of the specified size.
+     * @param new_size The new size of the slice in bytes.
+     * @param preserve_data Whether to preserve existing data in the slice. Default is true.
+     * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
+     * Default is false.
+     * @param placement The memory placement strategy to use. Default is `default_placement()`.
+     */
+    void resize(
+        size_t new_size,
+        bool preserve_data = true,
+        bool novel_buffer = false
+    );
+    /** ------------------------------------------------------------------------------------------- Check if slice is null
+     * @brief Checks if the slice is null (i.e., has no underlying memory).
+     * @return True if the slice is null, false otherwise.
+     */
+    bool is_null() const { return slice_.is_null(); }
+    /** ------------------------------------------------------------------------------------------- Check if slice is valid
+     * @brief Checks if the slice is valid (i.e., has underlying memory).
+     * @return True if the slice is valid, false otherwise.
+     */
+    bool valid() const { return !is_null(); }
+    /// Borrowed pool index; retain this exact GPUSlice until Kernel completion.
+    uint32_t pool_index() const { return slice_.pool_index(); }
+
+    /** ------------------------------------------------------------------------------------------- Conversion to bool
+     * @brief Allows the slice to be used in boolean contexts.
+     * @return True if the slice is valid, false if it is null.
+     */
+    operator bool() const { return !is_null(); }
+    /** ------------------------------------------------------------------------------------------- Free
+     * @brief Frees the underlying memory of the slice. This is called automatically when the
+     * slice is destroyed, but can be called manually to free the memory early. After calling this
+     * method, the slice will be null.
+     */
+    void free();
+    /** ------------------------------------------------------------------------------------------- Get as
+     * @brief Returns a reference to the underlying data of the slice, cast to the specified type.
+     * @tparam T The type to cast the underlying data to. Default is uint8_t.
+     * @return A reference to the underlying data cast to type T.
+     */
+    template<typename T = uint8_t>
+    T& get_as() { return *reinterpret_cast<T*>(data()); }
+    /** ------------------------------------------------------------------------------------------- Get as (const)
+     * @brief Returns a const reference to the underlying data of the slice, cast to the specified
+     * type.
+     * @tparam T The type to cast the underlying data to. Default is uint8_t.
+     * @return A const reference to the underlying data cast to type T.
+     */
+    template<typename T = uint8_t>
+    const T& get_as() const { return *reinterpret_cast<const T*>(data()); }
+    /** ------------------------------------------------------------------------------------------- Root slice
+     * @brief Returns a reference to the root slice. This is useful when dealing with nested
+     * slices or `SliceType` conceptual objects.
+     * @return A reference to the root slice.
+     */
+    Slice& root_slice();
+    /** ------------------------------------------------------------------------------------------- Root slice (const)
+     * @brief Returns a const reference to the root slice. This is useful when dealing with nested
+     * slices or `SliceType` conceptual objects.
+     * @return A const reference to the root slice.
+     */
+    const Slice& root_slice() const;
+private:
+    Slice slice_;
+};
+/// @brief Forward declaration of the internal shader state used by the Shader class.
+class ShaderState;
+/** --------------------------------------------------------------------------------------------------------- Shader
+ * @class Shader
+ * @brief Prepared `alligator_main(Slice)` GLSL: a call binds a list of slices and each workgroup
+ * column processes its own slice in place.
+ */
+class Shader {
+private:
+    /// @brief Internal state of the shader, managed by the Shader class.
+    std::unique_ptr<ShaderState> state_;
+public:
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Compiles GLSL and prepares every Vulkan resource used by subsequent calls.
+     * @param source GLSL defining `void alligator_main(Slice slice)`, the slice this workgroup owns.
+     * @param name Diagnostic name reported by shader compilation errors.
+     */
+    explicit Shader(
+        std::string_view source,
+        std::string_view name = "alligator_shader"
+    );
+    /** ------------------------------------------------------------------------------------------- Move-only ownership */
+    Shader(const Shader&) = delete;
+    Shader& operator=(const Shader&) = delete;
+    Shader(Shader&& other) noexcept;
+    Shader& operator=(Shader&& other) noexcept;
+    /** ------------------------------------------------------------------------------------------- Destructor */
+    ~Shader();
+    /** ------------------------------------------------------------------------------------------- Shader Functor invocation
+     * @brief Runs the shader over a list of slices: Y is shaped to the list's length and
+     * workgroup column `i` receives `slices[i]`, writing its results into that slice.
+     * @param slices Device-visible slices, one per workgroup column.
+     * @param count How many slices are bound.
+     * @param callback Optional function invoked with each slice once the shader has completed.
+     * @param workgroups Number of 64-invocation workgroups along X per slice.
+     * @return A shared pointer to a LightweightSemaphore that can optionally be waited on until
+     * the shader has completed execution.
+     */
+    std::shared_ptr<moodycamel::LightweightSemaphore> operator()(
+        const GPUSlice* slices,
+        size_t count,
+        void (*callback)(GPUSlice slice) = nullptr,
+        uint32_t workgroups = 1
+    ) const;
+    /** ------------------------------------------------------------------------------------------- Shader Functor invocation (one)
+     * @brief Runs the shader over a single slice.
+     * @param slice The device-visible slice, processed in place.
+     * @param callback Optional function invoked with the slice once the shader has completed.
+     * @param workgroups Number of 64-invocation workgroups along X.
+     * @return A shared pointer to a LightweightSemaphore that can optionally be waited on until
+     * the shader has completed execution.
+     */
+    std::shared_ptr<moodycamel::LightweightSemaphore> operator()(
+        const GPUSlice& slice,
+        void (*callback)(GPUSlice slice) = nullptr,
+        uint32_t workgroups = 1
+    ) const;
+};
+static_assert(sizeof(Shader) == sizeof(void*), "Shader's public ABI must remain one opaque pointer.");
+/** --------------------------------------------------------------------------------------------------------- GPU struct
+ * @struct GPU
+ * @brief Encapsulates static methods used for GPU compute operations.
+ */
+struct GPU {
+    /** ------------------------------------------------------------------------------------------- available
+     * @brief True when a Vulkan compute device is present.
+     * @return True when the GPU can execute programs.
+     */
+    static bool exists();
+    /** ------------------------------------------------------------------------------------------- unified_memory
+     * @brief True when the device shares memory with the CPU, so stream Slices bind with no
+     * copies.
+     * @return True under unified memory.
+     */
+    static bool unified_memory();
+    /** ------------------------------------------------------------------------------------------- device_name
+     * @brief The compute device's name, empty when no device is present.
+     * @return The device name.
+     */
+    static std::string device_name();
+    /** ------------------------------------------------------------------------------------------- encode
+     * @brief Flattens a recorded program into one Slice: header, register seeds, constants, then
+     * the instruction stream as a contiguous run of 8-byte instructions.
+     * @param program The recorded program.
+     * @return The encoded program; place it, move it, or hand it to run() below like any Slice.
+     */
+    static Slice encode(const Shader& program);
+    /** ------------------------------------------------------------------------------------------- decode
+     * @brief Rebuilds a recorded program from its encoded Slice.
+     * @param program An encoded program.
+     * @return The program.
+     * @throw ShaderException when the Slice is not an encoded program of this version.
+     */
+    static Shader decode(const Slice& program);
+    /** ------------------------------------------------------------------------------------------- run
+     * @brief Executes a recorded program on the GPU over the bound streams.
+     * @param program The recorded program.
+     * @param streams One GPUSlice per workgroup column; column i processes streams[i] in place.
+     * @param stream_count How many Slices are bound; becomes the dispatch's Y extent.
+     */
+    static void run(const Shader& program, GPUSlice* streams, size_t stream_count);
+    /** ------------------------------------------------------------------------------------------- run
+     * @brief Decodes an encoded program and executes it on the GPU.
+     * @param program A compile_glsl program (job-table engine, one job per GPUSlice).
+     * @param streams One GPUSlice per job.
+     * @param stream_count How many jobs this round binds.
+     */
+    static void run(const Slice& program, GPUSlice* streams, size_t stream_count);
+    /** ------------------------------------------------------------------------------------------- compile_glsl
+     * @brief Compiles a kernel body under the alligator prelude into SPIR-V words held in a Slice.
+     * The body defines main() against the prelude's Slice-addressing helpers; the workgroup shape
+     * (16x4) and the 8-byte job-table push block are injected.
+     * @param body GLSL defining main(); the shape is injected, not authored.
+     * @return The SPIR-V words, one per four bytes.
+     * @throw GPUException when compilation fails or no device is present.
+     */
+    static Slice compile_glsl(std::string_view body);
+};
 #if defined(BUFFETALLIGATOR_HAS_CUDA)
 /** --------------------------------------------------------------------------------------------------------- CUDA Memory Kind
  * @brief Selects managed memory or explicitly mapped pinned host memory.

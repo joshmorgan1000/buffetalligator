@@ -2,7 +2,7 @@
  * @file cuda_allocator.cpp
  * @brief Supplies CUDA managed or mapped-host slabs through the arena placement callbacks.
  */
-#include <alligator_cuda.hpp>
+#include <alligator.hpp>
 #include <cstring>
 #include <memory>
 

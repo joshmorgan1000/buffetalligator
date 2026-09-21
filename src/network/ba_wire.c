@@ -53,8 +53,7 @@ int ba_net_frame_size(const unsigned char* header, size_t* size) {
         *size = BA_NET_HEADER + 16 + crypto_aead_xchacha20poly1305_ietf_ABYTES;
         return 0;
     }
-    if (!names || names > 255 || !bytes || bytes > BA_NET_LIMIT ||
-        bytes > (UINT64_MAX >> BA_SLOT_BITS))
+    if (!names || names > 255 || !bytes || bytes > BA_NET_LIMIT)
         return UV_EMSGSIZE;
     *size = BA_NET_HEADER + (size_t)names + (size_t)bytes +
             ((header[5] & BA_NET_SECURE) ? crypto_aead_xchacha20poly1305_ietf_ABYTES : 0);
@@ -64,8 +63,8 @@ int ba_net_frame_size(const unsigned char* header, size_t* size) {
  * @brief Captures the Slice view before its receiver issues an encryption challenge.
  */
 int ba_net_snapshot(const ba_slice_t* slice, unsigned flags, ba_net_frame* frame) {
-    if (slice->meta == BA_NULL_META) return UV_EINVAL;
-    const size_t bytes = (size_t)(slice->meta >> BA_SLOT_BITS);
+    if (slice->id == BA_NULL_ID) return UV_EINVAL;
+    const size_t bytes = ba_slice_size(slice);
     const char* name = ba_placement_name(ba_slice_placement(slice));
     if (!name) return UV_EINVAL;
     const size_t names = strlen(name);
@@ -82,7 +81,7 @@ int ba_net_snapshot(const ba_slice_t* slice, unsigned flags, ba_net_frame* frame
     ba_wire_write(header + 8, bytes, 8);
     unsigned char* payload = header + BA_NET_HEADER;
     memcpy(payload, name, names);
-    memcpy(payload + names, slice->ptr, bytes);
+    memcpy(payload + names, ba_slice_ptr(slice), bytes);
     return 0;
 }
 /** --------------------------------------------------------------------------------------------------------- Seal
@@ -143,7 +142,7 @@ int ba_net_control_decode(const unsigned char* frame, size_t size, const unsigne
  */
 int ba_net_decode(const unsigned char* frame, size_t size, uint8_t protocol,
                   const unsigned char key[32], ba_slice_t* slice) {
-    *slice = (ba_slice_t){BA_NULL_META, NULL};
+    *slice = (ba_slice_t){BA_NULL_ID};
     if (size < BA_NET_HEADER) return UV_EPROTO;
     size_t expected;
     int status = ba_net_frame_size(frame, &expected);
@@ -174,7 +173,7 @@ int ba_net_decode(const unsigned char* frame, size_t size, uint8_t protocol,
                       slice) != 0)
         status = UV_ENOMEM;
     else {
-        memcpy(slice->ptr, payload + names, bytes);
+        memcpy(ba_slice_ptr(slice), payload + names, bytes);
     }
     if (decrypted) {
         sodium_memzero(decrypted, names + bytes);

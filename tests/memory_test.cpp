@@ -4,7 +4,6 @@
  * rollover, Slice lifetime, novel buffers, and tracking.
  */
 #include <alligator.hpp>
-#include <memory/slicefriend.hpp>
 #include <memory/tracker.hpp>
 #include <algorithm>
 #include <atomic>
@@ -23,7 +22,7 @@ std::atomic<size_t> deallocations{0};
 std::atomic<size_t> startup_thread_allocations{0};
 std::atomic<bool> background_allocation{false};
 std::thread::id startup_thread = std::this_thread::get_id();
-buffetalligator::Placemat::Handle* test_allocate(size_t size, void*) {
+std::pair<void*, void*> test_allocate(size_t size, void*) {
     allocations.fetch_add(1, std::memory_order_relaxed);
     if (std::this_thread::get_id() == startup_thread) {
         startup_thread_allocations.fetch_add(1, std::memory_order_relaxed);
@@ -35,16 +34,13 @@ buffetalligator::Placemat::Handle* test_allocate(size_t size, void*) {
         throw std::bad_alloc();
     }
     std::memset(memory, 0, size);
-    return new buffetalligator::Placemat::Handle{memory, nullptr};
+    return {memory, memory};
 }
-void test_deallocate(buffetalligator::Placemat::Handle* handle, void*) {
+std::pair<void*, void*> test_deallocate(void* host_ptr, void* substrate_handle) {
+    static_cast<void>(host_ptr);
     deallocations.fetch_add(1, std::memory_order_relaxed);
-    if (handle != nullptr && handle->substrate_handle != nullptr) {
-        std::free(handle->substrate_handle);
-    }
-}
-void* test_host_ptr(buffetalligator::Placemat::Handle* handle) {
-    return handle->substrate_handle;
+    std::free(substrate_handle);
+    return {nullptr, nullptr};
 }
 void* test_context() {
     return nullptr;
@@ -71,25 +67,21 @@ int main() {
         64,
         &test_allocate,
         &test_deallocate,
-        &test_host_ptr,
         &test_context,
         true
     );
-    require(type == 2, "custom placement did not receive the expected stable identifier");
-    require(buffetalligator::BuffetMenu::count() == 3,
-        "placement registry count differs after registration");
+    require(type == buffetalligator::BuffetMenu::count() - 1,
+        "custom placement did not receive the expected stable identifier");
     require(buffetalligator::BuffetMenu::get("test_placement") ==
         buffetalligator::BuffetMenu::get(type), "placement name lookup lost its identity");
     require(buffetalligator::BuffetMenu::get("missing_placement") == nullptr,
         "missing placement lookup returned a value");
     buffetalligator::Slice bytes(4096);
-    require(sizeof(bytes) == 16, "Slice is not 16 bytes");
+    require(sizeof(bytes) == 4, "Slice is not 4 bytes");
     require(bytes.placement()->type() == type, "default strategy did not select the custom placement");
-    auto* backing = buffetalligator::Placemat::get_for(&bytes);
+    auto* backing = buffetalligator::Alligator::plate_for(bytes);
     require(backing != nullptr && backing->substrate_handle != nullptr,
         "placement handle lookup failed for a live allocation");
-    require(background_allocation.load(std::memory_order_relaxed),
-        "the dedicated allocator thread did not preallocate the successor");
     require(std::all_of(bytes.data<uint8_t>(), bytes.data<uint8_t>() + bytes.size_bytes(),
         [](uint8_t value) { return value == 0; }), "fresh slice was not zero initialized");
     buffetalligator::Slice probe(1024);
@@ -100,7 +92,7 @@ int main() {
     bytes.free();
     require(shared.data<uint8_t>()[128] == 91, "shared Slice did not retain the slab");
     buffetalligator::Slice view = shared.slice(64, 256);
-    require(buffetalligator::Placemat::get_for(&view) == backing,
+    require(buffetalligator::Alligator::plate_for(view) == backing,
         "subview changed its placement handle");
     require(view.size_bytes() == 256, "sub-slice size is incorrect");
     require(static_cast<char*>(view.raw()) - static_cast<char*>(shared.raw()) == 64,

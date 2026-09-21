@@ -212,7 +212,7 @@ void ba_net_peer_close(ba_net_peer* peer, int status) {
     if (!peer->server && peer->callback) {
         ba_net_callback callback = peer->callback;
         peer->callback = NULL;
-        ba_slice_t empty = {BA_NULL_META, NULL};
+        ba_slice_t empty = {BA_NULL_ID};
         ba_net_deliver(callback, &empty);
     }
     if (status && status != UV_ECANCELED && status != UV_EOF) ba_net_log(uv_strerror(status));
@@ -602,7 +602,7 @@ static void ba_network_resolved(uv_getaddrinfo_t* request, int status,
  */
 static int ba_network_respond(ba_net_command* command) {
     ba_net_reply* reply = ba_network_reply;
-    if (!reply || reply->peer->closing || reply->replied || command->slice->meta == BA_NULL_META ||
+    if (!reply || reply->peer->closing || reply->replied || command->slice->id == BA_NULL_ID ||
         command->callback || command->port != reply->peer->port ||
         command->protocol != reply->peer->protocol)
         return UV_EINVAL;

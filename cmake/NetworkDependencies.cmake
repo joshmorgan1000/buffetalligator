@@ -32,7 +32,8 @@ set_property(TARGET alligator::fabric PROPERTY INTERFACE_LINK_LIBRARIES
     "Threads::Threads;${CMAKE_DL_LIBS};${BUFFETALLIGATOR_FABRIC_LIBRARIES}")
 set_property(TARGET alligator::fabric PROPERTY INTERFACE_LINK_DIRECTORIES
     "${ALLIGATOR_FABRIC_STATIC_LIBRARY_DIRS}")
-foreach(dependency IN ITEMS libuv libsodium libfabric)
+foreach(dependency IN ITEMS libuv libsodium libfabric concurrentqueue readerwriterqueue
+        vulkan-headers vulkan-loader MoltenVK shaderc)
     file(GLOB notices "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/${dependency}/LICENSE*"
         "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/${dependency}/COPYING*")
     foreach(notice IN LISTS notices)
@@ -43,3 +44,9 @@ foreach(dependency IN ITEMS libuv libsodium libfabric)
         endif()
     endforeach()
 endforeach()
+install(FILES
+    "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/third_party/LICENSE.glslang"
+    "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/third_party/LICENSE.spirv-tools"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/alligator/shaderc")
+install(FILES "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/third_party/spirv-headers/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/alligator/shaderc" RENAME LICENSE.spirv-headers)
