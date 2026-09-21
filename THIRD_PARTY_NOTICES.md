@@ -90,4 +90,4 @@ Vulkan support is built unconditionally; Vulkan-Loader is built on Linux and Mol
 
 ## Built for downstream consumers only
 
-`run_build.sh` also fetches and builds [Abseil](https://github.com/abseil/abseil-cpp) 20260107.1 (Apache-2.0), a [Folly fork](https://github.com/joshmorgan1000/folly) at 839090a6 (Apache-2.0), [simdjson](https://github.com/simdjson/simdjson) v4.6.3 (Apache-2.0) and [curl](https://github.com/curl/curl) curl-8_20_0 (curl license). BuffetAlligator neither links nor installs them; they are staged under `deps/` for projects that build on top of it, and those projects carry their notices.
+`run_build.sh` also fetches and builds [Abseil](https://github.com/abseil/abseil-cpp) 20260107.1 (Apache-2.0), [simdjson](https://github.com/simdjson/simdjson) v4.6.3 (Apache-2.0) and [curl](https://github.com/curl/curl) curl-8_20_0 (curl license). BuffetAlligator neither links nor installs them; they are staged under `deps/` for projects that build on top of it, and those projects carry their notices.
