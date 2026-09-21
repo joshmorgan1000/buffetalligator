@@ -8,9 +8,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
-#include <future>
 #include <memory>
 #include <semaphore>
+#include <thread>
 
 using namespace buffetalligator;
 using functional::require;
@@ -62,9 +62,20 @@ std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
  */
 void* context() { return nullptr; }
 /** --------------------------------------------------------------------------------------------------------- Completed Frees
- * @brief Reads placement totals after previously queued teardown callbacks have returned.
+ * @brief Reads the placement's freed total.
  */
 size_t completed_frees() { return freed_bytes.load(std::memory_order_relaxed); }
+/** --------------------------------------------------------------------------------------------------------- Released
+ * @brief Waits up to two seconds for the worker to park a plate's count after its final release.
+ */
+bool released(const Placemat::Plate* plate) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (plate->ref_count->load(std::memory_order_acquire) != Placemat::Plate::RELEASED) {
+        if (std::chrono::steady_clock::now() > deadline) return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
 /** --------------------------------------------------------------------------------------------------------- Tracking
  * @brief Exercises successful allocations, failed allocations, retained views, and queued frees.
  */
@@ -122,19 +133,22 @@ void tracking() {
         bool(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING),
         "location record retired before the deallocation callback completed");
     release_deallocation.release();
-    require(std::async(std::launch::async, completed_frees).get() == novel_bytes,
-        "backing was not deallocated exactly once");
+    require(released(plate), "last Slice did not release its backing");
+    require(completed_frees() == novel_bytes, "backing was not deallocated exactly once");
     require(!Memory::allocation_info(plate), "completed deallocation retained a location record");
     require(Memory::total_freed() == global_freed + novel_bytes &&
         Memory::placement_freed(placement) == novel_bytes &&
         Memory::placement_usage(placement) == initial_allocations,
         "completed deallocation did not update tracker totals");
+    Slice undelivered(64, true);
+    const Placemat::Plate* undelivered_plate = Alligator::plate_for(undelivered);
     {
         SliceQueue queue(1, 1);
         auto producer = queue.producer(0);
-        producer.push(Slice(64, true));
+        producer.push(std::move(undelivered));
     }
-    require(std::async(std::launch::async, completed_frees).get() == novel_bytes + 64,
+    require(released(undelivered_plate), "queue destruction did not release its undelivered backing");
+    require(completed_frees() == novel_bytes + 64,
         "queue destruction leaked its undelivered backing");
     require(Memory::placement_allocations(placement) == allocated_bytes.load() &&
         Memory::placement_freed(placement) == freed_bytes.load(),
