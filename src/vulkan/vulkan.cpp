@@ -4,14 +4,7 @@
  */
 #include <logging.hpp>
 #include <alligator.hpp>
-#include <vulkan/vulkan.hpp>
 #include <shaderc/shaderc.hpp>
-#include <vulkan/vulkanhelpers.hpp>
-#include <vulkan/vulkancontext.hpp>
-#include <vulkan/vulkanbuffer.hpp>
-#include <vulkan/vulkankernel.hpp>
-#include <vulkan/vulkanglsl.hpp>
-#include <vulkan/shaderstate.hpp>
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
@@ -20,6 +13,547 @@
 #include <vector>
 
 namespace buffetalligator {
+/** --------------------------------------------------------------------------------------------------------- Vulkan Static Methods
+ * @struct VulkanStaticMethods
+ * @brief Provides static methods for Vulkan buffer management.
+ */
+struct VulkanStaticMethods {
+    VulkanStaticMethods() = delete; // Prevent instantiation of this static-only class.
+    /** ------------------------------------------------------------------------------------------- Prepare Runtime
+     * @brief Loads the Vulkan driver on the registering thread before the allocator worker starts.
+     */
+    static void prepare_runtime();
+    /** ------------------------------------------------------------------------------------------- Vulkan Allocator
+     * @brief Allocates a mapped Vulkan buffer of the specified size.
+     * @param size The size of the Vulkan buffer to allocate.
+     * @param context The rung index pointer the placement handed us.
+     * @return The host mapping and the VulkanBuffer handle pair.
+     */
+    static std::pair<void*, void*> vulkan_allocator(size_t size, void* context);
+    /** ------------------------------------------------------------------------------------------- Deallocate
+     * @brief Destroys a Vulkan buffer and clears its host mapping.
+     * @param host_ptr The host mapping of the buffer.
+     * @param substrate_handle The VulkanBuffer handle backing the mapping.
+     * @return The cleared host pointer and substrate handle pair.
+     */
+    static std::pair<void*, void*> vulkan_deallocate(void* host_ptr, void* substrate_handle);
+    /** ------------------------------------------------------------------------------------------- Get Vulkan Context
+     * @brief Retrieves the Vulkan context.
+     * @return A pointer to the Vulkan context.
+     */
+    static void* vulkan_get_context();
+    /** ------------------------------------------------------------------------------------------- Device Address
+     * @brief The device address of a slab's first byte.
+     * @param substrate_handle The VulkanBuffer handle backing the slab.
+     * @return The buffer device address.
+     */
+    static uint64_t vulkan_device_address(void* substrate_handle);
+};
+/** --------------------------------------------------------------------------------------------------------- VulkanPlacements
+ * @struct VulkanPlacements
+ * @brief One Vulkan Placemat per ladder rung; the rung rides in the Placemat's context word and
+ * the allocator resolves it to the memory type `VulkanContext` probed for it.
+ */
+struct VulkanPlacements {
+    VulkanPlacements() = delete;
+    /** ------------------------------------------------------------------------------------------- rung_context
+     * @brief The `get_context` hook for one rung: a pointer to that rung's index.
+     */
+    template <uint8_t Rung>
+    static void* rung_context() {
+        VulkanStaticMethods::prepare_runtime();
+        static uint8_t rung = Rung;
+        return &rung;
+    }
+    /** ------------------------------------------------------------------------------------------- rung
+     * @brief Registers (once) and returns the Vulkan Placemat for a ladder rung.
+     */
+    template <uint8_t Rung>
+    static const Placemat* rung(const char* name) {
+        static const Placemat* placemat = BuffetMenu::get(BuffetMenu::register_type(
+            name, 64 * 1024 * 1024, 4096,
+            &VulkanStaticMethods::vulkan_allocator, &VulkanStaticMethods::vulkan_deallocate,
+            &VulkanPlacements::rung_context<Rung>, false, nullptr,
+            &VulkanStaticMethods::vulkan_device_address));
+        return placemat;
+    }
+    /** ------------------------------------------------------------------------------------------- Prime
+     * @brief Registers every ladder rung before the first Slice allocates; the alligator's tracker
+     * sizes its per-placement tables at the first slab, so a rung first touched later would index
+     * past them (contract: process-lifetime Placemats register before the first Slice).
+     */
+    static void prime() {
+        rung<0>("vulkan_host");
+        rung<1>("vulkan_host_visible");
+        rung<2>("vulkan_host_cacheable");
+        rung<3>("vulkan_device");
+        rung<4>("vulkan_unified");
+        rung<5>("vulkan_basic_heap");
+        rung<6>("vulkan_buffer");
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- make_transfer_unit
+ * @brief Create this thread's TransferUnit from its own pool.
+ */
+VulkanContext::TransferUnit VulkanContext::make_transfer_unit() {
+    VulkanContext& context = instance();
+    TransferUnit unit;
+    unit.pool = context.device_.createCommandPool(vk::CommandPoolCreateInfo(
+        vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index()));
+    unit.command = context.device_.allocateCommandBuffers(
+        vk::CommandBufferAllocateInfo(unit.pool, vk::CommandBufferLevel::ePrimary, 1))[0];
+    unit.fence = context.device_.createFence({});
+    return unit;
+}
+/** --------------------------------------------------------------------------------------------------------- transfer_unit
+ * @brief This thread's transfer unit, created on first use. Handles are reclaimed by
+ * vkDestroyDevice at teardown, never individually.
+ */
+VulkanContext::TransferUnit& VulkanContext::transfer_unit() {
+    thread_local TransferUnit unit = make_transfer_unit();
+    return unit;
+}
+/** --------------------------------------------------------------------------------------------------------- unified_from_memory_properties
+ * @brief The one-query UMA test: a memory type carrying both DEVICE_LOCAL and HOST_VISIBLE
+ * whose heap is device-local.
+ * @param properties The queried memory properties.
+ * @return True on unified-memory systems.
+ */
+bool VulkanContext::unified_from_memory_properties(
+    const vk::PhysicalDeviceMemoryProperties& properties
+) {
+    constexpr vk::MemoryPropertyFlags unified_flags =
+        vk::MemoryPropertyFlagBits::eDeviceLocal | vk::MemoryPropertyFlagBits::eHostVisible;
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        const bool both =
+            (properties.memoryTypes[i].propertyFlags & unified_flags) == unified_flags;
+        const bool heap_local =
+            (properties.memoryHeaps[properties.memoryTypes[i].heapIndex].flags
+            & vk::MemoryHeapFlagBits::eDeviceLocal) == vk::MemoryHeapFlagBits::eDeviceLocal;
+        if (both && heap_local) {
+            return true;
+        }
+    }
+    return false;
+}
+/** --------------------------------------------------------------------------------------------------------- shared_buffer_info
+ * @brief Creates buffer metadata using the device's fixed compute-family sharing policy.
+ */
+vk::BufferCreateInfo VulkanContext::shared_buffer_info(vk::DeviceSize bytes, vk::BufferUsageFlags usage) const {
+    vk::BufferCreateInfo info({}, bytes, usage);
+    if (compute_families_.size() > 1) {
+        info.sharingMode = vk::SharingMode::eConcurrent;
+        info.queueFamilyIndexCount = static_cast<uint32_t>(compute_families_.size());
+        info.pQueueFamilyIndices = compute_families_.data();
+    }
+    return info;
+}
+/** --------------------------------------------------------------------------------------------------------- try_find_memory_type
+ * @brief Find a memory type index matching the filter and all wanted flags.
+ * @param type_filter Bitmask of allowed type indices (from VkMemoryRequirements).
+ * @param wanted Required property flags.
+ * @param excluded Property flags the type must not carry.
+ * @return The type index, or UINT32_MAX when none matches.
+ */
+uint32_t VulkanContext::try_find_memory_type(
+    uint32_t type_filter,
+    vk::MemoryPropertyFlags wanted,
+    vk::MemoryPropertyFlags excluded
+) const {
+    for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
+        const bool allowed = (type_filter & (1u << i)) != 0;
+        const vk::MemoryPropertyFlags flags = memory_properties_.memoryTypes[i].propertyFlags;
+        if (allowed && (flags & wanted) == wanted && !(flags & excluded)) {
+            return i;
+        }
+    }
+    return UINT32_MAX;
+}
+/** --------------------------------------------------------------------------------------------------------- constructor
+ * @brief Create the context and register it as the process GPU backend. Requests only 2
+ * host-side workers from the inherited CPUCompute pool (submission/callback plumbing) rather
+ * than one per hardware thread - a GPU context does not run compute on the CPU worker pool,
+ * so hardware_concurrency() workers would sit idle for the service's entire lifetime.
+ */
+VulkanContext::VulkanContext() {
+#ifdef __APPLE__
+    ::setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
+#endif
+    vk::ApplicationInfo app_info("alligator", 1, "alligator", 1, VK_API_VERSION_1_2);
+    std::vector<const char*> instance_extensions;
+    vk::InstanceCreateInfo instance_info{};
+    instance_info.pApplicationInfo = &app_info;
+    portability_available_ = false;
+    for (const vk::ExtensionProperties& ext : vk::enumerateInstanceExtensionProperties()) {
+        if (std::strcmp(ext.extensionName.data(),
+                VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0) {
+            portability_available_ = true;
+        }
+    }
+#ifdef __APPLE__
+    if (portability_available_) {
+        instance_extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        instance_extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        instance_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
+    }
+#endif
+    instance_info.enabledExtensionCount = static_cast<uint32_t>(instance_extensions.size());
+    instance_info.ppEnabledExtensionNames = instance_extensions.data();
+    try {
+        instance_ = vk::createInstance(instance_info);
+    } catch (const vk::SystemError&) {
+        return;
+    }
+    // No physical GPU is a normal state: the singleton exists and reports device_present() == false.
+    for (const vk::PhysicalDevice& device : instance_.enumeratePhysicalDevices()) {
+        const vk::PhysicalDeviceType type = device.getProperties().deviceType;
+        if (type == vk::PhysicalDeviceType::eDiscreteGpu) {
+            physical_device_ = device;
+            break;
+        }
+        if (type == vk::PhysicalDeviceType::eIntegratedGpu
+            || (type == vk::PhysicalDeviceType::eVirtualGpu && !physical_device_)) {
+            physical_device_ = device;
+        }
+    }
+    if (!physical_device_) {
+        instance_.destroy();
+        instance_ = nullptr;
+        return;
+    }
+    const std::vector<vk::QueueFamilyProperties> families =
+        physical_device_.getQueueFamilyProperties();
+    for (uint32_t index = 0; index < families.size(); ++index) {
+        if (families[index].queueFlags & vk::QueueFlagBits::eCompute)
+            compute_families_.push_back(index);
+    }
+    if (compute_families_.empty()) {
+        ALLIGATOR_GPU_THROW("VulkanCompute::init_instance_and_device: no compute-capable queue family");
+    }
+    vk::PhysicalDeviceVulkan12Features supported12{};
+    vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR supported_isq{};
+    vk::PhysicalDeviceFeatures2 supported{};
+    supported.pNext = &supported12;
+    supported12.pNext = &supported_isq;
+    physical_device_.getFeatures2(&supported);
+    if (!supported12.bufferDeviceAddress) {
+        ALLIGATOR_GPU_THROW("VulkanCompute::init_instance_and_device: device lacks bufferDeviceAddress; compute requires it");
+    }
+    std::vector<const char*> device_extensions;
+    for (const vk::ExtensionProperties& ext : physical_device_.enumerateDeviceExtensionProperties()) {
+        if (std::strcmp(ext.extensionName.data(), "VK_KHR_portability_subset") == 0) {
+            device_extensions.push_back("VK_KHR_portability_subset");
+        }
+        if (std::strcmp(ext.extensionName.data(),
+                VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME) == 0
+            && supported_isq.internallySynchronizedQueues == VK_TRUE) {
+            device_extensions.push_back(VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME);
+            internally_synchronized_queues_ = true;
+        }
+        if (std::strcmp(ext.extensionName.data(), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) {
+            device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+            device_props_.supports_memory_budget = true;
+        }
+    }
+    vk::PhysicalDeviceVulkan12Features enabled12{};
+    enabled12.bufferDeviceAddress = VK_TRUE;
+    enabled12.shaderBufferInt64Atomics = supported12.shaderBufferInt64Atomics;
+    enabled12.shaderFloat16 = supported12.shaderFloat16;
+    vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR enabled_isq{};
+    enabled_isq.internallySynchronizedQueues = VK_TRUE;
+    if (internally_synchronized_queues_) {
+        enabled12.pNext = &enabled_isq;
+    }
+    vk::PhysicalDeviceFeatures2 enabled{};
+    enabled.features.shaderInt64 = supported.features.shaderInt64;
+    enabled.pNext = &enabled12;
+    uint32_t total_queues = 0;
+    uint32_t maximum_family_queues = 0;
+    for (const uint32_t family : compute_families_) {
+        total_queues += families[family].queueCount;
+        maximum_family_queues = std::max(maximum_family_queues, families[family].queueCount);
+    }
+    const std::vector<float> queue_priorities(maximum_family_queues, 1.0f);
+    const vk::DeviceQueueCreateFlags queue_flags = internally_synchronized_queues_
+        ? vk::DeviceQueueCreateFlags(VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR)
+        : vk::DeviceQueueCreateFlags{};
+    std::vector<vk::DeviceQueueCreateInfo> queue_infos;
+    queue_infos.reserve(compute_families_.size());
+    for (const uint32_t family : compute_families_)
+        queue_infos.emplace_back(queue_flags, family, families[family].queueCount,
+            queue_priorities.data());
+    vk::DeviceCreateInfo device_info{};
+    device_info.queueCreateInfoCount = static_cast<uint32_t>(queue_infos.size());
+    device_info.pQueueCreateInfos = queue_infos.data();
+    device_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+    device_info.ppEnabledExtensionNames = device_extensions.data();
+    device_info.pNext = &enabled;
+    device_ = physical_device_.createDevice(device_info);
+    compute_queues_.reserve(total_queues);
+    queue_family_slots_.reserve(total_queues);
+    queue_claims_ = std::make_unique<std::atomic_flag[]>(total_queues);
+    for (uint32_t slot = 0; slot < compute_families_.size(); ++slot) {
+        const uint32_t family = compute_families_[slot];
+        for (uint32_t index = 0; index < families[family].queueCount; ++index) {
+            compute_queues_.push_back(device_.getQueue2(
+                vk::DeviceQueueInfo2(queue_flags, family, index)));
+            queue_family_slots_.push_back(slot);
+        }
+    }
+    memory_properties_ = physical_device_.getMemoryProperties();
+    vk::PhysicalDeviceSubgroupProperties subgroup{};
+    vk::PhysicalDeviceProperties2 props2{};
+    props2.pNext = &subgroup;
+    physical_device_.getProperties2(&props2);
+    const vk::PhysicalDeviceLimits& limits = props2.properties.limits;
+    device_props_.device_name = props2.properties.deviceName.data();
+    device_props_.max_workgroup_count[0] = limits.maxComputeWorkGroupCount[0];
+    device_props_.max_workgroup_count[1] = limits.maxComputeWorkGroupCount[1];
+    device_props_.max_workgroup_count[2] = limits.maxComputeWorkGroupCount[2];
+    device_props_.max_workgroup_size[0] = limits.maxComputeWorkGroupSize[0];
+    device_props_.max_workgroup_size[1] = limits.maxComputeWorkGroupSize[1];
+    device_props_.max_workgroup_size[2] = limits.maxComputeWorkGroupSize[2];
+    device_props_.max_workgroup_invocations = limits.maxComputeWorkGroupInvocations;
+    device_props_.max_shared_memory = limits.maxComputeSharedMemorySize;
+    device_props_.subgroup_size = subgroup.subgroupSize;
+    device_props_.max_storage_buffer_range = limits.maxStorageBufferRange;
+    device_props_.max_push_constants = limits.maxPushConstantsSize;
+    device_props_.supports_subgroup_arithmetic =
+        (subgroup.supportedOperations & vk::SubgroupFeatureFlagBits::eArithmetic)
+            == vk::SubgroupFeatureFlagBits::eArithmetic;
+    device_props_.supports_subgroup_shuffle =
+        (subgroup.supportedOperations & vk::SubgroupFeatureFlagBits::eShuffle)
+            == vk::SubgroupFeatureFlagBits::eShuffle;
+    device_props_.supports_buffer_device_address = true;
+    device_props_.supports_int64 = supported.features.shaderInt64 == VK_TRUE;
+    device_props_.supports_int64_atomics = supported12.shaderBufferInt64Atomics == VK_TRUE;
+    device_props_.supports_float16 = supported12.shaderFloat16 == VK_TRUE;
+    device_props_.supports_timeline_semaphore = supported12.timelineSemaphore == VK_TRUE;
+    uint64_t device_local_bytes = 0;
+    for (uint32_t i = 0; i < memory_properties_.memoryHeapCount; ++i) {
+        if (memory_properties_.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+            device_local_bytes += memory_properties_.memoryHeaps[i].size;
+        }
+    }
+    device_props_.device_local_memory_bytes = device_local_bytes;
+    /// Host-visible total: every heap reachable through at least one HOST_VISIBLE memory
+    /// type, each backing heap counted once via a seen mask (16 heaps is the spec cap).
+    uint64_t host_visible_bytes = 0;
+    uint16_t seen_heaps = 0;
+    for (uint32_t i = 0; i < memory_properties_.memoryTypeCount; ++i) {
+        const vk::MemoryPropertyFlags flags = memory_properties_.memoryTypes[i].propertyFlags;
+        if ((flags & vk::MemoryPropertyFlagBits::eHostVisible) == vk::MemoryPropertyFlagBits::eHostVisible) {
+            const uint32_t heap_index = memory_properties_.memoryTypes[i].heapIndex;
+            const uint16_t heap_bit = static_cast<uint16_t>(1u << heap_index);
+            if ((seen_heaps & heap_bit) == 0) {
+                seen_heaps |= heap_bit;
+                host_visible_bytes += memory_properties_.memoryHeaps[heap_index].size;
+            }
+        }
+    }
+    device_props_.host_visible_memory_bytes = host_visible_bytes;
+    device_props_.unified_memory = unified_from_memory_properties(memory_properties_);
+    // Initialize allocation template
+    buffer_usage_ = vk::BufferUsageFlagBits::eStorageBuffer
+        | vk::BufferUsageFlagBits::eShaderDeviceAddress
+        | vk::BufferUsageFlagBits::eTransferSrc
+        | vk::BufferUsageFlagBits::eTransferDst
+        | vk::BufferUsageFlagBits::eIndirectBuffer;
+    allocate_flags_ = vk::MemoryAllocateFlagsInfo(vk::MemoryAllocateFlagBits::eDeviceAddress);
+    vk::Buffer probe = device_.createBuffer(shared_buffer_info(256, buffer_usage_));
+    const vk::MemoryRequirements requirements = device_.getBufferMemoryRequirements(probe);
+    device_.destroyBuffer(probe);
+    const vk::MemoryPropertyFlags coherent =
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+    const vk::MemoryPropertyFlags cached = coherent | vk::MemoryPropertyFlagBits::eHostCached;
+    // Measured 2026-08-23: uncached host-visible types read at 0.06 GB/s on RDNA3.5 iGPUs
+    buffer_memory_type_index_ = try_find_memory_type(
+        requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal | cached);
+    if (buffer_memory_type_index_ == UINT32_MAX) {
+        buffer_memory_type_index_ = try_find_memory_type(requirements.memoryTypeBits, cached);
+    }
+    if (buffer_memory_type_index_ == UINT32_MAX) {
+        buffer_memory_type_index_ = try_find_memory_type(
+            requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal | coherent);
+    }
+    if (buffer_memory_type_index_ == UINT32_MAX) {
+        buffer_memory_type_index_ = try_find_memory_type(requirements.memoryTypeBits, coherent);
+    }
+    if (buffer_memory_type_index_ == UINT32_MAX) {
+        ALLIGATOR_GPU_THROW("VulkanContext: no host-visible memory type for storage buffers");
+    }
+    const vk::MemoryPropertyFlags device_local = vk::MemoryPropertyFlagBits::eDeviceLocal;
+    const auto ladder = [&](std::initializer_list<vk::MemoryPropertyFlags> rungs) {
+        for (const vk::MemoryPropertyFlags rung : rungs) {
+            const uint32_t found = try_find_memory_type(requirements.memoryTypeBits, rung);
+            if (found != UINT32_MAX) return found;
+        }
+        return buffer_memory_type_index_;
+    };
+    placement_type_indices_[0] = ladder({device_local | cached, cached});                    // HOST
+    /// HOST_VISIBLE means uncached on the CPU side (a streaming ring's payload reads go to RAM);
+    /// only a device with no such type falls back to a cached one.
+    const uint32_t uncached = try_find_memory_type(
+        requirements.memoryTypeBits, device_local | coherent, vk::MemoryPropertyFlagBits::eHostCached);
+    placement_type_indices_[1] = uncached != UINT32_MAX ? uncached : try_find_memory_type(
+        requirements.memoryTypeBits, coherent, vk::MemoryPropertyFlagBits::eHostCached);
+    if (placement_type_indices_[1] == UINT32_MAX) placement_type_indices_[1] = ladder({device_local | coherent, coherent});
+    placement_type_indices_[2] = ladder({device_local | cached, cached});                   // HOST_CACHEABLE
+    placement_type_indices_[3] = ladder({device_local | cached, device_local | coherent});  // DEVICE
+    placement_type_indices_[4] = ladder({device_local | cached, cached});                   // UNIFIED
+    placement_type_indices_[5] = buffer_memory_type_index_;                                 // BASIC_HEAP (never Vulkan-allocated)
+    placement_type_indices_[6] = buffer_memory_type_index_;                                 // UNSPECIFIED
+    for (size_t index = 0; index < placement_type_indices_.size(); ++index) {
+        placement_cpu_cached_[index] =
+            (memory_properties_.memoryTypes[placement_type_indices_[index]].propertyFlags
+                & vk::MemoryPropertyFlagBits::eHostCached) == vk::MemoryPropertyFlagBits::eHostCached;
+    }
+    placement_cpu_cached_[static_cast<size_t>(PlacementIndex::BASIC_HEAP)] = true;
+    pipeline_cache_ = device_.createPipelineCache({});
+    device_present_ = true;
+    device_props_.gpu_free_bytes = poll_budget_headroom();
+    alive_.store(true, std::memory_order_release);
+}
+/** --------------------------------------------------------------------------------------------------------- poll_budget_headroom
+ * @brief Sum the device-local budget headroom (budget - usage per heap) via VK_EXT_memory_budget.
+ * Re-queryable at any time - the driver recomputes budget/usage per call.
+ * @return Free device-local bytes, or 0 when the budget extension is absent.
+ */
+uint64_t VulkanContext::poll_budget_headroom() const {
+    if (!device_props_.supports_memory_budget) {
+        return 0;
+    }
+    vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    vk::PhysicalDeviceMemoryProperties2 memory2{};
+    memory2.pNext = &budget;
+    physical_device_.getMemoryProperties2(&memory2);
+    uint64_t free_bytes = 0;
+    for (uint32_t i = 0; i < memory2.memoryProperties.memoryHeapCount; ++i) {
+        const bool device_local = (memory2.memoryProperties.memoryHeaps[i].flags
+            & vk::MemoryHeapFlagBits::eDeviceLocal) != vk::MemoryHeapFlags{};
+        const uint64_t headroom = budget.heapBudget[i] > budget.heapUsage[i]
+            ? budget.heapBudget[i] - budget.heapUsage[i]
+            : 0ull;
+        free_bytes += device_local ? headroom : 0ull;
+    }
+    return free_bytes;
+}
+/** --------------------------------------------------------------------------------------------------------- destructor
+ * @brief Drain the device and tear down. Caller-owned buffers, rigs, and pipelines must
+ * already be destroyed.
+ */
+VulkanContext::~VulkanContext() {
+    // Join the slab allocator before destroying the device it uses for deferred frees.
+    BuffetMenu::shutdown();
+    alive_.store(false, std::memory_order_release);
+    if (!device_) {
+        return;
+    }
+    device_.waitIdle();
+    device_.destroyPipelineCache(pipeline_cache_);
+    device_.destroy();
+    instance_.destroy();
+}
+/// Kernels acquire their lease during controller startup, before accepting requests.
+uint32_t VulkanContext::submission_queue_index() {
+    VulkanContext& context = instance();
+    struct Lease {
+        VulkanContext* owner;
+        uint32_t index;
+        bool exclusive;
+        ~Lease() {
+            if (exclusive && VulkanContext::alive_.load(std::memory_order_acquire))
+                owner->queue_claims_[index].clear(std::memory_order_release);
+        }
+    };
+    thread_local Lease lease = [&]() -> Lease {
+        const uint32_t count = uint32_t(context.compute_queues_.size());
+        if (context.internally_synchronized_queues_)
+            return {&context, context.next_queue_slot_.fetch_add(1, std::memory_order_relaxed) % count, false};
+        for (uint32_t i = 0; i < count; ++i)
+            if (!context.queue_claims_[i].test_and_set(std::memory_order_acquire)) return {&context, i, true};
+        ALLIGATOR_GPU_THROW("Vulkan: all compute queues have an owner; reduce GPU controller threads");
+    }();
+    return lease.index;
+}
+/** --------------------------------------------------------------------------------------------------------- submit_command_buffer
+ * @brief Reset the fence and submit to this thread's sticky compute queue, lock-free.
+ * @param command_buffer The recorded command buffer.
+ * @param fence The submitter's fence, signalled on retirement.
+ * @param callback Reserved by the in-flight callback scaffolding; pass nullptr.
+ * @param callback_context Reserved; pass nullptr.
+ */
+void VulkanContext::submit_command_buffer(
+    vk::CommandBuffer command_buffer,
+    vk::Fence fence,
+    void (*callback)(void*),
+    void* callback_context
+) {
+    VulkanContext& context = instance();
+    context.device_.resetFences(fence);
+    const uint32_t queue_slot = submission_queue_index();
+    vk::SubmitInfo submit_info{};
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer;
+    context.compute_queues_[queue_slot].submit(submit_info, fence);
+}
+/** --------------------------------------------------------------------------------------------------------- queue_family_index
+ * @brief The compute queue family leased by this submitting thread.
+ */
+uint32_t VulkanContext::queue_family_index() {
+    return instance().compute_families_[submission_family_slot()];
+}
+/** --------------------------------------------------------------------------------------------------------- submission_family_slot
+ * @brief The submitting thread's index into the prepared compute-family command buffers.
+ */
+uint32_t VulkanContext::submission_family_slot() {
+    return instance().queue_family_slots_[submission_queue_index()];
+}
+/** --------------------------------------------------------------------------------------------------------- buffer_create_info
+ * @brief Shares a buffer across every compute family when the device exposes more than one.
+ */
+vk::BufferCreateInfo VulkanContext::buffer_create_info(vk::DeviceSize bytes, vk::BufferUsageFlags usage) {
+    return instance().shared_buffer_info(bytes, usage);
+}
+/** --------------------------------------------------------------------------------------------------------- bit_placement
+ * @brief Where device-shared bit stores (planes, survivor masks) live: the zero-copy rung
+ * when a device is present (UNIFIED on unified-memory systems, HOST_CACHEABLE on discrete),
+ * plain heap without one.
+ * @return The placement.
+ */
+const Placemat* VulkanContext::bit_placement() {
+    if (!instance().device_present_) return BuffetMenu::get("heap");
+    return instance().device_props_.unified_memory
+        ? VulkanPlacements::rung<4>("vulkan_unified")
+        : VulkanPlacements::rung<2>("vulkan_host_cacheable");
+}
+/** --------------------------------------------------------------------------------------------------------- buffer_placement
+ * @brief The placement resolved to the storage-buffer memory type the capability ladder
+ * probed at init - the same type the job table and parameter buffers verify against their
+ * memory requirements. Never a named-rung assumption: rung 6 carries the probed index, and
+ * context init threw already if no host-coherent type exists. Heap without a device.
+ * @return The placement.
+ */
+const Placemat* VulkanContext::buffer_placement() {
+    if (!instance().device_present_) return BuffetMenu::get("heap");
+    return VulkanPlacements::rung<6>("vulkan_buffer");
+}
+/** --------------------------------------------------------------------------------------------------------- queue_count
+ * @brief Compute queues across all compute families, for GPU worker-count decisions.
+ * @return Queue count, or 0 without a device.
+ */
+uint32_t VulkanContext::queue_count() {
+    if (!instance().device_present_) return 0;
+    return static_cast<uint32_t>(instance().compute_queues_.size());
+}
+/** --------------------------------------------------------------------------------------------------------- device_free_bytes
+ * @brief Live device-local budget headroom, polled from the driver at call time.
+ * @return Free device-local bytes, or 0 without a device or the budget extension.
+ */
+uint64_t VulkanContext::device_free_bytes() {
+    if (!instance().device_present_) return 0;
+    return instance().poll_budget_headroom();
+}
 namespace {
 /** --------------------------------------------------------------------------------------------------------- Kernel Push
  * @struct KernelPush
@@ -400,7 +934,7 @@ ShaderState::~ShaderState() = default;
 const std::vector<uint32_t>& ShaderState::spirv() const { return impl_->words; }
 const std::string& ShaderState::name() const { return impl_->name; }
 size_t ShaderState::capacity() const { return impl_->limit; }
-void ShaderState::dispatch(const GPUSlice* streams, size_t count, uint32_t workgroups) const {
+void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgroups) const {
     workgroups = std::min(workgroups, VulkanContext::device_properties().max_workgroup_count[0]);
     for (size_t first = 0; first < count; first += impl_->limit) {
         const size_t n = std::min(impl_->limit, count - first);
@@ -451,9 +985,9 @@ Shader& Shader::operator=(Shader&& other) noexcept = default;
 Shader::~Shader() = default;
 /** --------------------------------------------------------------------------------------------------------- Shader::operator() */
 std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
-    const GPUSlice* slices,
+    const Slice* slices,
     size_t count,
-    void (*callback)(GPUSlice slice),
+    void (*callback)(Slice slice),
     uint32_t workgroups
 ) const {
     if (!state_) GPU_THROW("Vulkan Shader: moved-from Shader cannot dispatch");
@@ -469,8 +1003,8 @@ std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
 }
 /** --------------------------------------------------------------------------------------------------------- Shader::operator() (one) */
 std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
-    const GPUSlice& slice,
-    void (*callback)(GPUSlice slice),
+    const Slice& slice,
+    void (*callback)(Slice slice),
     uint32_t workgroups
 ) const {
     return (*this)(&slice, 1, callback, workgroups);
@@ -478,7 +1012,7 @@ std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
 /** --------------------------------------------------------------------------------------------------------- GPU::run (Shader)
  * @brief Runs a prepared Shader over a list of slices, one workgroup column each.
  */
-void GPU::run(const Shader& program, GPUSlice* streams, size_t stream_count) {
+void GPU::run(const Shader& program, Slice* streams, size_t stream_count) {
     program(streams, stream_count);
 }
 namespace {
@@ -583,7 +1117,7 @@ ShaderState& job_table_engine_for(const Slice& program) {
 /** --------------------------------------------------------------------------------------------------------- GPU::run (job table)
  * @brief Runs a compile_glsl program with one stream per job, in rounds of the engine's table capacity.
  */
-void GPU::run(const Slice& program, GPUSlice* streams, size_t stream_count) {
+void GPU::run(const Slice& program, Slice* streams, size_t stream_count) {
     auto& engine = vulkan::job_table_engine_for(program);
     const uint64_t host_handle[2] = {0, 0};
     for (size_t start = 0; start < stream_count; start += engine.capacity()) {
@@ -647,178 +1181,4 @@ const Placemat* const Placemat::HOST_CACHEABLE = VulkanPlacements::rung<2>("vulk
 const Placemat* const Placemat::DEVICE = VulkanPlacements::rung<3>("vulkan_device");
 const Placemat* const Placemat::UNIFIED = VulkanPlacements::rung<4>("vulkan_unified");
 const Placemat* const Placemat::BASIC_HEAP = BuffetMenu::get("heap");
-/** --------------------------------------------------------------------------------------------------------- GPUSlice Constructor
- * @brief Constructs a new `GPUSlice` with the specified size.
- * @param size The size of the slice in bytes.
- * @param novel_buffer If true, the slice is allocated as a novel buffer. Default is false.
- */
-GPUSlice::GPUSlice(size_t size, bool novel_buffer)
-: slice_(size, novel_buffer, VulkanContext::buffer_placement()) {}
-/** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
- * @brief Copies data from an external memory location into a new slice of memory in the
- * buffet alligator.
- * @param copy_from Pointer to the external memory to copy from.
- * @param size The size of the data to copy in bytes.
- * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
- * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
- * reduce fragmentation in the arena. Default is false.
- */
-GPUSlice::GPUSlice(
-    const void* copy_from,
-    size_t size,
-    bool novel_buffer
-) : slice_(copy_from, size, novel_buffer, VulkanContext::buffer_placement()) {
-}
-/** ------------------------------------------------------------------------------------------- Constructor - From Slice
- * @brief Constructs a `GPUSlice` from an existing `Slice` object.
- * @param slice The `Slice` object to construct from.
- */
-GPUSlice::GPUSlice(Slice slice) : slice_(std::move(slice)) {}
-/** ------------------------------------------------------------------------------------------- Assignment - From Slice
- * @brief Assigns a `Slice` object to the `GPUSlice`.
- * @param slice The `Slice` object to assign from.
- */
-GPUSlice& GPUSlice::operator=(Slice slice) {
-    slice_ = std::move(slice);
-    return *this;
-}
-/** ------------------------------------------------------------------------------------------- Conversion - To Slice
- * @brief Converts the `GPUSlice` to a `Slice` object.
- * @return A `Slice` object representing the same memory as the `GPUSlice`.
- */
-GPUSlice::operator Slice&() {
-    if (slice_.is_null()) [[unlikely]] {
-        GPU_THROW("GPUSlice::operator Slice&() called on a null or freed GPUSlice");
-    }
-    return slice_;
-}
-/** ------------------------------------------------------------------------------------------- Conversion - To Const Slice
- * @brief Converts the `GPUSlice` to a const `Slice` object.
- * @return A const `Slice` object representing the same memory as the `GPUSlice`.
- */
-GPUSlice::operator const Slice&() const {
-    return slice_;
-}
-/** ------------------------------------------------------------------------------------------- Constructor - Copy from GPUSlice
- * @brief Constructs a `GPUSlice` by copying from another `GPUSlice`.
- * @param other The `GPUSlice` to copy from.
- */
-GPUSlice::GPUSlice(const GPUSlice& other)
-: slice_(other.slice_) {}
-/** ------------------------------------------------------------------------------------------- Assignment - From GPUSlice
- * @brief Assigns a `GPUSlice` object to the current `GPUSlice`.
- * @param other The `GPUSlice` to assign from.
- */
-GPUSlice& GPUSlice::operator=(const GPUSlice& other) {
-    if (this == &other) {
-        return *this;
-    }
-    slice_ = other.slice_;
-    return *this;
-}
-/** ------------------------------------------------------------------------------------------- Constructor - Move from GPUSlice
- * @brief Constructs a `GPUSlice` by moving from another `GPUSlice`.
- * @param other The `GPUSlice` to move from.
- */
-GPUSlice::GPUSlice(GPUSlice&& other) noexcept
-: slice_(std::move(other.slice_)) {}
-/** ------------------------------------------------------------------------------------------- Assignment - Move from GPUSlice
- * @brief Assigns a `GPUSlice` object to the current `GPUSlice` by moving from another
- * `GPUSlice`.
- * @param other The `GPUSlice` to move from.
- */
-GPUSlice& GPUSlice::operator=(GPUSlice&& other) noexcept {
-    slice_ = std::move(other.slice_);
-    return *this;
-}
-/** ------------------------------------------------------------------------------------------- Placement
- * @brief Returns the memory placement type of the slice.
- * @return The `Placement` enum value representing the slice's memory placement.
- */
-const Placemat* GPUSlice::placement() const {
-    return slice_.placement();
-}
-/** ------------------------------------------------------------------------------------------- Raw accessors
- * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
- * host-writable pointer to the underlying memory.
- * @return A pointer to the underlying memory of the slice.
- */
-void* GPUSlice::raw() {
-    return slice_.raw();
-}
-/** ------------------------------------------------------------------------------------------- Raw accessors - const
- * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
- * host-writable pointer to the underlying memory, but as a read-only pointer.
- * @return A read-only pointer to the underlying memory of the slice.
- */
-const void* GPUSlice::raw() const {
-    return slice_.raw();
-}
-/** ------------------------------------------------------------------------------------------- Create new view
- * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
- * view shares the same underlying memory and reference counter as the original slice. Using
- * the default parameters will create a new view that is essentially identical to the original
- * slice - a shared view that increments the reference counter and will keep the underlying
- * memory alive until all views are destroyed.
- * @param offset The offset in bytes from the start of the original slice to the start of the
- * new view.
- * @param length The length in bytes of the new view.
- * @return A new `GPUSlice` object that is a view of the original slice.
- */
-GPUSlice GPUSlice::slice(size_t offset, size_t length) const {
-    if (slice_.is_null()) [[unlikely]] {
-        GPU_THROW("GPUSlice::slice: Attempted to slice a null or freed GPUSlice.");
-    }
-    return GPUSlice(slice_.slice(offset, length));
-}
-/** ------------------------------------------------------------------------------------------- Size in bytes
- * @brief Returns the size of the slice in bytes.
- * @return The size of the slice in bytes.
- */
-size_t GPUSlice::size_bytes() const {
-    return slice_.size_bytes();
-}
-/** ------------------------------------------------------------------------------------------- Resize
- * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
- * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
- * is false, the existing data will be discarded and the slice will be reallocated. This can
- * be called on a freed or null slice, in which case it will behave like a normal constructor
- * and allocate a new slice of the specified size.
- * @param new_size The new size of the slice in bytes.
- * @param preserve_data Whether to preserve existing data in the slice. Default is true.
- * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
- * Default is false.
- * @param placement The memory placement strategy to use. Default is `default_placement()`.
- */
-void GPUSlice::resize(
-    size_t new_size,
-    bool preserve_data,
-    bool novel_buffer
-) {
-    slice_.resize(new_size, preserve_data, novel_buffer);
-}
-/** ------------------------------------------------------------------------------------------- Free
- * @brief Frees the underlying memory of the slice. This is called automatically when the
- * slice is destroyed, but can be called manually to free the memory early. After calling this
- * method, the slice will be null.
- */
-void GPUSlice::free() {
-    slice_.free();
-}
-/** ------------------------------------------------------------------------------------------- Root slice
- * @brief Returns a reference to the root slice. This is useful when dealing with nested
- * slices or `SliceType` conceptual objects.
- * @return A reference to the root slice.
- */
-Slice& GPUSlice::root_slice() {
-    return slice_;
-}
-/** ------------------------------------------------------------------------------------------- Root slice (const)
- * @brief Returns a const reference to the root slice. This is useful when dealing with nested
- * slices or `SliceType` conceptual objects.
- * @return A const reference to the root slice.
- */
-const Slice& GPUSlice::root_slice() const {
-    return slice_;
-}
 } // namespace buffetalligator

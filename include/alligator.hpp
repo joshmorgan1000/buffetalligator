@@ -33,9 +33,10 @@
 #include <iostream>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
-#if defined(BUFFETALLIGATOR_HAS_VULKAN)
-#include <vulkan/vulkan.h>
+#ifdef _WIN32
+#define VK_USE_PLATFORM_WIN32_KHR
 #endif
+#include <vulkan/vulkan.hpp>
 #if defined(BUFFETALLIGATOR_HAS_CUDA)
 #include <cuda.h>
 #endif
@@ -790,7 +791,7 @@ private:
         unset_read_this(placemat_construction);
         placement->name_ = name;
         placement->allocator_ = allocate;
-        placement->default_slab_size_ = default_slab_size >> 12;
+        placement->default_slab_size_ = default_slab_size;
         placement->bump_alignment_ = bump_alignment;
         placement->deallocator_ = deallocate;
         placement->get_context_ = get_context;
@@ -4930,203 +4931,6 @@ public:
     using threadsafe_logger::Exception::what;
 };
 #define GPU_THROW(msg) throw GPUException(msg)
-/** --------------------------------------------------------------------------------------------------------- GPUSlice
- * @class GPUSlice
- * @brief A GPUSlice represents a slice of GPU memory managed by the Vulkan backend.
- */
-class GPUSlice {
-public:
-    /** ------------------------------------------------------------------------------------------- Constructor - Default
-     * @brief Constructs a null slice with no underlying memory with an unspecified placement.
-     */
-    GPUSlice() = default;
-    /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
-     * slice is guaranteed to be zero-initialized.
-     * @param size The size of the slice in bytes.
-     */
-    GPUSlice(size_t size, bool novel_buffer = false);
-    /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
-     * @brief Copies data from an external memory location into a new slice of memory in the
-     * buffet alligator.
-     * @param copy_from Pointer to the external memory to copy from.
-     * @param size The size of the data to copy in bytes.
-     * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
-     * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
-     * reduce fragmentation in the arena. Default is false.
-     */
-    GPUSlice(
-        const void* copy_from,
-        size_t size,
-        bool novel_buffer = false
-    );
-    /** ------------------------------------------------------------------------------------------- Constructor - From Slice
-     * @brief Constructs a `GPUSlice` from an existing `Slice` object.
-     * @param slice The `Slice` object to construct from.
-     */
-    GPUSlice(Slice slice);
-    /** ------------------------------------------------------------------------------------------- Assignment - From Slice
-     * @brief Assigns a `Slice` object to the `GPUSlice`.
-     * @param slice The `Slice` object to assign from.
-     */
-    GPUSlice& operator=(Slice slice);
-    /** ------------------------------------------------------------------------------------------- Conversion - To Slice
-     * @brief Converts the `GPUSlice` to a `Slice` object.
-     * @return A `Slice` object representing the same memory as the `GPUSlice`.
-     */
-    operator Slice&();
-    /** ------------------------------------------------------------------------------------------- Conversion - To Const Slice
-     * @brief Converts the `GPUSlice` to a const `Slice` object.
-     * @return A const `Slice` object representing the same memory as the `GPUSlice`.
-     */
-    operator const Slice&() const;
-    /** ------------------------------------------------------------------------------------------- Copy/move semantics
-     * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
-     * much like `std::shared_ptr` in that they share the same reference counter and underlying
-     * memory. The copy constructor and assignment operators are deleted to cut down on unintended
-     * reference counting traffic which can be expensive in high-performance scenarios. Move
-     * semantics are supported to allow efficient transfer of ownership of the underlying memory.
-     */
-    GPUSlice(const GPUSlice& other);
-    GPUSlice& operator=(const GPUSlice& other);
-    GPUSlice(GPUSlice&& other) noexcept;
-    GPUSlice& operator=(GPUSlice&& other) noexcept;
-    /** ------------------------------------------------------------------------------------------- Destructor */
-    ~GPUSlice() { free(); }
-    /** ------------------------------------------------------------------------------------------- Placement
-     * @brief Returns the memory placement type of the slice.
-     * @return The `Placement` enum value representing the slice's memory placement.
-     */
-    const Placemat* placement() const;
-    /** ------------------------------------------------------------------------------------------- Raw accessors
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory.
-     */
-    void* raw();
-    /** ------------------------------------------------------------------------------------------- Raw accessors - const
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory, but as a read-only pointer.
-     */
-    const void* raw() const;
-    /** ------------------------------------------------------------------------------------------- Accessor - Typed
-     * @brief Returns a pointer to the underlying data of the slice, cast to the specified type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A pointer to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    T* data() { return static_cast<T*>(raw()); }
-    /** ------------------------------------------------------------------------------------------- Accessor - Typed - const
-     * @brief Returns a const pointer to the underlying data of the slice, cast to the specified
-     * type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A const pointer to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    const T* data() const { return static_cast<const T*>(raw()); }
-    /** ------------------------------------------------------------------------------------------- Create new view
-     * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
-     * view shares the same underlying memory and reference counter as the original slice. Using
-     * the default parameters will create a new view that is essentially identical to the original
-     * slice - a shared view that increments the reference counter and will keep the underlying
-     * memory alive until all views are destroyed.
-     * @param offset The offset in bytes from the start of the original slice to the start of the
-     * new view.
-     * @param length The length in bytes of the new view.
-     * @return A new `GPUSlice` object that is a view of the original slice.
-     */
-    GPUSlice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
-    /** ------------------------------------------------------------------------------------------- Size in bytes
-     * @brief Returns the size of the slice in bytes.
-     * @return The size of the slice in bytes.
-     */
-    size_t size_bytes() const;
-    /** ------------------------------------------------------------------------------------------- Size in elements
-     * @brief Returns the size of the slice in elements of type T.
-     * @tparam T The type of elements in the slice. Default is `uint8_t`.
-     * @return The size of the slice in elements of type T.
-     */
-    template<typename T = uint8_t>
-    size_t size() const {
-        if constexpr (sizeof(T) == 8) {
-            return size_bytes() >> 3;
-        } else if constexpr (sizeof(T) == 4) {
-            return size_bytes() >> 2;
-        } else if constexpr (sizeof(T) == 2) {
-            return size_bytes() >> 1;
-        }
-        return size_bytes() / sizeof(T);
-    }
-    /** ------------------------------------------------------------------------------------------- Resize
-     * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
-     * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
-     * is false, the existing data will be discarded and the slice will be reallocated. This can
-     * be called on a freed or null slice, in which case it will behave like a normal constructor
-     * and allocate a new slice of the specified size.
-     * @param new_size The new size of the slice in bytes.
-     * @param preserve_data Whether to preserve existing data in the slice. Default is true.
-     * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
-     * Default is false.
-     * @param placement The memory placement strategy to use. Default is `default_placement()`.
-     */
-    void resize(
-        size_t new_size,
-        bool preserve_data = true,
-        bool novel_buffer = false
-    );
-    /** ------------------------------------------------------------------------------------------- Check if slice is null
-     * @brief Checks if the slice is null (i.e., has no underlying memory).
-     * @return True if the slice is null, false otherwise.
-     */
-    bool is_null() const { return slice_.is_null(); }
-    /** ------------------------------------------------------------------------------------------- Check if slice is valid
-     * @brief Checks if the slice is valid (i.e., has underlying memory).
-     * @return True if the slice is valid, false otherwise.
-     */
-    bool valid() const { return !is_null(); }
-    /// Borrowed pool index; retain this exact GPUSlice until Kernel completion.
-    uint32_t pool_index() const { return slice_.pool_index(); }
-
-    /** ------------------------------------------------------------------------------------------- Conversion to bool
-     * @brief Allows the slice to be used in boolean contexts.
-     * @return True if the slice is valid, false if it is null.
-     */
-    operator bool() const { return !is_null(); }
-    /** ------------------------------------------------------------------------------------------- Free
-     * @brief Frees the underlying memory of the slice. This is called automatically when the
-     * slice is destroyed, but can be called manually to free the memory early. After calling this
-     * method, the slice will be null.
-     */
-    void free();
-    /** ------------------------------------------------------------------------------------------- Get as
-     * @brief Returns a reference to the underlying data of the slice, cast to the specified type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A reference to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    T& get_as() { return *reinterpret_cast<T*>(data()); }
-    /** ------------------------------------------------------------------------------------------- Get as (const)
-     * @brief Returns a const reference to the underlying data of the slice, cast to the specified
-     * type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A const reference to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    const T& get_as() const { return *reinterpret_cast<const T*>(data()); }
-    /** ------------------------------------------------------------------------------------------- Root slice
-     * @brief Returns a reference to the root slice. This is useful when dealing with nested
-     * slices or `SliceType` conceptual objects.
-     * @return A reference to the root slice.
-     */
-    Slice& root_slice();
-    /** ------------------------------------------------------------------------------------------- Root slice (const)
-     * @brief Returns a const reference to the root slice. This is useful when dealing with nested
-     * slices or `SliceType` conceptual objects.
-     * @return A const reference to the root slice.
-     */
-    const Slice& root_slice() const;
-private:
-    Slice slice_;
-};
 /// @brief Forward declaration of the internal shader state used by the Shader class.
 class ShaderState;
 /** --------------------------------------------------------------------------------------------------------- Shader
@@ -5166,9 +4970,9 @@ public:
      * the shader has completed execution.
      */
     std::shared_ptr<moodycamel::LightweightSemaphore> operator()(
-        const GPUSlice* slices,
+        const Slice* slices,
         size_t count,
-        void (*callback)(GPUSlice slice) = nullptr,
+        void (*callback)(Slice slice) = nullptr,
         uint32_t workgroups = 1
     ) const;
     /** ------------------------------------------------------------------------------------------- Shader Functor invocation (one)
@@ -5180,8 +4984,8 @@ public:
      * the shader has completed execution.
      */
     std::shared_ptr<moodycamel::LightweightSemaphore> operator()(
-        const GPUSlice& slice,
-        void (*callback)(GPUSlice slice) = nullptr,
+        const Slice& slice,
+        void (*callback)(Slice slice) = nullptr,
         uint32_t workgroups = 1
     ) const;
 };
@@ -5224,17 +5028,17 @@ struct GPU {
     /** ------------------------------------------------------------------------------------------- run
      * @brief Executes a recorded program on the GPU over the bound streams.
      * @param program The recorded program.
-     * @param streams One GPUSlice per workgroup column; column i processes streams[i] in place.
+     * @param streams One Slice per workgroup column; column i processes streams[i] in place.
      * @param stream_count How many Slices are bound; becomes the dispatch's Y extent.
      */
-    static void run(const Shader& program, GPUSlice* streams, size_t stream_count);
+    static void run(const Shader& program, Slice* streams, size_t stream_count);
     /** ------------------------------------------------------------------------------------------- run
      * @brief Decodes an encoded program and executes it on the GPU.
-     * @param program A compile_glsl program (job-table engine, one job per GPUSlice).
-     * @param streams One GPUSlice per job.
+     * @param program A compile_glsl program (job-table engine, one job per Slice).
+     * @param streams One Slice per job.
      * @param stream_count How many jobs this round binds.
      */
-    static void run(const Slice& program, GPUSlice* streams, size_t stream_count);
+    static void run(const Slice& program, Slice* streams, size_t stream_count);
     /** ------------------------------------------------------------------------------------------- compile_glsl
      * @brief Compiles a kernel body under the alligator prelude into SPIR-V words held in a Slice.
      * The body defines main() against the prelude's Slice-addressing helpers; the workgroup shape
@@ -5272,4 +5076,813 @@ public:
     static DeviceMemoryUsage memory_usage();
 };
 #endif
+/** --------------------------------------------------------------------------------------------------------- Vulkan Exception
+ * @class VulkanException
+ * @brief Exception type for Vulkan-related errors.
+ */
+class VulkanException : public threadsafe_logger::Exception {
+public:
+    using threadsafe_logger::Exception::Exception;
+    using threadsafe_logger::Exception::what;
+};
+#define ALLIGATOR_GPU_THROW(msg) throw VulkanException(msg)
+/** --------------------------------------------------------------------------------------------------------- Compile Vulkan GLSL
+ * @brief Compiles a complete Vulkan 1.2 compute shader into optimized SPIR-V.
+ * @param source Complete GLSL source.
+ * @param float16 Whether to define ALLIGATOR_FLOAT16 for the source.
+ * @param name Diagnostic shader name.
+ * @return Optimized SPIR-V words.
+ */
+std::vector<uint32_t> compile_vulkan_glsl(
+    std::string_view source,
+    bool float16,
+    std::string_view name
+);
+/** --------------------------------------------------------------------------------------------------------- DeviceProperties
+ * @struct DeviceProperties
+ * @brief Queried physical-device limits relevant to dispatch sizing and batch planning.
+ */
+struct DeviceProperties {
+    uint64_t gpu_free_bytes = 0;        ///< Device-local headroom from the budget query (0 without it).
+    std::string device_name;                   ///< Device name.
+    uint32_t max_workgroup_count[3];           ///< Max workgroup counts per dispatch dimension.
+    uint32_t max_workgroup_size[3];            ///< Max workgroup sizes.
+    uint32_t max_workgroup_invocations;        ///< Max invocations per workgroup.
+    uint32_t max_shared_memory;                ///< Max shared memory per workgroup (bytes).
+    uint32_t subgroup_size;                    ///< SIMD subgroup width.
+    uint64_t device_local_memory_bytes;        ///< Total device-local heap size.
+    uint64_t host_visible_memory_bytes;        ///< Device-local heap size reachable from the host.
+    uint64_t max_storage_buffer_range;         ///< Max storage buffer range.
+    uint32_t max_push_constants;               ///< Max push constant bytes.
+    bool supports_subgroup_arithmetic;         ///< Subgroup arithmetic ops available.
+    bool supports_subgroup_shuffle;            ///< Subgroup shuffle ops available.
+    bool supports_buffer_device_address;       ///< Device-resolvable buffer addresses.
+    bool supports_int64;                       ///< 64-bit integers in shaders.
+    bool supports_int64_atomics;               ///< 64-bit buffer atomics.
+    bool supports_float16;                     ///< 16-bit float arithmetic in shaders.
+    bool supports_memory_budget;               ///< Live device-memory headroom queryable.
+    bool supports_timeline_semaphore;          ///< Timeline semaphores available.
+    bool unified_memory;                       ///< Host and device share physical memory.
+};
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer
+ * @class VulkanBuffer
+ * @brief The Vulkan handles behind one slab: buffer, memory, mapping, and device address.
+ */
+class VulkanBuffer {
+private:
+    vk::Buffer buffer_{};          ///< Vulkan buffer handle (the compute target).
+    vk::DeviceMemory memory_{};    ///< Backing memory allocation.
+    void* host_ = nullptr;         ///< Persistent CPU mapping.
+    uint64_t address_ = 0;         ///< Device address (the shader-side pointer).
+    uint64_t size_ = 0;            ///< Size in bytes.
+    VulkanBuffer() = default;
+    friend class VulkanContext;
+    friend struct VulkanStaticMethods;
+public:
+    /** ------------------------------------------------------------------------------------------- Allocating Constructor
+     * @brief The five-call Vulkan allocation: create, get requirements, allocate, bind, map, plus
+     * the device-address query and the zero-fill the slab contract requires.
+     * @param size_bytes Buffer size in bytes.
+     */
+    VulkanBuffer(size_t size_bytes);
+    /** ------------------------------------------------------------------------------------------- Allocating Constructor (typed)
+     * @brief The same five-call allocation against an explicit memory type index.
+     * @param size_bytes Buffer size in bytes.
+     * @param memory_type_index The memory type to allocate from.
+     */
+    VulkanBuffer(size_t size_bytes, uint32_t memory_type_index);
+    /** ------------------------------------------------------------------------------------------- No copy/move */
+    VulkanBuffer(const VulkanBuffer&) = delete;
+    VulkanBuffer& operator=(const VulkanBuffer&) = delete;
+    VulkanBuffer(VulkanBuffer&&) = delete;
+    VulkanBuffer& operator=(VulkanBuffer&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Unmap and destroy the Vulkan objects. Defined in vulkan.cpp.
+     */
+    ~VulkanBuffer();
+    /** ------------------------------------------------------------------------------------------- address
+     * @brief Retrieves the device address of the Vulkan buffer.
+     * @return The device address.
+     */
+    uint64_t address() const { return address_; }
+    /** ------------------------------------------------------------------------------------------- size
+     * @brief Retrieves the size of the Vulkan buffer.
+     * @return The size of the buffer in bytes.
+     */
+    uint64_t size() const { return size_; }
+    /** ------------------------------------------------------------------------------------------- host
+     * @brief Retrieves the host pointer of the Vulkan buffer.
+     * @return The host pointer.
+     */
+    void* host() const { return host_; }
+};
+/** --------------------------------------------------------------------------------------------------------- PlacementIndex
+ * @enum PlacementIndex
+ * @brief The memory-type ladder rungs `VulkanContext` resolves, one per Placemat below.
+ */
+enum class PlacementIndex : uint8_t {
+    HOST = 0, HOST_VISIBLE = 1, HOST_CACHEABLE = 2, DEVICE = 3, UNIFIED = 4, BASIC_HEAP = 5, UNSPECIFIED = 6, COUNT = 7
+};
+/** --------------------------------------------------------------------------------------------------------- VulkanContext
+ * @class VulkanContext
+ * @brief Singleton owner of the process-wide Vulkan compute substrate.
+ */
+class VulkanContext {
+private:
+    vk::Instance instance_{};                    ///< Vulkan instance.
+    vk::PhysicalDevice physical_device_{};       ///< Selected physical device.
+    vk::Device device_{};                        ///< Logical device.
+    std::vector<vk::Queue> compute_queues_;      ///< Queues flattened in compute-family order.
+    std::vector<uint32_t> compute_families_;     ///< Unique compute-capable family indices.
+    std::vector<uint32_t> queue_family_slots_;   ///< Compute-family slot for each queue.
+    std::unique_ptr<std::atomic_flag[]> queue_claims_; ///< Exclusive thread leases when driver synchronization is absent.
+    inline static std::atomic<uint32_t> next_queue_slot_{0};  ///< Hands each producer thread a sticky queue slot.
+    bool internally_synchronized_queues_ = false;  ///< Probed VK_KHR_internally_synchronized_queues feature.
+    vk::PhysicalDeviceMemoryProperties memory_properties_{};  ///< Queried once at init.
+    vk::PipelineCache pipeline_cache_{};         ///< Driver pipeline cache (in-process).
+    DeviceProperties device_props_{};            ///< Queried device limits and features.
+    /// @brief Usage flags every VulkanBuffer slab is created with.
+    vk::BufferUsageFlags buffer_usage_{};
+    /// @brief Allocation-flags chain (device address) shared by every slab allocation.
+    vk::MemoryAllocateFlagsInfo allocate_flags_{};
+    /// @brief Memory type resolved once for `buffer_usage_` (DEVICE_LOCAL|HOST_VISIBLE preferred).
+    uint32_t buffer_memory_type_index_ = UINT32_MAX;
+    /// @brief Memory type per Placement value (indexed by the Placement enum's underlying value).
+    std::array<uint32_t, static_cast<size_t>(PlacementIndex::COUNT)> placement_type_indices_{};
+    /// @brief Whether each Placement's memory type is HOST_CACHED (CPU reads at RAM speed).
+    std::array<bool, static_cast<size_t>(PlacementIndex::COUNT)> placement_cpu_cached_{};
+    /** ------------------------------------------------------------------------------------------- TransferUnit
+     * @struct TransferUnit
+     * @brief Per-thread one-shot transfer unit for slab-to-slab copies (egress staging).
+     * Command pools stay externally synchronized with no opt-out, so each producer thread
+     * owns its own pool, command buffer, and fence.
+     */
+    struct TransferUnit {
+        vk::CommandPool pool{};       ///< This thread's command pool.
+        vk::CommandBuffer command{};  ///< This thread's one-shot recording buffer.
+        vk::Fence fence{};            ///< Signalled when this thread's copy retires.
+    };
+    /** ------------------------------------------------------------------------------------------- make_transfer_unit
+     * @brief Create this thread's TransferUnit from its own pool.
+     */
+    static TransferUnit make_transfer_unit();
+    /** ------------------------------------------------------------------------------------------- transfer_unit
+     * @brief This thread's transfer unit, created on first use. Handles are reclaimed by
+     * vkDestroyDevice at teardown, never individually.
+     */
+    static TransferUnit& transfer_unit();
+    /// @brief True if the device is UMA (unified memory architecture) and supports
+    /// host-visible device-local buffers.
+    bool portability_available_ = false;
+    /// @brief True if a Vulkan device was successfully created and is present.
+    bool device_present_ = false;
+    /// @brief False once the context destructor begins; slab teardown after that skips the device.
+    inline static std::atomic<bool> alive_{false};
+    /** ------------------------------------------------------------------------------------------- unified_from_memory_properties
+     * @brief The one-query UMA test: a memory type carrying both DEVICE_LOCAL and HOST_VISIBLE
+     * whose heap is device-local.
+     * @param properties The queried memory properties.
+     * @return True on unified-memory systems.
+     */
+    static bool unified_from_memory_properties(
+        const vk::PhysicalDeviceMemoryProperties& properties
+    );
+    /** ------------------------------------------------------------------------------------------- shared_buffer_info
+     * @brief Creates buffer metadata using the device's fixed compute-family sharing policy.
+     */
+    vk::BufferCreateInfo shared_buffer_info(vk::DeviceSize bytes, vk::BufferUsageFlags usage) const;
+    /** ------------------------------------------------------------------------------------------- try_find_memory_type
+     * @brief Find a memory type index matching the filter and all wanted flags.
+     * @param type_filter Bitmask of allowed type indices (from VkMemoryRequirements).
+     * @param wanted Required property flags.
+     * @param excluded Property flags the type must not carry.
+     * @return The type index, or UINT32_MAX when none matches.
+     */
+    uint32_t try_find_memory_type(
+        uint32_t type_filter,
+        vk::MemoryPropertyFlags wanted,
+        vk::MemoryPropertyFlags excluded = {}
+    ) const;
+    /** ------------------------------------------------------------------------------------------- constructor
+     * @brief Create the context and register it as the process GPU backend. Requests only 2
+     * host-side workers from the inherited CPUCompute pool (submission/callback plumbing) rather
+     * than one per hardware thread - a GPU context does not run compute on the CPU worker pool,
+     * so hardware_concurrency() workers would sit idle for the service's entire lifetime.
+     */
+    VulkanContext();
+    /** ------------------------------------------------------------------------------------------- poll_budget_headroom
+     * @brief Sum the device-local budget headroom (budget - usage per heap) via VK_EXT_memory_budget.
+     * Re-queryable at any time - the driver recomputes budget/usage per call.
+     * @return Free device-local bytes, or 0 when the budget extension is absent.
+     */
+    uint64_t poll_budget_headroom() const;
+    /// @brief Friend classes that need to access the private Vulkan objects and methods.
+    friend class VulkanBuffer;
+    friend struct VulkanStaticMethods;
+    friend class VulkanPipeline;
+    friend class Arena;
+    friend class VulkanKernel;
+    friend class ShaderState;
+public:
+    /** ------------------------------------------------------------------------------------------- Singleton instance
+     * @brief The singleton VulkanCompute instance.
+     */
+    static VulkanContext& instance() {
+        static VulkanContext inst;
+        return inst;
+    }
+    /** ------------------------------------------------------------------------------------------- destructor
+     * @brief Drain the device and tear down. Caller-owned buffers, rigs, and pipelines must
+     * already be destroyed.
+     */
+    ~VulkanContext();
+    /** ------------------------------------------------------------------------------------------- device_properties */
+    static const DeviceProperties& device_properties() { return instance().device_props_; }
+    /** ------------------------------------------------------------------------------------------- device
+     * @brief The logical device, for teardown and object creation outside the friend set
+     * (the job-table engine's state lives in an anonymous namespace and cannot be friended).
+     */
+    static vk::Device device() { return instance().device_; }
+    /** ------------------------------------------------------------------------------------------- pipeline_cache
+     * @brief The shared driver pipeline cache for one-time kernel preparation.
+     */
+    static vk::PipelineCache pipeline_cache() { return instance().pipeline_cache_; }
+    /// Reserve a queue for this thread's lifetime. Never wrap onto an unsynchronized queue.
+    /// Kernels acquire their lease during controller startup, before accepting requests.
+    static uint32_t submission_queue_index();
+    /** ------------------------------------------------------------------------------------------- submit_command_buffer
+     * @brief Reset the fence and submit to this thread's sticky compute queue, lock-free.
+     * @param command_buffer The recorded command buffer.
+     * @param fence The submitter's fence, signalled on retirement.
+     * @param callback Reserved by the in-flight callback scaffolding; pass nullptr.
+     * @param callback_context Reserved; pass nullptr.
+     */
+    static void submit_command_buffer(
+        vk::CommandBuffer command_buffer,
+        vk::Fence fence,
+        void (*callback)(void*),
+        void* callback_context
+    );
+    /** ------------------------------------------------------------------------------------------- buffer_memory_type_index
+     * @brief The resolved host-coherent storage-buffer memory type for the job-table engine.
+     */
+    static uint32_t buffer_memory_type_index() { return instance().buffer_memory_type_index_; }
+    /** ------------------------------------------------------------------------------------------- allocate_flags
+     * @brief The device-address allocation flags chain, by reference for pNext wiring.
+     */
+    static const vk::MemoryAllocateFlagsInfo& allocate_flags() { return instance().allocate_flags_; }
+    /** ------------------------------------------------------------------------------------------- queue_family_index
+     * @brief The compute queue family leased by this submitting thread.
+     */
+    static uint32_t queue_family_index();
+    /** ------------------------------------------------------------------------------------------- submission_family_slot
+     * @brief The submitting thread's index into the prepared compute-family command buffers.
+     */
+    static uint32_t submission_family_slot();
+    /** ------------------------------------------------------------------------------------------- compute_families
+     * @brief Unique compute-capable family indices prepared on the logical device.
+     */
+    static const std::vector<uint32_t>& compute_families() { return instance().compute_families_; }
+    /** ------------------------------------------------------------------------------------------- buffer_create_info
+     * @brief Shares a buffer across every compute family when the device exposes more than one.
+     */
+    static vk::BufferCreateInfo buffer_create_info(vk::DeviceSize bytes, vk::BufferUsageFlags usage);
+    /** ------------------------------------------------------------------------------------------- placement_cpu_cached
+     * @brief Whether a Placement's memory type reads at RAM speed from the CPU.
+     * @param placement_index The Placement enum's underlying value.
+     * @return True when the type is HOST_CACHED.
+     */
+    static bool placement_cpu_cached(uint8_t placement_index) {
+        return instance().placement_cpu_cached_[placement_index];
+    }
+    /** ------------------------------------------------------------------------------------------- bit_placement
+     * @brief Where device-shared bit stores (planes, survivor masks) live: the zero-copy rung
+     * when a device is present (UNIFIED on unified-memory systems, HOST_CACHEABLE on discrete),
+     * plain heap without one.
+     * @return The placement.
+     */
+    static const Placemat* bit_placement();
+    /** ------------------------------------------------------------------------------------------- buffer_placement
+     * @brief The placement resolved to the storage-buffer memory type the capability ladder
+     * probed at init - the same type the job table and parameter buffers verify against their
+     * memory requirements. Never a named-rung assumption: rung 6 carries the probed index, and
+     * context init threw already if no host-coherent type exists. Heap without a device.
+     * @return The placement.
+     */
+    static const Placemat* buffer_placement();
+    /** ------------------------------------------------------------------------------------------- device_present
+     * @brief Cheap "is a physical GPU present" probe. Software implementations do not count.
+     * @return True when at least one non-CPU Vulkan device exists.
+     */
+    static bool device_present() {
+        return instance().device_present_;
+    }
+    /** ------------------------------------------------------------------------------------------- queue_count
+     * @brief Compute queues across all compute families, for GPU worker-count decisions.
+     * @return Queue count, or 0 without a device.
+     */
+    static uint32_t queue_count();
+    /** ------------------------------------------------------------------------------------------- internally_synchronized_queues
+     * @brief Whether the compute family was created with VK_KHR_internally_synchronized_queues,
+     * so producers need no external queue sync.
+     * @return True when the feature is enabled.
+     */
+    static bool internally_synchronized_queues() {
+        return instance().internally_synchronized_queues_;
+    }
+    /** ------------------------------------------------------------------------------------------- device_free_bytes
+     * @brief Live device-local budget headroom, polled from the driver at call time.
+     * @return Free device-local bytes, or 0 without a device or the budget extension.
+     */
+    static uint64_t device_free_bytes();
+    /** ------------------------------------------------------------------------------------------- device_unified
+     * @brief Whether the first non-CPU device is unified-memory, via the one-query memory-type
+     * test. Cached after the first probe.
+     * @return True on unified-memory systems.
+     */
+    static bool device_unified() {
+        return instance().device_properties().unified_memory;
+    }
+    /** ------------------------------------------------------------------------------------------- exec_dim_reduce
+     * @brief Determine the optimal execution dimension reduction for a given work item count.
+     * @param work_item_count The total number of work items.
+     * @return A pair containing the primary and optional secondary reduction factors.
+     */
+    static constexpr std::pair<size_t, std::optional<size_t>> exec_dim_reduce(
+        size_t work_item_count
+    ) {
+        if ((work_item_count & 0xF) == 0) return {16, std::nullopt};
+        if ((work_item_count % 15) == 0) return {15, std::nullopt};
+        if ((work_item_count % 12) == 0) return {12, std::nullopt};
+        if ((work_item_count % 11) == 0) return {11, std::nullopt};
+        if ((work_item_count % 10) == 0) return {10, std::nullopt};
+        if ((work_item_count % 9) == 0) return {9, std::nullopt};
+        if ((work_item_count & 0x7) == 0) return {8, std::nullopt};
+        if ((work_item_count % 7) == 0) return {7, std::nullopt};
+        if ((work_item_count % 6) == 0) return {6, std::nullopt};
+        if ((work_item_count % 5) == 0) return {5, std::nullopt};
+        if ((work_item_count % 4) == 0) return {4, std::nullopt};
+        if ((work_item_count % 3) == 0) return {3, std::nullopt};
+        if ((work_item_count % 2) == 0) return {2, std::nullopt};
+        if ((work_item_count & 0xF) == 0xF) return {16, 15};
+        if ((work_item_count % 15) == 14) return {15, 14};
+        if ((work_item_count % 12) == 11) return {12, 11};
+        if ((work_item_count % 11) == 10) return {11, 10};
+        if ((work_item_count % 10) == 9) return {10, 9};
+        if ((work_item_count % 9) == 8) return {9, 8};
+        if ((work_item_count & 0x7) == 7) return {8, 7};
+        if ((work_item_count % 7) == 6) return {7, 6};
+        if ((work_item_count % 6) == 5) return {6, 5};
+        if ((work_item_count % 5) == 4) return {5, 4};
+        if ((work_item_count % 4) == 3) return {4, 3};
+        if ((work_item_count % 3) == 2) return {3, 2};
+        return {2, 1};
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- VulkanKernel
+ * @brief The Vulkan substrate's shared device utilities (the old push-constant pipeline/dispatch
+ * surface was deleted with the condemned lanes; kernels reach the device through gpu.hpp).
+ */
+/** --------------------------------------------------------------------------------------------------------- VulkanKernel
+ * @class VulkanKernel
+ * @brief Static surface over the Vulkan substrate for compute SPIR-V.
+ */
+class VulkanKernel {
+public:
+    /** ------------------------------------------------------------------------------------------- available
+     * @brief True when a Vulkan compute device is present.
+     * @return True if a Vulkan compute device is available, otherwise false.
+     */
+    static bool available();
+    /** ------------------------------------------------------------------------------------------- device_name
+     * @brief The device's name, empty without a device.
+     * @return The name of the Vulkan device if present, otherwise an empty string.
+     */
+    static std::string device_name();
+    /** ------------------------------------------------------------------------------------------- device_address
+     * @brief The device address of a Slice's first byte, 0 when its memory is not GPU-visible.
+     * @param slice The Slice for which to retrieve the device address.
+     * @return The device address of the Slice's first byte if GPU-visible, otherwise 0.
+     */
+    static uint64_t device_address(const Slice& slice);
+    /** ------------------------------------------------------------------------------------------- gpu_usage
+     * @brief Bytes currently held in Vulkan slabs.
+     * @return The number of bytes currently allocated on the Vulkan device.
+     */
+    static uint64_t gpu_usage();
+    /** ------------------------------------------------------------------------------------------- gpu_pool_address
+     * @brief The device address of the alligator's GPUBuf table for shader-side slice
+     * resolution; 0 while the table is host-only.
+     * @return The table's device address.
+     */
+    static uint64_t gpu_pool_address();
+    /** ------------------------------------------------------------------------------------------- table_placement
+     * @brief The placement the shared GPUBuf table lives on: the coherent zero-copy rung with a
+     * device, plain heap without one.
+     * @return The placement.
+     */
+    static const Placemat* table_placement();
+};
+/** --------------------------------------------------------------------------------------------------------- ShaderState
+ * @brief Shared prepared dispatch state for Shader and Kernel reference rings.
+ */
+/** --------------------------------------------------------------------------------------------------------- GPU Stage
+ * @struct KernelGpuStage
+ * @brief One dispatch in a Kernel's prepared GPU command sequence.
+ */
+struct KernelGpuStage {
+    std::string_view glsl;      ///< The stage's GLSL source.
+    uint32_t workgroups_x = 1;  ///< Workgroups along X.
+    uint32_t workgroups_y = 1;  ///< Workgroups along Y.
+    bool per_request = true;    ///< Whether the stage dispatches once per request.
+};
+/** --------------------------------------------------------------------------------------------------------- ShaderState
+ * @class ShaderState
+ * @brief Shared prepared resources for Shader, legacy jobs, and Kernel reference rings.
+ * One controller owns an instance; dispatches on the same instance must not overlap.
+ */
+class ShaderState {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+public:
+    /** ------------------------------------------------------------------------------------------- Constructor - Source
+     * @brief Compiles GLSL and prepares every Vulkan resource used by subsequent dispatches.
+     * @param source GLSL defining `void alligator_main(Slice slice)`.
+     * @param name Diagnostic name reported by shader compilation errors.
+     * @param references Optional reference list the shader indexes.
+     * @param workgroups_x Workgroups along X for reference dispatches.
+     */
+    ShaderState(std::string_view source, std::string_view name,
+        const Slice* references = nullptr, uint32_t workgroups_x = 1);
+    /** ------------------------------------------------------------------------------------------- Constructor - Words
+     * @brief Prepares dispatch state from already-compiled SPIR-V words.
+     * @param words The SPIR-V words.
+     * @param count The word count.
+     * @param name Diagnostic name.
+     * @param max_jobs The job-table capacity.
+     */
+    ShaderState(const uint32_t* words, size_t count, std::string_view name, size_t max_jobs);
+    /** ------------------------------------------------------------------------------------------- Constructor - Stages
+     * @brief Compiles and chains one dispatch per stage for Kernel command sequences.
+     * @param stages The stage descriptors.
+     * @param name Diagnostic name.
+     * @param references The reference list the stages index.
+     * @param resources The resource count published to the stages.
+     */
+    ShaderState(std::span<const KernelGpuStage> stages, std::string_view name,
+        const Slice& references, uint32_t resources);
+    ~ShaderState();
+    /** ------------------------------------------------------------------------------------------- SPIR-V
+     * @brief The compiled SPIR-V words.
+     * @return The words.
+     */
+    const std::vector<uint32_t>& spirv() const;
+    /** ------------------------------------------------------------------------------------------- Name
+     * @brief The diagnostic name.
+     * @return The name.
+     */
+    const std::string& name() const;
+    /** ------------------------------------------------------------------------------------------- Capacity
+     * @brief The job-table capacity.
+     * @return The capacity.
+     */
+    size_t capacity() const;
+    /** ------------------------------------------------------------------------------------------- Dispatch
+     * @brief Binds one slice per workgroup column and dispatches.
+     * @param streams The slices to bind.
+     * @param count The stream count.
+     * @param workgroups The workgroup count.
+     */
+    void dispatch(const Slice* streams, size_t count, uint32_t workgroups) const;
+    /** ------------------------------------------------------------------------------------------- Write Job
+     * @brief Publishes one job-table slot.
+     * @param slot The slot index.
+     * @param input The job's input slice.
+     * @param host_handle The host handle mirrored to the device.
+     */
+    void write_job(size_t slot, const Slice& input, const void* host_handle);
+    /** ------------------------------------------------------------------------------------------- Dispatch Jobs
+     * @brief Dispatches the megakernel over the job table.
+     * @param jobs The number of published jobs.
+     */
+    void dispatch(size_t jobs);
+    /** ------------------------------------------------------------------------------------------- Dispatch References
+     * @brief Dispatches the reference ring over a range.
+     * @param first The first reference index.
+     * @param count The reference count.
+     */
+    void dispatch_references(uint32_t first, uint32_t count);
+};
+/** --------------------------------------------------------------------------------------------------------- Vulkan GLSL Kernel Prelude
+ * @brief GLSL prelude and host-side mirrors for Buffet Alligator's persistent megakernel dispatch.
+ *
+ * GPU-side model: one push constant (the job table address), one workgroup shape (16, 4, jobs).
+ * The table holds one 16-byte descriptor per stage; entry k points at stage k's job array, an
+ * array of 32-byte job records (a 16-byte input descriptor plus 16 bytes of host-only handle).
+ * The job count arrives as gl_NumWorkGroups.z via indirect dispatch — nothing is pushed per
+ * round, and the command buffer never changes.
+ *
+ * X (16) is the conceptual element lane, or area to shade. This number may change to 8 in the
+ *     future so that Y and Z may be scaled up.
+ * Y (4) is the author's split, free to mean whatever the kernel wants, as long as the value
+ *     is not 1. The shape (N, 1, 1) is prohibited.
+ * Z (jobs) is one workgroup per job; the invocation's z is its job index.
+ */
+/** --------------------------------------------------------------------------------------------------------- VULKAN_GLSL_KERNEL_CORE
+ * @brief The 16-byte Slice descriptor mirror and every load/store helper over it. Contains no
+ * #version line so it can be injected after a user's own, and is idempotent via its guard.
+ */
+inline constexpr std::string_view VULKAN_GLSL_KERNEL_CORE = R"glsl(#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+#ifdef VULKAN_FLOAT16
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#endif
+#ifndef VULKAN_GLSL_KERNEL_CORE_INCLUDED
+#define VULKAN_GLSL_KERNEL_CORE_INCLUDED 1
+// ------------------------------------------------------------------------------------------------- Kernel push block (16 bytes)
+// One push block for every kernel family: the per-engine table address (the megakernel's job
+// table, the public Shader's parameters list) and the global GPUBufRef pool's device address.
+layout(push_constant) uniform AlligatorPush {
+    uint64_t vulkan_table_address;  ///< This engine's table: job records or the parameters list
+    uint64_t vulkan_pool_address;   ///< The global GPUBufRef table, shared host and device
+} vulkan_push;
+// ------------------------------------------------------------------------------------------------- Slice (16 bytes)
+struct Slice {
+    uint64_t device_address;  ///< The slab's device address
+    uint32_t size;            ///< The claim's size in bytes
+    uint32_t offset;          ///< The claim's byte offset within the slab
+};
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer SliceRef {
+    uint64_t device_address;
+    uint32_t size;
+    uint32_t offset;
+};
+// ------------------------------------------------------------------------------------------------- GPUBufRef pool (16-byte entries)
+// The device half of the index-linked pool; host-side state lives in the CPUBufRef array at the same index.
+struct GPUBufRef {
+    uint64_t address;      ///< The slice's absolute device address
+    uint32_t size;         ///< The slice's size in bytes
+    uint32_t offset;       ///< The slice's byte offset within its slab, informational
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer GPUBufRefArray {
+    GPUBufRef refs[];
+};
+Slice gpu_slice(uint32_t index) {
+    GPUBufRef ref = GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index];
+    Slice s;
+    s.device_address = ref.address;
+    s.size = ref.size;
+    s.offset = 0u;
+    return s;
+}
+uint64_t gpu_slice_address(uint32_t index) { return gpu_slice(index).device_address; }
+uint gpu_slice_size(uint32_t index) {
+    return GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index].size;
+}
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer I32Array { int v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer F32Array { float v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer U64Array { uint64_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer I64Array { int64_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array { vec4 v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
+// ------------------------------------------------------------------------------------------------- Slice basics
+uint64_t slice_address(Slice s) { return s.device_address + uint64_t(s.offset); }
+bool slice_is_null(Slice s) { return s.size == 0u || s.device_address == 0ul; }
+uint slice_size(Slice s) { return s.size; }
+Slice slice_sub(Slice s, uint64_t offset, uint64_t length) {
+    Slice r = s;
+    r.offset = s.offset + uint32_t(offset);
+    r.size = uint32_t(length);
+    return r;
+}
+Slice slice_read(uint64_t address) {
+    SliceRef ref = SliceRef(address);
+    Slice s;
+    s.device_address = ref.device_address;
+    s.size = ref.size;
+    s.offset = ref.offset;
+    return s;
+}
+// ------------------------------------------------------------------------------------------------- Word-native loads
+uint  slice_load_u32(Slice s, uint index) { return U32Array(slice_address(s)).v[index]; }
+int   slice_load_i32(Slice s, uint index) { return I32Array(slice_address(s)).v[index]; }
+float slice_load_f32(Slice s, uint index) { return F32Array(slice_address(s)).v[index]; }
+uint64_t slice_load_u64(Slice s, uint index) { return U64Array(slice_address(s)).v[index]; }
+int64_t  slice_load_i64(Slice s, uint index) { return I64Array(slice_address(s)).v[index]; }
+vec4  slice_load_f32x4(Slice s, uint index) { return F32x4Array(slice_address(s)).v[index]; }
+uvec4 slice_load_u32x4(Slice s, uint index) { return U32x4Array(slice_address(s)).v[index]; }
+ivec4 slice_load_i32x4(Slice s, uint index) { return I32x4Array(slice_address(s)).v[index]; }
+// ------------------------------------------------------------------------------------------------- Word-native stores
+void slice_store_u32(Slice s, uint index, uint value) { U32Array(slice_address(s)).v[index] = value; }
+void slice_store_i32(Slice s, uint index, int value) { I32Array(slice_address(s)).v[index] = value; }
+void slice_store_f32(Slice s, uint index, float value) { F32Array(slice_address(s)).v[index] = value; }
+void slice_store_u64(Slice s, uint index, uint64_t value) { U64Array(slice_address(s)).v[index] = value; }
+void slice_store_i64(Slice s, uint index, int64_t value) { I64Array(slice_address(s)).v[index] = value; }
+void slice_store_f32x4(Slice s, uint index, vec4 value) { F32x4Array(slice_address(s)).v[index] = value; }
+void slice_store_u32x4(Slice s, uint index, uvec4 value) { U32x4Array(slice_address(s)).v[index] = value; }
+void slice_store_i32x4(Slice s, uint index, ivec4 value) { I32x4Array(slice_address(s)).v[index] = value; }
+// ------------------------------------------------------------------------------------------------- Sub-word loads (no 8/16-bit storage feature needed)
+uint slice_load_u16(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
+    return (word >> ((index & 1u) * 16u)) & 0xFFFFu;
+}
+int slice_load_i16(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
+    return bitfieldExtract(int(word), int((index & 1u) * 16u), 16);
+}
+uint slice_load_u8(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t(index & ~3u)).v[0];
+    return (word >> ((index & 3u) * 8u)) & 0xFFu;
+}
+int slice_load_i8(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t(index & ~3u)).v[0];
+    return bitfieldExtract(int(word), int((index & 3u) * 8u), 8);
+}
+float slice_load_f16(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
+    return unpackHalf2x16(word)[index & 1u];
+}
+float slice_load_bf16(Slice s, uint index) { return uintBitsToFloat(slice_load_u16(s, index) << 16u); }
+float slice_load_e5m2(Slice s, uint index) { return unpackHalf2x16(slice_load_u8(s, index) << 8u).x; }
+// ------------------------------------------------------------------------------------------------- Sub-word stores (atomic read-modify-write so neighbouring lanes never clobber each other)
+void slice_store_u16(Slice s, uint index, uint value) {
+    U32Array words = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u));
+    uint shift = (index & 1u) * 16u;
+    atomicAnd(words.v[0], ~(0xFFFFu << shift));
+    atomicOr(words.v[0], (value & 0xFFFFu) << shift);
+}
+void slice_store_u8(Slice s, uint index, uint value) {
+    U32Array words = U32Array(slice_address(s) + uint64_t(index & ~3u));
+    uint shift = (index & 3u) * 8u;
+    atomicAnd(words.v[0], ~(0xFFu << shift));
+    atomicOr(words.v[0], (value & 0xFFu) << shift);
+}
+void slice_store_i16(Slice s, uint index, int value) { slice_store_u16(s, index, uint(value)); }
+void slice_store_i8(Slice s, uint index, int value) { slice_store_u8(s, index, uint(value)); }
+void slice_store_f16(Slice s, uint index, float value) { slice_store_u16(s, index, packHalf2x16(vec2(value, 0.0)) & 0xFFFFu); }
+void slice_store_bf16(Slice s, uint index, float value) { slice_store_u16(s, index, floatBitsToUint(value) >> 16u); }
+void slice_store_e5m2(Slice s, uint index, float value) { slice_store_u8(s, index, (packHalf2x16(vec2(value, 0.0)) >> 8u) & 0xFFu); }
+// ------------------------------------------------------------------------------------------------- 8-bit float codes: IEEE-style fields, bias 2^(E-1)-1, truncated from fp16 like e5m2 (shift and mask only)
+uint fp8_to_f16_bits(uint code, uint mantissa_bits) { return ((code & 0x80u) << 8u) | ((code & 0x7Fu) << (10u - mantissa_bits)); }
+uint f16_bits_to_fp8(uint half_bits, uint mantissa_bits) { return ((half_bits >> 8u) & 0x80u) | ((half_bits >> (10u - mantissa_bits)) & 0x7Fu); }
+uvec4 fp8x4_codes(uint word) { return uvec4(word & 0xFFu, (word >> 8u) & 0xFFu, (word >> 16u) & 0xFFu, word >> 24u); }
+vec4 fp8x4_to_f32x4(uint word, uint mantissa_bits, float scale) {
+    uvec4 codes = fp8x4_codes(word);
+    uint lo = fp8_to_f16_bits(codes.x, mantissa_bits) | (fp8_to_f16_bits(codes.y, mantissa_bits) << 16u);
+    uint hi = fp8_to_f16_bits(codes.z, mantissa_bits) | (fp8_to_f16_bits(codes.w, mantissa_bits) << 16u);
+    return vec4(unpackHalf2x16(lo), unpackHalf2x16(hi)) * scale;
+}
+uint fp8x4_from_f32x4(vec4 values, uint mantissa_bits, float inverse_scale) {
+    uint lo = packHalf2x16(values.xy * inverse_scale);
+    uint hi = packHalf2x16(values.zw * inverse_scale);
+    return f16_bits_to_fp8(lo & 0xFFFFu, mantissa_bits) | (f16_bits_to_fp8(lo >> 16u, mantissa_bits) << 8u)
+        | (f16_bits_to_fp8(hi & 0xFFFFu, mantissa_bits) << 16u) | (f16_bits_to_fp8(hi >> 16u, mantissa_bits) << 24u);
+}
+float e4m3_to_f32(uint code) { return unpackHalf2x16(fp8_to_f16_bits(code, 3u)).x * 256.0; }
+float e3m4_to_f32(uint code) { return unpackHalf2x16(fp8_to_f16_bits(code, 4u)).x * 4096.0; }
+uint f32_to_e4m3(float value) { return f16_bits_to_fp8(packHalf2x16(vec2(value * 0.00390625, 0.0)) & 0xFFFFu, 3u); }
+uint f32_to_e3m4(float value) { return f16_bits_to_fp8(packHalf2x16(vec2(value * 0.000244140625, 0.0)) & 0xFFFFu, 4u); }
+float slice_load_e4m3(Slice s, uint index) { return e4m3_to_f32(slice_load_u8(s, index)); }
+float slice_load_e3m4(Slice s, uint index) { return e3m4_to_f32(slice_load_u8(s, index)); }
+void slice_store_e4m3(Slice s, uint index, float value) { slice_store_u8(s, index, f32_to_e4m3(value)); }
+void slice_store_e3m4(Slice s, uint index, float value) { slice_store_u8(s, index, f32_to_e3m4(value)); }
+// ------------------------------------------------------------------------------------------------- Four-wide sub-word loads and stores (index4 counts groups of four elements; whole words, no atomics)
+vec4 slice_load_f16x4(Slice s, uint index4) {
+    uint64_t pair = slice_load_u64(s, index4);
+    return vec4(unpackHalf2x16(uint(pair)), unpackHalf2x16(uint(pair >> 32u)));
+}
+vec4 slice_load_bf16x4(Slice s, uint index4) {
+    uint64_t pair = slice_load_u64(s, index4);
+    uint lo = uint(pair);
+    uint hi = uint(pair >> 32u);
+    return vec4(uintBitsToFloat(lo << 16u), uintBitsToFloat(lo & 0xFFFF0000u), uintBitsToFloat(hi << 16u), uintBitsToFloat(hi & 0xFFFF0000u));
+}
+vec4 slice_load_e5m2x4(Slice s, uint index4) { return fp8x4_to_f32x4(slice_load_u32(s, index4), 2u, 1.0); }
+vec4 slice_load_e4m3x4(Slice s, uint index4) { return fp8x4_to_f32x4(slice_load_u32(s, index4), 3u, 256.0); }
+vec4 slice_load_e3m4x4(Slice s, uint index4) { return fp8x4_to_f32x4(slice_load_u32(s, index4), 4u, 4096.0); }
+void slice_store_f16x4(Slice s, uint index4, vec4 values) {
+    slice_store_u64(s, index4, uint64_t(packHalf2x16(values.xy)) | (uint64_t(packHalf2x16(values.zw)) << 32u));
+}
+void slice_store_bf16x4(Slice s, uint index4, vec4 values) {
+    uvec4 bits = floatBitsToUint(values) >> 16u;
+    slice_store_u64(s, index4, uint64_t(bits.x | (bits.y << 16u)) | (uint64_t(bits.z | (bits.w << 16u)) << 32u));
+}
+void slice_store_e5m2x4(Slice s, uint index4, vec4 values) {
+    uint lo = packHalf2x16(values.xy);
+    uint hi = packHalf2x16(values.zw);
+    slice_store_u32(s, index4, ((lo >> 8u) & 0xFFu) | ((lo >> 16u) & 0xFF00u) | ((hi & 0xFF00u) << 8u) | (hi & 0xFF000000u));
+}
+void slice_store_e4m3x4(Slice s, uint index4, vec4 values) { slice_store_u32(s, index4, fp8x4_from_f32x4(values, 3u, 0.00390625)); }
+void slice_store_e3m4x4(Slice s, uint index4, vec4 values) { slice_store_u32(s, index4, fp8x4_from_f32x4(values, 4u, 0.000244140625)); }
+#ifdef VULKAN_FLOAT16
+// ------------------------------------------------------------------------------------------------- Four-wide loads widened to float16_t (shaderFloat16 devices)
+f16vec4 fp8x4_to_f16x4(uint word, uint mantissa_bits, float16_t scale) {
+    uvec4 codes = fp8x4_codes(word);
+    uint lo = fp8_to_f16_bits(codes.x, mantissa_bits) | (fp8_to_f16_bits(codes.y, mantissa_bits) << 16u);
+    uint hi = fp8_to_f16_bits(codes.z, mantissa_bits) | (fp8_to_f16_bits(codes.w, mantissa_bits) << 16u);
+    return f16vec4(unpackFloat2x16(lo), unpackFloat2x16(hi)) * scale;
+}
+f16vec4 slice_load_f32x4_half(Slice s, uint index4) { return f16vec4(slice_load_f32x4(s, index4)); }
+f16vec4 slice_load_f16x4_half(Slice s, uint index4) {
+    uint64_t pair = slice_load_u64(s, index4);
+    return f16vec4(unpackFloat2x16(uint(pair)), unpackFloat2x16(uint(pair >> 32u)));
+}
+f16vec4 slice_load_bf16x4_half(Slice s, uint index4) { return f16vec4(slice_load_bf16x4(s, index4)); }
+f16vec4 slice_load_e5m2x4_half(Slice s, uint index4) { return fp8x4_to_f16x4(slice_load_u32(s, index4), 2u, float16_t(1.0)); }
+f16vec4 slice_load_e4m3x4_half(Slice s, uint index4) { return fp8x4_to_f16x4(slice_load_u32(s, index4), 3u, float16_t(256.0)); }
+f16vec4 slice_load_e3m4x4_half(Slice s, uint index4) { return fp8x4_to_f16x4(slice_load_u32(s, index4), 4u, float16_t(4096.0)); }
+#endif
+#endif
+)glsl";
+/** --------------------------------------------------------------------------------------------------------- VULKAN_GLSL_KERNEL_TAIL
+ * @brief The megakernel tail: the job-table push block, the stage slot, the job decoder, and
+ * the lane/part/job helpers. The host injects the workgroup shape; the author writes the loop
+ * body against these helpers.
+ */
+inline constexpr std::string_view VULKAN_GLSL_KERNEL_TAIL = R"glsl(
+#ifndef VULKAN_STAGE
+#define VULKAN_STAGE 0u
+#endif
+// ------------------------------------------------------------------------------------------------- Job decoding
+// The push block (table address + GPUBufRef pool) is declared in the kernel core above.
+// A job record is 32 bytes: the input Slice descriptor followed by 16 bytes of host-only handle.
+Slice vulkan_job_array() {
+    return slice_read(vulkan_push.vulkan_table_address + uint64_t(VULKAN_STAGE) * 16ul);
+}
+Slice vulkan_job(uint job_index) {
+    return slice_read(slice_address(vulkan_job_array()) + uint64_t(job_index) * 32ul);
+}
+// ------------------------------------------------------------------------------------------------- Shape helpers
+uint vulkan_lane() { return gl_GlobalInvocationID.x; }        ///< X: element lane, 0..15
+uint vulkan_part() { return gl_GlobalInvocationID.y; }        ///< Y: the author's split, 0..3
+uint vulkan_job_index() { return gl_GlobalInvocationID.z; }   ///< Z: this invocation's job
+uint vulkan_job_count() { return gl_NumWorkGroups.z; }        ///< Live jobs this dispatch
+// ------------------------------------------------------------------------------------------------- Workgroup tree reduction (64 invocations)
+// Every invocation must call this (the barriers are workgroup-wide); non-contributing parts
+// pass 0.0. The total is valid at lane 0 of part 0.
+shared float vulkan_reduce_scratch[64];
+float vulkan_group_reduce_sum(float partial) {
+    uint index = gl_LocalInvocationIndex;
+    vulkan_reduce_scratch[index] = partial;
+    barrier();
+    if (index < 32u) vulkan_reduce_scratch[index] += vulkan_reduce_scratch[index + 32u];
+    barrier();
+    if (index < 16u) vulkan_reduce_scratch[index] += vulkan_reduce_scratch[index + 16u];
+    barrier();
+    if (index < 8u) vulkan_reduce_scratch[index] += vulkan_reduce_scratch[index + 8u];
+    barrier();
+    if (index < 4u) vulkan_reduce_scratch[index] += vulkan_reduce_scratch[index + 4u];
+    barrier();
+    if (index < 2u) vulkan_reduce_scratch[index] += vulkan_reduce_scratch[index + 2u];
+    barrier();
+    if (index == 0u) vulkan_reduce_scratch[0u] += vulkan_reduce_scratch[1u];
+    barrier();
+    return vulkan_reduce_scratch[0u];
+}
+)glsl";
+/** --------------------------------------------------------------------------------------------------------- VULKAN_GLSL_L2_EXAMPLE
+ * @brief Worked example: squared L2 distance, one job per (A, B) vector pair. The parameter
+ * blob is { opcode, dimensions, precision, A[], B[] }; the result is one float per job, the
+ * sum of squared differences. Lanes stride the dimensions by 16; part 0 contributes, the other
+ * parts pass zero so every invocation reaches the reduction's barriers.
+ */
+inline constexpr std::string_view VULKAN_GLSL_L2_EXAMPLE = R"glsl(
+void main() {
+    Slice blob = vulkan_job(vulkan_job_index());
+    float partial = 0.0;
+    if (!slice_is_null(blob)) {
+        const uint dimensions = slice_load_u32(blob, 1u);
+        // Header is 12 bytes; vectors begin at the 16-byte mark
+        Slice a = slice_sub(blob, 16u, uint64_t(dimensions) * 4ul);
+        Slice b = slice_sub(blob, 16u + uint64_t(dimensions) * 4ul, uint64_t(dimensions) * 4ul);
+        const float contributes = vulkan_part() == 0u ? 1.0 : 0.0;
+        for (uint d = vulkan_lane(); d < dimensions; d += 16u) {
+            const float diff = slice_load_f32(a, d) - slice_load_f32(b, d);
+            partial += contributes * diff * diff;
+        }
+    }
+    const float total = vulkan_group_reduce_sum(partial);
+    if (vulkan_lane() == 0u && vulkan_part() == 0u && !slice_is_null(blob)) {
+        slice_store_f32(blob, 0u, total);  // Result lands in the blob's opcode slot
+    }
+}
+)glsl";
+/** --------------------------------------------------------------------------------------------------------- kernel_shader_source
+ * @brief Prepends the kernel prelude (core + tail + enforced workgroup shape) to a kernel body.
+ * @param body GLSL defining main(); the shape is injected, not authored.
+ * @return The full shader source.
+ */
+inline std::string kernel_shader_source(std::string_view body) {
+    std::string source;
+    source.reserve(13 + VULKAN_GLSL_KERNEL_CORE.size() + VULKAN_GLSL_KERNEL_TAIL.size() + body.size());
+    source.append("#version 450\n");
+    source.append(VULKAN_GLSL_KERNEL_CORE);
+    source.append(VULKAN_GLSL_KERNEL_TAIL);
+    source.append("layout(local_size_x = 16, local_size_y = 4, local_size_z = 1) in;\n");
+    source.append(body);
+    return source;
+}
 } // namespace buffetalligator

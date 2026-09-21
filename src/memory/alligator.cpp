@@ -6,7 +6,7 @@
 #include <memory/pressure.hpp>
 #include <memory/tracker.hpp>
 #include <containers/bitplane.hpp>
-#include <vulkan/vulkankernel.hpp>
+#include <chrono>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Next Slice ID
@@ -77,13 +77,11 @@ struct Alligator::WorkerThread {
                     expected, requested - 1, std::memory_order_acq_rel, std::memory_order_relaxed);
             }
             Task task;
-            if (task_queue->try_dequeue(task)) {
+            if (task_queue->wait_dequeue_timed(task, std::chrono::milliseconds(1))) {
                 task.execute();
                 if (task.after_this_task != nullptr) {
                     task_queue->enqueue(std::move(*task.after_this_task));
                 }
-            } else {
-                std::this_thread::yield();
             }
         }
         WorkerThread* self = this;
