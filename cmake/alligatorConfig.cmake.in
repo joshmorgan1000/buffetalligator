@@ -1,10 +1,7 @@
 @PACKAGE_INIT@
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
-if(@BUFFETALLIGATOR_ENABLE_CUDA@)
-    find_dependency(CUDAToolkit)
-endif()
-if(@BUFFETALLIGATOR_ENABLE_VULKAN@ AND NOT TARGET alligator::vulkan)
+if(NOT TARGET alligator::vulkan)
     add_library(alligator::vulkan SHARED IMPORTED)
     set_target_properties(alligator::vulkan PROPERTIES
         IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/@BUFFETALLIGATOR_VULKAN_FILENAME@"
