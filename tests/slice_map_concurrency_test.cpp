@@ -9,7 +9,6 @@
 #include <barrier>
 #include <chrono>
 #include <bit>
-#include <future>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -37,10 +36,18 @@ void verify(const Slice& slice, uint64_t key) {
     require(value.key == key && value.complement == ~value.version,
         "replacement returned a torn or wrong-key payload");
 }
-/** --------------------------------------------------------------------------------------------------------- Completed Frees
- * @brief Observes completed allocator teardown after earlier release tasks have drained.
+/** --------------------------------------------------------------------------------------------------------- Frees Reached
+ * @brief Waits up to two seconds for completed allocator teardown to reach the expected total.
  */
-size_t completed_frees() { return Memory::total_freed(); }
+size_t frees_reached(size_t expected) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    size_t observed = Memory::total_freed();
+    while (observed < expected && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+        observed = Memory::total_freed();
+    }
+    return observed;
+}
 /** --------------------------------------------------------------------------------------------------------- Replacement Ownership
  * @brief Checks stable-position overwrite, immediate unshared release, retained views, and finalizers.
  */
@@ -48,25 +55,25 @@ void replacement_ownership() {
     LOG_INFO_STREAM << "Checking stable replacement and old Slice deallocation";
     Slice warmup(64);
     SliceMap map(1);
-    const size_t before = std::async(std::launch::async, completed_frees).get();
+    const size_t before = Memory::total_freed();
     map.add_slice(7, payload(7, 1, true));
     map.add_slice(7, payload(7, 2, true));
-    require(std::async(std::launch::async, completed_frees).get() == before + sizeof(Value),
+    require(frees_reached(before + sizeof(Value)) == before + sizeof(Value),
         "replacement did not release the previous unshared Slice");
     require(map.size() == 1 && map.find(7) == 0, "replacement consumed a second position");
     Slice retained = map.get_slice(7);
     map.add_slice(7, payload(7, 3, true));
-    require(std::async(std::launch::async, completed_frees).get() == before + sizeof(Value),
+    require(frees_reached(before + sizeof(Value)) == before + sizeof(Value),
         "replacement released backing still held by a retained Slice");
     require(retained.get_as<Value>().version == 2 && map.slice_at(0).get_as<Value>().version == 3,
         "replacement changed a retained payload or missed its stable slot");
     retained.free();
-    require(std::async(std::launch::async, completed_frees).get() == before + 2 * sizeof(Value),
+    require(frees_reached(before + 2 * sizeof(Value)) == before + 2 * sizeof(Value),
         "last retained view did not release its old backing");
     map.add_slice(7, Slice());
     require(map.size() == 1 && map.find(7) == 0 && !map.get_slice(7),
         "null replacement lost the existing key");
-    require(std::async(std::launch::async, completed_frees).get() == before + 3 * sizeof(Value),
+    require(frees_reached(before + 3 * sizeof(Value)) == before + 3 * sizeof(Value),
         "null replacement retained the old payload");
     SliceMapT<std::shared_ptr<int>> typed(1), source(1);
     auto object = std::make_shared<int>(10);

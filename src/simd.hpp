@@ -68,7 +68,7 @@ struct SIMDMisc {
                 if (simd_any(ids_v == id_v)) {
                     #pragma unroll
                     for (int j = 0; j < 8; ++j) {
-                        if (ids[i + j] == id) return static_cast<int64_t>(i + j);
+                        if (static_cast<int64_t>(ids[i + j]) == id) return static_cast<int64_t>(i + j);
                     }
                 }
             }
@@ -80,7 +80,7 @@ struct SIMDMisc {
                 if (simd_any(ids_v == id_v)) {
                     #pragma unroll
                     for (int j = 0; j < 16; ++j) {
-                        if (ids[i + j] == id) return static_cast<int64_t>(i + j);
+                        if (static_cast<int64_t>(ids[i + j]) == id) return static_cast<int64_t>(i + j);
                     }
                 }
             }
@@ -92,7 +92,7 @@ struct SIMDMisc {
                 if (simd_any(ids_v == id_v)) {
                     #pragma unroll
                     for (int j = 0; j < 16; ++j) {
-                        if (ids[i + j] == id) return static_cast<int64_t>(i + j);
+                        if (static_cast<int64_t>(ids[i + j]) == id) return static_cast<int64_t>(i + j);
                     }
                 }
             }
@@ -110,7 +110,9 @@ struct SIMDMisc {
                         if (simd_any(ids_chunk == id_v8)) {
                             #pragma unroll
                             for (int k = 0; k < 8; ++k) {
-                                if (ids[i + j * 8 + k] == id) return static_cast<int64_t>(i + j * 8 + k);
+                                if (static_cast<int64_t>(ids[i + j * 8 + k]) == id) {
+                                    return static_cast<int64_t>(i + j * 8 + k);
+                                }
                             }
                         }
                     }
@@ -130,7 +132,9 @@ struct SIMDMisc {
                         if (simd_any(ids_chunk == id_v8)) {
                             #pragma unroll
                             for (int k = 0; k < 8; ++k) {
-                                if (ids[i + j * 8 + k] == id) return static_cast<int64_t>(i + j * 8 + k);
+                                if (static_cast<int64_t>(ids[i + j * 8 + k]) == id) {
+                                    return static_cast<int64_t>(i + j * 8 + k);
+                                }
                             }
                         }
                     }
@@ -145,21 +149,27 @@ struct SIMDMisc {
             for (; i + 8 <= size; i += 8) {
                 const __m512i ids_v = _mm512_loadu_si512(ids + i);
                 const __mmask8 mask = _mm512_cmpeq_epi64_mask(ids_v, id_v);
-                if (mask != 0) return static_cast<int64_t>(i + __builtin_ctz(mask));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + __builtin_ctz(mask));
+                }
             }
         } else if constexpr (sizeof(T) == 4) {
             const __m512i id_v = _mm512_set1_epi32(static_cast<int32_t>(id));
             for (; i + 16 <= size; i += 16) {
                 const __m512i ids_v = _mm512_loadu_si512(ids + i);
                 const __mmask16 mask = _mm512_cmpeq_epi32_mask(ids_v, id_v);
-                if (mask != 0) return static_cast<int64_t>(i + __builtin_ctz(mask));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + __builtin_ctz(mask));
+                }
             }
         } else if constexpr (sizeof(T) == 2) {
             const __m512i id_v = _mm512_set1_epi16(static_cast<int16_t>(id));
             for (; i + 32 <= size; i += 32) {
                 const __m512i ids_v = _mm512_loadu_si512(ids + i);
                 const __mmask32 mask = _mm512_cmpeq_epi16_mask(ids_v, id_v);
-                if (mask != 0) return static_cast<int64_t>(i + __builtin_ctz(mask));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + __builtin_ctz(mask));
+                }
             }
         } else {
             static_assert(always_false<T>::value, "Unsupported type for SIMD search");
@@ -170,21 +180,27 @@ struct SIMDMisc {
             for (; i + 4 <= size; i += 4) {
                 const __m256i ids_v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ids + i));
                 const int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi64(ids_v, id_v));
-                if (mask != 0) return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 3));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 3));
+                }
             }
         } else if constexpr (sizeof(T) == 4) {
             const __m256i id_v = _mm256_set1_epi32(static_cast<int32_t>(id));
             for (; i + 8 <= size; i += 8) {
                 const __m256i ids_v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ids + i));
                 const int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi32(ids_v, id_v));
-                if (mask != 0) return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 2));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 2));
+                }
             }
         } else if constexpr (sizeof(T) == 2) {
             const __m256i id_v = _mm256_set1_epi16(static_cast<int16_t>(id));
             for (; i + 16 <= size; i += 16) {
                 const __m256i ids_v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ids + i));
                 const int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi16(ids_v, id_v));
-                if (mask != 0) return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 1));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 1));
+                }
             }
         } else {
             static_assert(always_false<T>::value, "Unsupported type for SIMD search");
@@ -195,21 +211,27 @@ struct SIMDMisc {
             for (; i + 2 <= size; i += 2) {
                 const __m128i ids_v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ids + i));
                 const int mask = _mm_movemask_epi8(_mm_cmpeq_epi64(ids_v, id_v));
-                if (mask != 0) return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 3));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 3));
+                }
             }
         } else if constexpr (sizeof(T) == 4) {
             const __m128i id_v = _mm_set1_epi32(static_cast<int32_t>(id));
             for (; i + 4 <= size; i += 4) {
                 const __m128i ids_v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ids + i));
                 const int mask = _mm_movemask_epi8(_mm_cmpeq_epi32(ids_v, id_v));
-                if (mask != 0) return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 2));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 2));
+                }
             }
         } else if constexpr (sizeof(T) == 2) {
             const __m128i id_v = _mm_set1_epi16(static_cast<int16_t>(id));
             for (; i + 8 <= size; i += 8) {
                 const __m128i ids_v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ids + i));
                 const int mask = _mm_movemask_epi8(_mm_cmpeq_epi16(ids_v, id_v));
-                if (mask != 0) return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 1));
+                if (mask != 0) {
+                    return static_cast<int64_t>(i + (__builtin_ctz(mask) >> 1));
+                }
             }
         } else {
             static_assert(always_false<T>::value, "Unsupported type for SIMD search");
@@ -221,7 +243,9 @@ struct SIMDMisc {
                 const __vector signed long long ids_v =
                     vec_xl(0, reinterpret_cast<const signed long long*>(ids + i));
                 if (vec_any_eq(ids_v, id_v)) {
-                    if (ids[i] == id) return static_cast<int64_t>(i);
+                    if (static_cast<int64_t>(ids[i]) == id) {
+                        return static_cast<int64_t>(i);
+                    }
                     return static_cast<int64_t>(i + 1);
                 }
             }
@@ -232,7 +256,9 @@ struct SIMDMisc {
                     vec_xl(0, reinterpret_cast<const signed int*>(ids + i));
                 if (vec_any_eq(ids_v, id_v)) {
                     for (int j = 0; j < 4; ++j) {
-                        if (ids[i + j] == id) return static_cast<int64_t>(i + j);
+                        if (static_cast<int64_t>(ids[i + j]) == id) {
+                            return static_cast<int64_t>(i + j);
+                        }
                     }
                 }
             }
@@ -243,7 +269,9 @@ struct SIMDMisc {
                     vec_xl(0, reinterpret_cast<const signed short*>(ids + i));
                 if (vec_any_eq(ids_v, id_v)) {
                     for (int j = 0; j < 8; ++j) {
-                        if (ids[i + j] == id) return static_cast<int64_t>(i + j);
+                        if (static_cast<int64_t>(ids[i + j]) == id) {
+                            return static_cast<int64_t>(i + j);
+                        }
                     }
                 }
             }
@@ -253,7 +281,7 @@ struct SIMDMisc {
 #endif
         // Check remaining elements
         for (; i < size; ++i) {
-            if (ids[i] == id) {
+            if (static_cast<int64_t>(ids[i]) == id) {
                 return static_cast<int64_t>(i);
             }
         }
