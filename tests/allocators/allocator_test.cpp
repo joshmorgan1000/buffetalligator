@@ -40,7 +40,9 @@ void host_memory() {
 void mmap_placement() {
     const Placemat* placement = MmapAllocator::register_type(std::filesystem::temp_directory_path());
     require(std::string(placement->name()) == "mmap", "mmap placement name mismatch");
-    require(BuffetMenu::default_placement()->type() == 1, "registration changed the default");
+    const Placemat* expected_default = GPU::unified_memory()
+        ? VulkanContext::buffer_placement() : BuffetMenu::get(1);
+    require(BuffetMenu::default_placement() == expected_default, "registration changed the default");
     int descriptor = -1;
     Slice retained;
     uint64_t offset = 0;
