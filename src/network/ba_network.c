@@ -7,6 +7,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdatomic.h>
+#include <sys/resource.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 /** --------------------------------------------------------------------------------------------------------- Command
  * @brief Publishes one operation and its completion through the reactor mailbox.
@@ -740,10 +744,30 @@ static void ba_network_run(void* unused) {
     uv_run(&ba_network_loop, UV_RUN_DEFAULT);
     uv_loop_close(&ba_network_loop);
 }
+/** --------------------------------------------------------------------------------------------------------- Descriptor Budget
+ * @brief Raises the open-descriptor limit to everything the process may hold before peers open.
+ */
+static void ba_network_descriptors(void) {
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit)) return;
+    rlim_t ceiling = limit.rlim_max;
+#ifdef __APPLE__
+    int per_process = 0;
+    size_t length = sizeof(per_process);
+    if (!sysctlbyname("kern.maxfilesperproc", &per_process, &length, NULL, 0) &&
+        (rlim_t)per_process < ceiling)
+        ceiling = (rlim_t)per_process;
+#endif
+    if (ceiling > limit.rlim_cur) {
+        limit.rlim_cur = ceiling;
+        setrlimit(RLIMIT_NOFILE, &limit);
+    }
+}
 /** --------------------------------------------------------------------------------------------------------- Initialize
  * @brief Starts the single reactor and process-exit cleanup exactly once.
  */
 static void ba_network_initialize(void) {
+    ba_network_descriptors();
     if (sodium_init() < 0) {
         ba_network_status = UV_EIO;
         return;
