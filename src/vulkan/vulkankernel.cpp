@@ -4,11 +4,7 @@
  * goes through gpu.hpp's Shader and job-table engines (DESIGN.md Law 3/4/5).
  */
 #include <logging.hpp>
-#include <vulkan/vulkankernel.hpp>
-#include <vulkan/vulkan.hpp>
-#include <vulkan/vulkanhelpers.hpp>
-#include <vulkan/vulkancontext.hpp>
-#include <vulkan/vulkanbuffer.hpp>
+#include <alligator.hpp>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- VulkanKernel::available

@@ -3,7 +3,6 @@
  * @brief Verifies mapped Slice storage and device addressing on the process-lifetime Vulkan device.
  */
 #include <alligator.hpp>
-#include <vulkan/vulkankernel.hpp>
 #include "../functional_support.hpp"
 #include <cstring>
 

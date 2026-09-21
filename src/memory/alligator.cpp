@@ -6,7 +6,6 @@
 #include <memory/pressure.hpp>
 #include <memory/tracker.hpp>
 #include <containers/bitplane.hpp>
-#include <vulkan/vulkankernel.hpp>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Next Slice ID
