@@ -310,20 +310,18 @@ build_libfabric_from_source() {
     echo "Building libfabric (${LIBFABRIC_VERSION})..."
     (cd "${LIBFABRIC_SRC}" && ./autogen.sh -s)
     local F_NPROC=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-    local FABRIC_HMEM_FLAGS=()
-    if echo '#include <cuda.h>' | ${CC:-cc} -E -x c - > /dev/null 2>&1; then
-        FABRIC_HMEM_FLAGS+=("--enable-cuda-dlopen")
-    fi
-    if echo '#include <hsa/hsa.h>' | ${CC:-cc} -E -x c - > /dev/null 2>&1; then
-        FABRIC_HMEM_FLAGS+=("--enable-rocr-dlopen")
-    fi
     (cd "${LIBFABRIC_SRC}" && \
         ./configure \
             --prefix="${LIBFABRIC_DEPS}" \
             --disable-shared \
             --enable-static \
             --enable-pic \
-            "${FABRIC_HMEM_FLAGS[@]+"${FABRIC_HMEM_FLAGS[@]}"}")
+            --with-cuda=no \
+            --with-rocr=no \
+            --with-ze=no \
+            --with-neuron=no \
+            --with-synapseai=no \
+            --with-gdrcopy=no)
     make -C "${LIBFABRIC_SRC}" -j "${F_NPROC}"
     make -C "${LIBFABRIC_SRC}" install
     if [[ ! -f "${LIBFABRIC_DEPS}/lib/libfabric.a" ]]; then

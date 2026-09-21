@@ -321,7 +321,8 @@ int main(int count, char** arguments) {
                 require(write(std::stoi(arguments[4]), &ready, 1) == 1, "ready signal failed");
                 ::close(std::stoi(arguments[4]));
                 char command;
-                (void)read(std::stoi(arguments[5]), &command, 1);
+                require(read(std::stoi(arguments[5]), &command, 1) == 0,
+                        "control pipe was not closed cleanly");
             }
             SliceChannel::close(port, protocol);
             BuffetMenu::shutdown();

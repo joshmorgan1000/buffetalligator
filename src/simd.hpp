@@ -68,7 +68,7 @@ struct SIMDMisc {
                 if (simd_any(ids_v == id_v)) {
                     #pragma unroll
                     for (int j = 0; j < 8; ++j) {
-                        if (ids[i + j] == id) return static_cast<int64_t>(i + j);
+                        if (ids[i + j] == static_cast<T>(id)) return static_cast<int64_t>(i + j);
                     }
                 }
             }
@@ -253,7 +253,7 @@ struct SIMDMisc {
 #endif
         // Check remaining elements
         for (; i < size; ++i) {
-            if (ids[i] == id) {
+            if (ids[i] == static_cast<T>(id)) {
                 return static_cast<int64_t>(i);
             }
         }

@@ -486,8 +486,8 @@ uint32_t VulkanContext::submission_queue_index() {
 void VulkanContext::submit_command_buffer(
     vk::CommandBuffer command_buffer,
     vk::Fence fence,
-    void (*callback)(void*),
-    void* callback_context
+    [[maybe_unused]] void (*callback)(void*),
+    [[maybe_unused]] void* callback_context
 ) {
     VulkanContext& context = instance();
     context.device_.resetFences(fence);
