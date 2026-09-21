@@ -1725,7 +1725,6 @@ private:
     void destroy(SliceId slice_id);
     Alligator();
     ~Alligator();
-    static Alligator& inst();
     friend class Buffet;
     friend class Placemat;
     friend class Slice;
@@ -1736,6 +1735,11 @@ public:
     Alligator& operator=(const Alligator&) = delete;
     Alligator(Alligator&&) = delete;
     Alligator& operator=(Alligator&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Instance
+     * @brief Returns the singleton instance of the Alligator.
+     * @return The Alligator instance.
+     */
+    static Alligator& inst();
     /** ------------------------------------------------------------------------------------------- Plate For
      * @brief Resolves the plate backing a live slice; the substrate reaches its slab metadata
      * through the plate's substrate_handle.
