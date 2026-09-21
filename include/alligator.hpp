@@ -791,7 +791,7 @@ private:
         unset_read_this(placemat_construction);
         placement->name_ = name;
         placement->allocator_ = allocate;
-        placement->default_slab_size_ = default_slab_size >> 12;
+        placement->default_slab_size_ = default_slab_size;
         placement->bump_alignment_ = bump_alignment;
         placement->deallocator_ = deallocate;
         placement->get_context_ = get_context;
@@ -4931,203 +4931,6 @@ public:
     using threadsafe_logger::Exception::what;
 };
 #define GPU_THROW(msg) throw GPUException(msg)
-/** --------------------------------------------------------------------------------------------------------- GPUSlice
- * @class GPUSlice
- * @brief A GPUSlice represents a slice of GPU memory managed by the Vulkan backend.
- */
-class GPUSlice {
-public:
-    /** ------------------------------------------------------------------------------------------- Constructor - Default
-     * @brief Constructs a null slice with no underlying memory with an unspecified placement.
-     */
-    GPUSlice() = default;
-    /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
-     * slice is guaranteed to be zero-initialized.
-     * @param size The size of the slice in bytes.
-     */
-    GPUSlice(size_t size, bool novel_buffer = false);
-    /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
-     * @brief Copies data from an external memory location into a new slice of memory in the
-     * buffet alligator.
-     * @param copy_from Pointer to the external memory to copy from.
-     * @param size The size of the data to copy in bytes.
-     * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
-     * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
-     * reduce fragmentation in the arena. Default is false.
-     */
-    GPUSlice(
-        const void* copy_from,
-        size_t size,
-        bool novel_buffer = false
-    );
-    /** ------------------------------------------------------------------------------------------- Constructor - From Slice
-     * @brief Constructs a `GPUSlice` from an existing `Slice` object.
-     * @param slice The `Slice` object to construct from.
-     */
-    GPUSlice(Slice slice);
-    /** ------------------------------------------------------------------------------------------- Assignment - From Slice
-     * @brief Assigns a `Slice` object to the `GPUSlice`.
-     * @param slice The `Slice` object to assign from.
-     */
-    GPUSlice& operator=(Slice slice);
-    /** ------------------------------------------------------------------------------------------- Conversion - To Slice
-     * @brief Converts the `GPUSlice` to a `Slice` object.
-     * @return A `Slice` object representing the same memory as the `GPUSlice`.
-     */
-    operator Slice&();
-    /** ------------------------------------------------------------------------------------------- Conversion - To Const Slice
-     * @brief Converts the `GPUSlice` to a const `Slice` object.
-     * @return A const `Slice` object representing the same memory as the `GPUSlice`.
-     */
-    operator const Slice&() const;
-    /** ------------------------------------------------------------------------------------------- Copy/move semantics
-     * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
-     * much like `std::shared_ptr` in that they share the same reference counter and underlying
-     * memory. The copy constructor and assignment operators are deleted to cut down on unintended
-     * reference counting traffic which can be expensive in high-performance scenarios. Move
-     * semantics are supported to allow efficient transfer of ownership of the underlying memory.
-     */
-    GPUSlice(const GPUSlice& other);
-    GPUSlice& operator=(const GPUSlice& other);
-    GPUSlice(GPUSlice&& other) noexcept;
-    GPUSlice& operator=(GPUSlice&& other) noexcept;
-    /** ------------------------------------------------------------------------------------------- Destructor */
-    ~GPUSlice() { free(); }
-    /** ------------------------------------------------------------------------------------------- Placement
-     * @brief Returns the memory placement type of the slice.
-     * @return The `Placement` enum value representing the slice's memory placement.
-     */
-    const Placemat* placement() const;
-    /** ------------------------------------------------------------------------------------------- Raw accessors
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory.
-     */
-    void* raw();
-    /** ------------------------------------------------------------------------------------------- Raw accessors - const
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's host-writable
-     * pointer to the underlying memory, but as a read-only pointer.
-     */
-    const void* raw() const;
-    /** ------------------------------------------------------------------------------------------- Accessor - Typed
-     * @brief Returns a pointer to the underlying data of the slice, cast to the specified type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A pointer to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    T* data() { return static_cast<T*>(raw()); }
-    /** ------------------------------------------------------------------------------------------- Accessor - Typed - const
-     * @brief Returns a const pointer to the underlying data of the slice, cast to the specified
-     * type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A const pointer to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    const T* data() const { return static_cast<const T*>(raw()); }
-    /** ------------------------------------------------------------------------------------------- Create new view
-     * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
-     * view shares the same underlying memory and reference counter as the original slice. Using
-     * the default parameters will create a new view that is essentially identical to the original
-     * slice - a shared view that increments the reference counter and will keep the underlying
-     * memory alive until all views are destroyed.
-     * @param offset The offset in bytes from the start of the original slice to the start of the
-     * new view.
-     * @param length The length in bytes of the new view.
-     * @return A new `GPUSlice` object that is a view of the original slice.
-     */
-    GPUSlice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
-    /** ------------------------------------------------------------------------------------------- Size in bytes
-     * @brief Returns the size of the slice in bytes.
-     * @return The size of the slice in bytes.
-     */
-    size_t size_bytes() const;
-    /** ------------------------------------------------------------------------------------------- Size in elements
-     * @brief Returns the size of the slice in elements of type T.
-     * @tparam T The type of elements in the slice. Default is `uint8_t`.
-     * @return The size of the slice in elements of type T.
-     */
-    template<typename T = uint8_t>
-    size_t size() const {
-        if constexpr (sizeof(T) == 8) {
-            return size_bytes() >> 3;
-        } else if constexpr (sizeof(T) == 4) {
-            return size_bytes() >> 2;
-        } else if constexpr (sizeof(T) == 2) {
-            return size_bytes() >> 1;
-        }
-        return size_bytes() / sizeof(T);
-    }
-    /** ------------------------------------------------------------------------------------------- Resize
-     * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
-     * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
-     * is false, the existing data will be discarded and the slice will be reallocated. This can
-     * be called on a freed or null slice, in which case it will behave like a normal constructor
-     * and allocate a new slice of the specified size.
-     * @param new_size The new size of the slice in bytes.
-     * @param preserve_data Whether to preserve existing data in the slice. Default is true.
-     * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
-     * Default is false.
-     * @param placement The memory placement strategy to use. Default is `default_placement()`.
-     */
-    void resize(
-        size_t new_size,
-        bool preserve_data = true,
-        bool novel_buffer = false
-    );
-    /** ------------------------------------------------------------------------------------------- Check if slice is null
-     * @brief Checks if the slice is null (i.e., has no underlying memory).
-     * @return True if the slice is null, false otherwise.
-     */
-    bool is_null() const { return slice_.is_null(); }
-    /** ------------------------------------------------------------------------------------------- Check if slice is valid
-     * @brief Checks if the slice is valid (i.e., has underlying memory).
-     * @return True if the slice is valid, false otherwise.
-     */
-    bool valid() const { return !is_null(); }
-    /// Borrowed pool index; retain this exact GPUSlice until Kernel completion.
-    uint32_t pool_index() const { return slice_.pool_index(); }
-
-    /** ------------------------------------------------------------------------------------------- Conversion to bool
-     * @brief Allows the slice to be used in boolean contexts.
-     * @return True if the slice is valid, false if it is null.
-     */
-    operator bool() const { return !is_null(); }
-    /** ------------------------------------------------------------------------------------------- Free
-     * @brief Frees the underlying memory of the slice. This is called automatically when the
-     * slice is destroyed, but can be called manually to free the memory early. After calling this
-     * method, the slice will be null.
-     */
-    void free();
-    /** ------------------------------------------------------------------------------------------- Get as
-     * @brief Returns a reference to the underlying data of the slice, cast to the specified type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A reference to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    T& get_as() { return *reinterpret_cast<T*>(data()); }
-    /** ------------------------------------------------------------------------------------------- Get as (const)
-     * @brief Returns a const reference to the underlying data of the slice, cast to the specified
-     * type.
-     * @tparam T The type to cast the underlying data to. Default is uint8_t.
-     * @return A const reference to the underlying data cast to type T.
-     */
-    template<typename T = uint8_t>
-    const T& get_as() const { return *reinterpret_cast<const T*>(data()); }
-    /** ------------------------------------------------------------------------------------------- Root slice
-     * @brief Returns a reference to the root slice. This is useful when dealing with nested
-     * slices or `SliceType` conceptual objects.
-     * @return A reference to the root slice.
-     */
-    Slice& root_slice();
-    /** ------------------------------------------------------------------------------------------- Root slice (const)
-     * @brief Returns a const reference to the root slice. This is useful when dealing with nested
-     * slices or `SliceType` conceptual objects.
-     * @return A const reference to the root slice.
-     */
-    const Slice& root_slice() const;
-private:
-    Slice slice_;
-};
 /// @brief Forward declaration of the internal shader state used by the Shader class.
 class ShaderState;
 /** --------------------------------------------------------------------------------------------------------- Shader
@@ -5167,9 +4970,9 @@ public:
      * the shader has completed execution.
      */
     std::shared_ptr<moodycamel::LightweightSemaphore> operator()(
-        const GPUSlice* slices,
+        const Slice* slices,
         size_t count,
-        void (*callback)(GPUSlice slice) = nullptr,
+        void (*callback)(Slice slice) = nullptr,
         uint32_t workgroups = 1
     ) const;
     /** ------------------------------------------------------------------------------------------- Shader Functor invocation (one)
@@ -5181,8 +4984,8 @@ public:
      * the shader has completed execution.
      */
     std::shared_ptr<moodycamel::LightweightSemaphore> operator()(
-        const GPUSlice& slice,
-        void (*callback)(GPUSlice slice) = nullptr,
+        const Slice& slice,
+        void (*callback)(Slice slice) = nullptr,
         uint32_t workgroups = 1
     ) const;
 };
@@ -5225,17 +5028,17 @@ struct GPU {
     /** ------------------------------------------------------------------------------------------- run
      * @brief Executes a recorded program on the GPU over the bound streams.
      * @param program The recorded program.
-     * @param streams One GPUSlice per workgroup column; column i processes streams[i] in place.
+     * @param streams One Slice per workgroup column; column i processes streams[i] in place.
      * @param stream_count How many Slices are bound; becomes the dispatch's Y extent.
      */
-    static void run(const Shader& program, GPUSlice* streams, size_t stream_count);
+    static void run(const Shader& program, Slice* streams, size_t stream_count);
     /** ------------------------------------------------------------------------------------------- run
      * @brief Decodes an encoded program and executes it on the GPU.
-     * @param program A compile_glsl program (job-table engine, one job per GPUSlice).
-     * @param streams One GPUSlice per job.
+     * @param program A compile_glsl program (job-table engine, one job per Slice).
+     * @param streams One Slice per job.
      * @param stream_count How many jobs this round binds.
      */
-    static void run(const Slice& program, GPUSlice* streams, size_t stream_count);
+    static void run(const Slice& program, Slice* streams, size_t stream_count);
     /** ------------------------------------------------------------------------------------------- compile_glsl
      * @brief Compiles a kernel body under the alligator prelude into SPIR-V words held in a Slice.
      * The body defines main() against the prelude's Slice-addressing helpers; the workgroup shape
@@ -5750,7 +5553,7 @@ public:
      * @param count The stream count.
      * @param workgroups The workgroup count.
      */
-    void dispatch(const GPUSlice* streams, size_t count, uint32_t workgroups) const;
+    void dispatch(const Slice* streams, size_t count, uint32_t workgroups) const;
     /** ------------------------------------------------------------------------------------------- Write Job
      * @brief Publishes one job-table slot.
      * @param slot The slot index.
@@ -5819,7 +5622,8 @@ layout(buffer_reference, std430, buffer_reference_align = 8) buffer SliceRef {
 // The device half of the index-linked pool; host-side state lives in the CPUBufRef array at the same index.
 struct GPUBufRef {
     uint64_t address;      ///< The slice's absolute device address
-    uint64_t size;         ///< The slice's size in bytes
+    uint32_t size;         ///< The slice's size in bytes
+    uint32_t offset;       ///< The slice's byte offset within its slab, informational
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer GPUBufRefArray {
     GPUBufRef refs[];
@@ -5828,13 +5632,13 @@ Slice gpu_slice(uint32_t index) {
     GPUBufRef ref = GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index];
     Slice s;
     s.device_address = ref.address;
-    s.size = uint(ref.size);
+    s.size = ref.size;
     s.offset = 0u;
     return s;
 }
 uint64_t gpu_slice_address(uint32_t index) { return gpu_slice(index).device_address; }
 uint gpu_slice_size(uint32_t index) {
-    return uint(GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index].size);
+    return GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index].size;
 }
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer I32Array { int v[]; };

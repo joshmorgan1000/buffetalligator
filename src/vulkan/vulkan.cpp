@@ -934,7 +934,7 @@ ShaderState::~ShaderState() = default;
 const std::vector<uint32_t>& ShaderState::spirv() const { return impl_->words; }
 const std::string& ShaderState::name() const { return impl_->name; }
 size_t ShaderState::capacity() const { return impl_->limit; }
-void ShaderState::dispatch(const GPUSlice* streams, size_t count, uint32_t workgroups) const {
+void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgroups) const {
     workgroups = std::min(workgroups, VulkanContext::device_properties().max_workgroup_count[0]);
     for (size_t first = 0; first < count; first += impl_->limit) {
         const size_t n = std::min(impl_->limit, count - first);
@@ -985,9 +985,9 @@ Shader& Shader::operator=(Shader&& other) noexcept = default;
 Shader::~Shader() = default;
 /** --------------------------------------------------------------------------------------------------------- Shader::operator() */
 std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
-    const GPUSlice* slices,
+    const Slice* slices,
     size_t count,
-    void (*callback)(GPUSlice slice),
+    void (*callback)(Slice slice),
     uint32_t workgroups
 ) const {
     if (!state_) GPU_THROW("Vulkan Shader: moved-from Shader cannot dispatch");
@@ -1003,8 +1003,8 @@ std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
 }
 /** --------------------------------------------------------------------------------------------------------- Shader::operator() (one) */
 std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
-    const GPUSlice& slice,
-    void (*callback)(GPUSlice slice),
+    const Slice& slice,
+    void (*callback)(Slice slice),
     uint32_t workgroups
 ) const {
     return (*this)(&slice, 1, callback, workgroups);
@@ -1012,7 +1012,7 @@ std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
 /** --------------------------------------------------------------------------------------------------------- GPU::run (Shader)
  * @brief Runs a prepared Shader over a list of slices, one workgroup column each.
  */
-void GPU::run(const Shader& program, GPUSlice* streams, size_t stream_count) {
+void GPU::run(const Shader& program, Slice* streams, size_t stream_count) {
     program(streams, stream_count);
 }
 namespace {
@@ -1117,7 +1117,7 @@ ShaderState& job_table_engine_for(const Slice& program) {
 /** --------------------------------------------------------------------------------------------------------- GPU::run (job table)
  * @brief Runs a compile_glsl program with one stream per job, in rounds of the engine's table capacity.
  */
-void GPU::run(const Slice& program, GPUSlice* streams, size_t stream_count) {
+void GPU::run(const Slice& program, Slice* streams, size_t stream_count) {
     auto& engine = vulkan::job_table_engine_for(program);
     const uint64_t host_handle[2] = {0, 0};
     for (size_t start = 0; start < stream_count; start += engine.capacity()) {
@@ -1181,178 +1181,4 @@ const Placemat* const Placemat::HOST_CACHEABLE = VulkanPlacements::rung<2>("vulk
 const Placemat* const Placemat::DEVICE = VulkanPlacements::rung<3>("vulkan_device");
 const Placemat* const Placemat::UNIFIED = VulkanPlacements::rung<4>("vulkan_unified");
 const Placemat* const Placemat::BASIC_HEAP = BuffetMenu::get("heap");
-/** --------------------------------------------------------------------------------------------------------- GPUSlice Constructor
- * @brief Constructs a new `GPUSlice` with the specified size.
- * @param size The size of the slice in bytes.
- * @param novel_buffer If true, the slice is allocated as a novel buffer. Default is false.
- */
-GPUSlice::GPUSlice(size_t size, bool novel_buffer)
-: slice_(size, novel_buffer, VulkanContext::buffer_placement()) {}
-/** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
- * @brief Copies data from an external memory location into a new slice of memory in the
- * buffet alligator.
- * @param copy_from Pointer to the external memory to copy from.
- * @param size The size of the data to copy in bytes.
- * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
- * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
- * reduce fragmentation in the arena. Default is false.
- */
-GPUSlice::GPUSlice(
-    const void* copy_from,
-    size_t size,
-    bool novel_buffer
-) : slice_(copy_from, size, novel_buffer, VulkanContext::buffer_placement()) {
-}
-/** ------------------------------------------------------------------------------------------- Constructor - From Slice
- * @brief Constructs a `GPUSlice` from an existing `Slice` object.
- * @param slice The `Slice` object to construct from.
- */
-GPUSlice::GPUSlice(Slice slice) : slice_(std::move(slice)) {}
-/** ------------------------------------------------------------------------------------------- Assignment - From Slice
- * @brief Assigns a `Slice` object to the `GPUSlice`.
- * @param slice The `Slice` object to assign from.
- */
-GPUSlice& GPUSlice::operator=(Slice slice) {
-    slice_ = std::move(slice);
-    return *this;
-}
-/** ------------------------------------------------------------------------------------------- Conversion - To Slice
- * @brief Converts the `GPUSlice` to a `Slice` object.
- * @return A `Slice` object representing the same memory as the `GPUSlice`.
- */
-GPUSlice::operator Slice&() {
-    if (slice_.is_null()) [[unlikely]] {
-        GPU_THROW("GPUSlice::operator Slice&() called on a null or freed GPUSlice");
-    }
-    return slice_;
-}
-/** ------------------------------------------------------------------------------------------- Conversion - To Const Slice
- * @brief Converts the `GPUSlice` to a const `Slice` object.
- * @return A const `Slice` object representing the same memory as the `GPUSlice`.
- */
-GPUSlice::operator const Slice&() const {
-    return slice_;
-}
-/** ------------------------------------------------------------------------------------------- Constructor - Copy from GPUSlice
- * @brief Constructs a `GPUSlice` by copying from another `GPUSlice`.
- * @param other The `GPUSlice` to copy from.
- */
-GPUSlice::GPUSlice(const GPUSlice& other)
-: slice_(other.slice_) {}
-/** ------------------------------------------------------------------------------------------- Assignment - From GPUSlice
- * @brief Assigns a `GPUSlice` object to the current `GPUSlice`.
- * @param other The `GPUSlice` to assign from.
- */
-GPUSlice& GPUSlice::operator=(const GPUSlice& other) {
-    if (this == &other) {
-        return *this;
-    }
-    slice_ = other.slice_;
-    return *this;
-}
-/** ------------------------------------------------------------------------------------------- Constructor - Move from GPUSlice
- * @brief Constructs a `GPUSlice` by moving from another `GPUSlice`.
- * @param other The `GPUSlice` to move from.
- */
-GPUSlice::GPUSlice(GPUSlice&& other) noexcept
-: slice_(std::move(other.slice_)) {}
-/** ------------------------------------------------------------------------------------------- Assignment - Move from GPUSlice
- * @brief Assigns a `GPUSlice` object to the current `GPUSlice` by moving from another
- * `GPUSlice`.
- * @param other The `GPUSlice` to move from.
- */
-GPUSlice& GPUSlice::operator=(GPUSlice&& other) noexcept {
-    slice_ = std::move(other.slice_);
-    return *this;
-}
-/** ------------------------------------------------------------------------------------------- Placement
- * @brief Returns the memory placement type of the slice.
- * @return The `Placement` enum value representing the slice's memory placement.
- */
-const Placemat* GPUSlice::placement() const {
-    return slice_.placement();
-}
-/** ------------------------------------------------------------------------------------------- Raw accessors
- * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
- * host-writable pointer to the underlying memory.
- * @return A pointer to the underlying memory of the slice.
- */
-void* GPUSlice::raw() {
-    return slice_.raw();
-}
-/** ------------------------------------------------------------------------------------------- Raw accessors - const
- * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
- * host-writable pointer to the underlying memory, but as a read-only pointer.
- * @return A read-only pointer to the underlying memory of the slice.
- */
-const void* GPUSlice::raw() const {
-    return slice_.raw();
-}
-/** ------------------------------------------------------------------------------------------- Create new view
- * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
- * view shares the same underlying memory and reference counter as the original slice. Using
- * the default parameters will create a new view that is essentially identical to the original
- * slice - a shared view that increments the reference counter and will keep the underlying
- * memory alive until all views are destroyed.
- * @param offset The offset in bytes from the start of the original slice to the start of the
- * new view.
- * @param length The length in bytes of the new view.
- * @return A new `GPUSlice` object that is a view of the original slice.
- */
-GPUSlice GPUSlice::slice(size_t offset, size_t length) const {
-    if (slice_.is_null()) [[unlikely]] {
-        GPU_THROW("GPUSlice::slice: Attempted to slice a null or freed GPUSlice.");
-    }
-    return GPUSlice(slice_.slice(offset, length));
-}
-/** ------------------------------------------------------------------------------------------- Size in bytes
- * @brief Returns the size of the slice in bytes.
- * @return The size of the slice in bytes.
- */
-size_t GPUSlice::size_bytes() const {
-    return slice_.size_bytes();
-}
-/** ------------------------------------------------------------------------------------------- Resize
- * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
- * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
- * is false, the existing data will be discarded and the slice will be reallocated. This can
- * be called on a freed or null slice, in which case it will behave like a normal constructor
- * and allocate a new slice of the specified size.
- * @param new_size The new size of the slice in bytes.
- * @param preserve_data Whether to preserve existing data in the slice. Default is true.
- * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
- * Default is false.
- * @param placement The memory placement strategy to use. Default is `default_placement()`.
- */
-void GPUSlice::resize(
-    size_t new_size,
-    bool preserve_data,
-    bool novel_buffer
-) {
-    slice_.resize(new_size, preserve_data, novel_buffer);
-}
-/** ------------------------------------------------------------------------------------------- Free
- * @brief Frees the underlying memory of the slice. This is called automatically when the
- * slice is destroyed, but can be called manually to free the memory early. After calling this
- * method, the slice will be null.
- */
-void GPUSlice::free() {
-    slice_.free();
-}
-/** ------------------------------------------------------------------------------------------- Root slice
- * @brief Returns a reference to the root slice. This is useful when dealing with nested
- * slices or `SliceType` conceptual objects.
- * @return A reference to the root slice.
- */
-Slice& GPUSlice::root_slice() {
-    return slice_;
-}
-/** ------------------------------------------------------------------------------------------- Root slice (const)
- * @brief Returns a const reference to the root slice. This is useful when dealing with nested
- * slices or `SliceType` conceptual objects.
- * @return A const reference to the root slice.
- */
-const Slice& GPUSlice::root_slice() const {
-    return slice_;
-}
 } // namespace buffetalligator
