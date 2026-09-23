@@ -415,7 +415,7 @@ BenchHazards::Guard& bench_guard() {
  */
 inline void bench_relax() {
 #if defined(__aarch64__)
-    __builtin_arm_yield();
+    asm volatile("yield");
 #elif defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();
 #else
