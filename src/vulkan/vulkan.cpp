@@ -498,7 +498,10 @@ void VulkanContext::submit_command_buffer(
     context.compute_queues_[queue_slot].submit(submit_info, fence);
     if (callback != nullptr) {
         Alligator::inst().submit_waiting([](vk::Device dev, vk::Fence fc, void (*cb)(void*), void* ctx) {
-            dev.waitForFences(fc, VK_TRUE, UINT64_MAX);
+            vk::Result result = dev.waitForFences(fc, VK_TRUE, UINT64_MAX);
+            if (result != vk::Result::eSuccess) {
+                ALLIGATOR_GPU_THROW("Vulkan: failed to wait for fence");
+            }
             cb(ctx);
         }, context.device_, fence, callback, callback_context);
     }
