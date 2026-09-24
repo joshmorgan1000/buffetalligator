@@ -39,6 +39,13 @@ void require(bool condition, const char* message) {
         std::exit(1);
     }
 }
+/** --------------------------------------------------------------------------------------------------------- Test Block
+ * @brief The test placement's substrate handle: the block and its size.
+ */
+struct TestBlock {
+    void* memory;  ///< The allocated block.
+    size_t size;   ///< The block size in bytes.
+};
 /** --------------------------------------------------------------------------------------------------------- Allocate Test Placement
  * @brief Supplies genuine registered storage whose type differs between the two processes.
  */
@@ -46,26 +53,39 @@ std::pair<void*, void*> allocate(size_t bytes, void*) {
     void* pointer = nullptr;
     if (posix_memalign(&pointer, 64, bytes)) return {nullptr, nullptr};
     std::memset(pointer, 0, bytes);
-    return {pointer, pointer};
+    return {pointer, new TestBlock{pointer, bytes}};
 }
 /** --------------------------------------------------------------------------------------------------------- Release Test Placement
  * @brief Releases the placement's allocation through its actual callback.
  */
 std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
     static_cast<void>(host_ptr);
-    std::free(substrate_handle);
+    TestBlock* block = static_cast<TestBlock*>(substrate_handle);
+    std::free(block->memory);
+    delete block;
     return {nullptr, nullptr};
 }
 /** --------------------------------------------------------------------------------------------------------- Test Context
  * @brief Supplies the registered placement's empty context.
  */
 void* test_context() { return nullptr; }
+/** --------------------------------------------------------------------------------------------------------- Host Pointer
+ * @brief The block's host pointer.
+ */
+HostPtr test_host_ptr(void* substrate_handle) { return HostPtr{static_cast<TestBlock*>(substrate_handle)->memory}; }
+/** --------------------------------------------------------------------------------------------------------- GPUBuf
+ * @brief Host placements address their GPUBuf by the host pointer.
+ */
+GPUBuf test_gpu_buf(void* substrate_handle) {
+    const TestBlock* block = static_cast<TestBlock*>(substrate_handle);
+    return GPUBuf{reinterpret_cast<uint64_t>(block->memory), static_cast<uint32_t>(block->size), 0};
+}
 /** --------------------------------------------------------------------------------------------------------- Register
  * @brief Registers one named placement for cross-process identifier tests.
  */
 void register_placement(const char* name) {
     BuffetMenu::register_type(name, 16u * 1024u * 1024u, 64, &allocate, &deallocate,
-                              &test_context);
+                              &test_context, &test_host_ptr, nullptr, &test_gpu_buf);
 }
 /** --------------------------------------------------------------------------------------------------------- Response
  * @brief Retains callback results for validation by the test thread.
@@ -166,8 +186,11 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
         Slice view = backing.slice(7, bytes);
         for (size_t index = 0; index < bytes; ++index)
             view.data<unsigned char>()[index] = index % 251;
-        SliceChannel::send(std::move(view), address, number, selected, response);
         backing.free();
+        const auto sole_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!view.is_novel() && std::chrono::steady_clock::now() < sole_deadline) std::this_thread::yield();
+        require(view.is_novel(), "the view did not become the sole owner of its novel backing");
+        SliceChannel::send(std::move(view), address, number, selected, response);
         require(completed.try_acquire_for(std::chrono::seconds(15)), "response did not arrive");
         Slice result;
         {

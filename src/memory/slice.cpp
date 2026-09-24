@@ -5,36 +5,12 @@
 #include <alligator.hpp>
 #include <containers/bitplane.hpp>
 #include <memory/tracker.hpp>
+#include <memory/plate.hpp>
 #include <simd.hpp>
 #include <algorithm>
 #include <cstring>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Record Slab Allocation
- * @brief Reports one completed slab allocation to the memory tracker.
- * @param plate The plate that now owns the slab.
- */
-void Placemat::record_slab_allocation(const Plate* plate) {
-    const size_t bytes = plate->size != 0 ? plate->size : plate->bump->load(std::memory_order_acquire);
-    Memory::record_allocation(*plate->placemat, bytes);
-    Memory::record_code_location(*plate->placemat, bytes, plate);
-}
-/** --------------------------------------------------------------------------------------------------------- Record Slab Release
- * @brief Reports one completed slab release to the memory tracker.
- * @param plate The plate whose slab was just returned.
- */
-void Placemat::record_slab_release(const Plate* plate) {
-    const size_t bytes = plate->size != 0 ? plate->size : plate->bump->load(std::memory_order_acquire);
-    Memory::record_deallocation(*plate->placemat, bytes);
-    Memory::forget_code_location(plate);
-}
-/** --------------------------------------------------------------------------------------------------------- Call Free Later
- * @brief Hands a plate's reference drop to the allocator thread.
- * @param plate The plate to free.
- */
-void Placemat::call_free_later(Plate* plate) {
-    Alligator::inst().submit([](Plate* later) { later->free(); }, plate);
-}
 /** --------------------------------------------------------------------------------------------------------- Default Placement
  * @brief Returns the default placement for slices, which is determined by the system's
  * capabilities.
@@ -43,69 +19,23 @@ void Placemat::call_free_later(Plate* plate) {
 const Placemat* Slice::default_placement() {
     return BuffetMenu::default_placement();
 }
-/** --------------------------------------------------------------------------------------------------------- Claim
- * @brief Claims a sub-allocation from this plate if the plate has it available. If it does not, we try the
- * next plate in the chain. Please do not modify this method without discussing it with the team.
- * @param size The size of the sub-allocation to claim.
- * @return A tuple containing the plate pointer, the current bump pointer, and
- * the size of the allocation - this area in memory is now owned by the caller.
+/** --------------------------------------------------------------------------------------------------------- SliceId Slice
+ * @brief Cuts a view from this identifier into a fresh pool slot, so a plate's base slot is never
+ * owned by the Slice handed out.
+ * @param offset The byte offset of the view.
+ * @param size The view length in bytes, or SIZE_MAX for the remainder.
+ * @return The view, holding one reference on the backing plate.
  */
-Slice Placemat::Plate::claim(size_t size, bool novel_buffer) {
-    // Bump the reference count to ensure this plate isn't freed prematurely.
-    if (ref_count->fetch_add(1, std::memory_order_acquire) < 1) [[unlikely]] {
-        // This plate was already released, so claim through the live head instead.
-        return placemat->current_plate()->claim(size, novel_buffer);
-    }
-    if (size > this->size || novel_buffer) {
-        // The requested size is larger than we normally allocate the entire
-        // plate for, so we're just going to give you your own dedicated
-        // allocation.
-        auto [a, b] = placemat->allocate()(size, placemat->get_context()());
-        SliceId slice_id = Alligator::inst().next_id();
-        Plate* novel = new Plate(placemat, size, a, b, true);
-        record_slab_allocation(novel);
-        Alligator::inst().plate(slice_id) = novel;
-        (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{novel->device_base, static_cast<uint32_t>(size), 0};
-        (*Alligator::inst().host_ptr(slice_id)) = HostPtr{a};
-        Slice result(slice_id);
-        Alligator::inst().submit([](Placemat::Plate* plate) { plate->free(); }, this);
-        return result;
-    }
-    // Claims advance by the placement's alignment so every slice start stays aligned.
-    const size_t alignment = placemat->bump_alignment_;
-    const size_t aligned_size = (size + alignment - 1) & ~(alignment - 1);
-    size_t prev_bump = bump->fetch_add(aligned_size, std::memory_order_acquire);
-    if (prev_bump + size > this->size) {
-        // We don't subtract the bump because that can create a race condition.
-        // We'll just call this one full. Here we do our trick where we
-        // delete the slice that we've been holding as a token.
-        // If it weren't for the ref_count add a few lines up, this could
-        // potentially trigger a call to `free()` prematurely.
-        Slice* swap = slice->exchange(nullptr, std::memory_order_acquire);
-        if (swap != nullptr) delete swap;
-        // Publish the ready successor only if this plate is still the head.
-        Plate* successor = next(0);
-        if (placemat->set_current_plate(this, successor)) {
-            // The winner keeps two slabs ahead of the new head.
-            (void)successor->next(1);
-        }
-        // Claim from the successor before releasing the pin on this plate.
-        Slice result = successor->claim(size);
-        // NOW we can safely free this plate without affecting the claim we
-        // just made.
-        Alligator::inst().submit([](Placemat::Plate* plate) { plate->free(); }, this);
-        return result;
-    }
-    // If we reach here, it means we successfully claimed from this plate.
-    SliceId slice_id = Alligator::inst().next_id();
-    Alligator::inst().plate(slice_id) = this;
-    (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{
-        device_base + prev_bump, static_cast<uint32_t>(size), static_cast<uint32_t>(prev_bump)};
-    (*Alligator::inst().host_ptr(slice_id)) = HostPtr{
-        static_cast<uint8_t*>(host_ptr) + prev_bump};
-    Slice result(slice_id);
-    Alligator::inst().submit([](Placemat::Plate* plate) { plate->free(); }, this);
-    return result;
+Slice SliceId::slice(size_t offset, size_t size) const {
+    Alligator& alligator = Alligator::inst();
+    const SliceId view_id = alligator.next_id();
+    const GPUBuf base = *alligator.gpubuf(*this);
+    const uint32_t length = size == SIZE_MAX ? base.size - static_cast<uint32_t>(offset) : static_cast<uint32_t>(size);
+    *alligator.gpubuf(view_id) = GPUBuf{
+        base.address + offset, length, base.offset + static_cast<uint32_t>(offset)};
+    *alligator.host_ptr(view_id) = HostPtr{static_cast<uint8_t*>(alligator.host_ptr(*this)->ptr) + offset};
+    alligator.plate(view_id) = alligator.plate(*this);
+    return Slice(view_id);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - SliceId
  * @brief Constructs a slice object from an existing SliceId.
@@ -117,7 +47,7 @@ Slice::Slice(SliceId slice_id) : id_(slice_id) {
         id_ = 0xFFFFFFFFu;
         return;
     }
-    Alligator::inst().plate(slice_id)->ref_count->fetch_add(1, std::memory_order_relaxed);
+    Alligator::inst().plate(slice_id)->ref_count.fetch_add(1, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
  * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
@@ -175,7 +105,7 @@ Slice::Slice(const Slice& other) {
     (*Alligator::inst().gpubuf(id_)) = (*Alligator::inst().gpubuf(other.id_));
     (*Alligator::inst().host_ptr(id_)) = (*Alligator::inst().host_ptr(other.id_));
     Alligator::inst().plate(id_) = Alligator::inst().plate(other.id_);
-    Alligator::inst().plate(id_)->ref_count->fetch_add(1, std::memory_order_relaxed);
+    Alligator::inst().plate(id_)->ref_count.fetch_add(1, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Copy assignment operator
  * @brief Assigns the contents of one `Slice` to another, sharing the same underlying memory
@@ -293,23 +223,27 @@ void Slice::resize(
     if (preserve_data) {
         // Whole-block, sole-handle slices on resizable placements grow in place through the
         // substrate (realloc expands without copying whenever the allocator can).
-        Placemat::Plate* plate = Alligator::inst().plate(id_);
-        const int sole_owner = 1;  // only this handle's count remains on a novel plate
+        Plate* plate = Alligator::inst().plate(id_);
+        const GPUBuf* whole = Alligator::inst().gpubuf(id_);
         if (is_novel() && plate->placemat->resizer_ != nullptr
-            && plate->ref_count->load(std::memory_order_acquire) == sole_owner
+            && whole->offset == 0 && whole->size == plate->size
         ) [[likely]] {
             const size_t old_size = size_bytes();
             auto [new_host, new_substrate] =
-                plate->placemat->resizer_(plate->host_ptr, plate->substrate_handle, new_size);
+                plate->placemat->resizer_(Alligator::inst().host_ptr(id_)->ptr, plate->substrate_handle, new_size);
             if (new_host != nullptr) {
                 // realloc leaves the growth uninitialized; the zero-init contract covers it.
                 std::memset(static_cast<uint8_t*>(new_host) + old_size, 0, new_size - old_size);
-                plate->host_ptr = new_host;
                 plate->substrate_handle = new_substrate;
+                Memory::record_allocation(*plate->placemat, new_size - old_size);
+                plate->size = new_size;
                 Alligator::inst().host_ptr(id_)->ptr = new_host;
                 GPUBuf* gpu = Alligator::inst().gpubuf(id_);
                 gpu->address = reinterpret_cast<uint64_t>(new_host);
                 gpu->size = new_size;
+                const SliceId base_id(plate->slice_id.load(std::memory_order_acquire));
+                *Alligator::inst().host_ptr(base_id) = HostPtr{new_host};
+                *Alligator::inst().gpubuf(base_id) = *gpu;
                 return;
             }
         }
@@ -328,8 +262,8 @@ bool Slice::is_novel() const noexcept {
     if (id_ == 0xFFFFFFFFu) {
         return false;
     }
-    const Placemat::Plate* plate = Alligator::inst().plate(id_);
-    return plate != nullptr && plate->size == 0;
+    const Plate* plate = Alligator::inst().plate(id_);
+    return plate != nullptr && plate->ref_count.load(std::memory_order_acquire) == 1;
 }
 /** --------------------------------------------------------------------------------------------------------- Adopt
  * @brief Adopts the contents of another slice, freeing the current slice if necessary.
@@ -405,37 +339,6 @@ size_t Slice::size_bytes() const {
         return 0;
     }
     return Alligator::inst().gpubuf(id_)->size;
-}
-/** --------------------------------------------------------------------------------------------------------- Create Main Slice
- * @brief The plate's keep-alive token: one whole-slab Slice whose death at exhaustion releases
- * the plate's final reference. The token's table entry points at the plate itself.
- * @param plate The plate the token keeps alive.
- * @return The heap-allocated token; the plate stores it and deletes it on exhaustion.
- */
-Slice* Placemat::create_main_slice(const Plate* plate) const {
-    SliceId slice_id = Alligator::inst().next_id();
-    Alligator::inst().plate(slice_id) = const_cast<Plate*>(plate);
-    (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{
-        plate->device_base, static_cast<uint32_t>(plate->size), 0};
-    (*Alligator::inst().host_ptr(slice_id)) = HostPtr{plate->host_ptr};
-    return new Slice(slice_id);
-}
-/** --------------------------------------------------------------------------------------------------------- Create Slice From
- * @brief Registers a view over an existing plate without claiming fresh bump space.
- * @param plate The plate backing the view.
- * @param offset The byte offset into the plate.
- * @param size The view length in bytes.
- * @return The registered view.
- */
-Slice Placemat::create_slice_from(const Plate* plate, size_t offset, size_t size) const {
-    SliceId slice_id = Alligator::inst().next_id();
-    Alligator::inst().plate(slice_id) = const_cast<Plate*>(plate);
-    (*Alligator::inst().gpubuf(slice_id)) = GPUBuf{
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(plate->host_ptr)) + offset,
-        static_cast<uint32_t>(size), static_cast<uint32_t>(offset)};
-    (*Alligator::inst().host_ptr(slice_id)) = HostPtr{
-        static_cast<uint8_t*>(plate->host_ptr) + offset};
-    return Slice(slice_id);
 }
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice Details
  * @struct PotentialSlice::Details
@@ -693,5 +596,37 @@ void PotentialSlice::adopt(Slice slice) {
             }
         }
     }
+}
+/** --------------------------------------------------------------------------------------------------------- Record Slab Allocation
+ * @brief Reports one completed slab allocation to the memory tracker.
+ * @param plate The plate that now owns the slab.
+ */
+void Placemat::record_slab_allocation(const Plate* plate) {
+    const size_t bytes = plate->size != 0 ? plate->size : plate->bump.load(std::memory_order_acquire);
+    Memory::record_allocation(*plate->placemat, bytes);
+    Memory::record_code_location(*plate->placemat, bytes, plate);
+}
+/** --------------------------------------------------------------------------------------------------------- Record Slab Release
+ * @brief Reports one completed slab release to the memory tracker and frees a novel plate's base slot.
+ * @param plate The plate whose slab was just returned.
+ */
+void Placemat::record_slab_release(const Plate* plate) {
+    const size_t bytes = plate->size != 0 ? plate->size : plate->bump.load(std::memory_order_acquire);
+    Memory::record_deallocation(*plate->placemat, bytes);
+    Memory::forget_code_location(plate);
+    const SliceId slice_id(plate->slice_id.load(std::memory_order_acquire));
+    if (slice_id == static_cast<SliceId>(0xFFFFFFFFu)) return;  // Exhaustion already destroyed the base slot.
+    Alligator& alligator = Alligator::inst();
+    alligator.plate(slice_id) = nullptr;
+    *alligator.gpubuf(slice_id) = GPUBuf{};
+    *alligator.host_ptr(slice_id) = HostPtr{};
+    alligator.occupancy_->test_and_clear(slice_id);  // Cleared last so the slot is not reissued early.
+}
+/** --------------------------------------------------------------------------------------------------------- Call Free Later
+ * @brief Hands a plate's reference drop to the allocator thread.
+ * @param plate The plate to free.
+ */
+void Placemat::call_free_later(Plate* plate) {
+    Alligator::inst().submit([](Plate* later) { later->free(); }, plate);
 }
 } // namespace buffetalligator

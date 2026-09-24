@@ -167,7 +167,7 @@ static void shared_ownership() {
             for (size_t round = 0; round < rounds; ++round) {
                 phase.arrive_and_wait();
                 Slice retained = map.get_slice(worker);
-                require(retained.is_novel(), "map changed the allocation's backing identity");
+                require(!retained.is_novel(), "a shared novel allocation still reports sole ownership");
                 phase.arrive_and_wait();
                 phase.arrive_and_wait();
                 require(retained.get_as<uint64_t>() == round * workers + worker,

@@ -5,6 +5,7 @@
  */
 #include <alligator.hpp>
 #include <memory/tracker.hpp>
+#include <memory/plate.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -22,6 +23,13 @@ std::atomic<size_t> deallocations{0};
 std::atomic<size_t> startup_thread_allocations{0};
 std::atomic<bool> background_allocation{false};
 std::thread::id startup_thread = std::this_thread::get_id();
+/** --------------------------------------------------------------------------------------------------------- Test Block
+ * @brief The test placement's substrate handle: the block and its size.
+ */
+struct TestBlock {
+    void* memory;  ///< The allocated block.
+    size_t size;   ///< The block size in bytes.
+};
 std::pair<void*, void*> test_allocate(size_t size, void*) {
     allocations.fetch_add(1, std::memory_order_relaxed);
     if (std::this_thread::get_id() == startup_thread) {
@@ -34,12 +42,14 @@ std::pair<void*, void*> test_allocate(size_t size, void*) {
         throw std::bad_alloc();
     }
     std::memset(memory, 0, size);
-    return {memory, memory};
+    return {memory, new TestBlock{memory, size}};
 }
 std::pair<void*, void*> test_deallocate(void* host_ptr, void* substrate_handle) {
     static_cast<void>(host_ptr);
     deallocations.fetch_add(1, std::memory_order_relaxed);
-    std::free(substrate_handle);
+    TestBlock* block = static_cast<TestBlock*>(substrate_handle);
+    std::free(block->memory);
+    delete block;
     return {nullptr, nullptr};
 }
 void* test_context() {
@@ -60,6 +70,19 @@ void claim_worker(std::atomic<bool>* failed) {
     }
 }
 }
+/** --------------------------------------------------------------------------------------------------------- Host Pointer
+ * @brief The block's host pointer.
+ */
+buffetalligator::HostPtr test_host_ptr(void* substrate_handle) {
+    return buffetalligator::HostPtr{static_cast<TestBlock*>(substrate_handle)->memory};
+}
+/** --------------------------------------------------------------------------------------------------------- GPUBuf
+ * @brief Host placements address their GPUBuf by the host pointer.
+ */
+buffetalligator::GPUBuf test_gpu_buf(void* substrate_handle) {
+    const TestBlock* block = static_cast<TestBlock*>(substrate_handle);
+    return buffetalligator::GPUBuf{reinterpret_cast<uint64_t>(block->memory), static_cast<uint32_t>(block->size), 0};
+}
 int main() {
     const uint16_t type = buffetalligator::BuffetMenu::register_type(
         "test_placement",
@@ -68,6 +91,9 @@ int main() {
         &test_allocate,
         &test_deallocate,
         &test_context,
+        &test_host_ptr,
+        nullptr,
+        &test_gpu_buf,
         true
     );
     require(type == buffetalligator::BuffetMenu::count() - 1,

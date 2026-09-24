@@ -7,6 +7,7 @@
 #include <memory/pressure.hpp>
 #include <memory/tracker.hpp>
 #include <containers/bitplane.hpp>
+#include <memory/plate.hpp>
 #include <chrono>
 #include <new>
 
@@ -259,34 +260,20 @@ struct Alligator::WaitingThread {
     WaitingThread(const WaitingThread&) = delete;
     WaitingThread& operator=(const WaitingThread&) = delete;
 };
-/** --------------------------------------------------------------------------------------------------------- GatorBuf
- * @struct Alligator::GatorBuf
- * @brief Internal buffer structure used by the Alligator class.
- */
-struct Alligator::GatorBuf {
-    /// @brief Pointer to the allocated buffer.
-    void* data;
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs a GatorBuf with the specified size, allocating aligned memory.
-     * @param size The size of the buffer to allocate.
-     */
-    GatorBuf(size_t size) : data(std::aligned_alloc(64, size)) {}
-    GatorBuf() : data(nullptr) {}
-    ~GatorBuf() { std::free(data); }
-};
 /** --------------------------------------------------------------------------------------------------------- Alligator Constructor
  * @brief Constructs a new Alligator object and initializes its resources.
  */
 Alligator::Alligator() {
-    plates_ = new GatorBuf((1 << POOL_BITS) * sizeof(Placemat::Plate*));
-    host_ptrs_ = new GatorBuf((1 << POOL_BITS) * sizeof(HostPtr));
+    plates_ = static_cast<Plate**>(std::aligned_alloc(64, (1 << POOL_BITS) * sizeof(Plate*)));
+    host_ptrs_ = static_cast<HostPtr*>(std::aligned_alloc(64, (1 << POOL_BITS) * sizeof(HostPtr)));
     const Placemat* table_placement = VulkanKernel::table_placement();
     const size_t table_bytes = (1 << POOL_BITS) * sizeof(GPUBuf);
     auto [table_host, table_substrate] = table_placement->allocate()(
         table_bytes, table_placement->get_context()());
-    gpubufs_ = new Placemat::Plate(
-        const_cast<Placemat*>(table_placement), table_bytes, table_host, table_substrate, true);
+    gpu_table_ = static_cast<GPUBuf*>(table_host);
     occupancy_ = std::make_unique<ConcurrentBitplane>(1 << POOL_BITS);
+    gpubufs_ = new Plate(const_cast<Placemat*>(table_placement), table_bytes, table_substrate, true);
+    plate(SliceId(gpubufs_->slice_id.load(std::memory_order_acquire))) = gpubufs_;
     for (size_t i = 0; i < std::thread::hardware_concurrency(); ++i) {
         waiting_threads_.emplace_back(std::make_unique<WaitingThread>(this));
         waiting_threads_.back()->start();
@@ -298,20 +285,16 @@ Alligator::Alligator() {
  * @brief Claims a slice from the occupancy bitplane.
  * @return The ID of the claimed slice.
  */
-Placemat::Plate*& Alligator::plate(SliceId slice_id) {
-    return *reinterpret_cast<Placemat::Plate**>(static_cast<char*>(plates_->data) + slice_id.id_ * sizeof(Placemat::Plate*));
+Plate*& Alligator::plate(SliceId slice_id) {
+    return plates_[slice_id.id_];
 }
 /** --------------------------------------------------------------------------------------------------------- Plate (const)
  * @brief Retrieves the plate associated with the given slice ID.
  * @param slice_id The ID of the slice.
  * @return A pointer to the plate if it exists, nullptr otherwise.
  */
-const Placemat::Plate*& Alligator::plate(const SliceId& slice_id) const {
-    return const_cast<const Placemat::Plate*&>(
-        *reinterpret_cast<const Placemat::Plate* const*>(
-            static_cast<char*>(plates_->data) + slice_id.id_ * sizeof(Placemat::Plate*)
-        )
-    );
+const Plate*& Alligator::plate(const SliceId& slice_id) const {
+    return const_cast<const Plate*&>(plates_[slice_id.id_]);
 }
 /** --------------------------------------------------------------------------------------------------------- HostPtr
  * @brief Retrieves the host pointer entry stored for the given slice ID.
@@ -319,7 +302,7 @@ const Placemat::Plate*& Alligator::plate(const SliceId& slice_id) const {
  * @return The host pointer entry's slot in the value table.
  */
 HostPtr* Alligator::host_ptr(SliceId slice_id) {
-    return reinterpret_cast<HostPtr*>(static_cast<char*>(host_ptrs_->data) + slice_id.id_ * sizeof(HostPtr));
+    return host_ptrs_ + slice_id.id_;
 }
 /** --------------------------------------------------------------------------------------------------------- HostPtr (const)
  * @brief Retrieves the host pointer entry stored for the given slice ID.
@@ -327,7 +310,7 @@ HostPtr* Alligator::host_ptr(SliceId slice_id) {
  * @return The host pointer entry's slot in the value table.
  */
 const HostPtr* Alligator::host_ptr(const SliceId& slice_id) const {
-    return reinterpret_cast<const HostPtr*>(static_cast<const char*>(host_ptrs_->data) + slice_id.id_ * sizeof(HostPtr));
+    return host_ptrs_ + slice_id.id_;
 }
 /** --------------------------------------------------------------------------------------------------------- GPUBuf
  * @brief Retrieves the GPU buffer entry stored for the given slice ID.
@@ -335,7 +318,7 @@ const HostPtr* Alligator::host_ptr(const SliceId& slice_id) const {
  * @return The GPUBuf entry's slot in the value table.
  */
 GPUBuf* Alligator::gpubuf(SliceId slice_id) {
-    return reinterpret_cast<GPUBuf*>(static_cast<char*>(gpubufs_->host_ptr) + slice_id.id_ * sizeof(GPUBuf));
+    return gpu_table_ + slice_id.id_;
 }
 /** --------------------------------------------------------------------------------------------------------- GPUBuf (const)
  * @brief Retrieves the GPU buffer entry stored for the given slice ID.
@@ -343,14 +326,14 @@ GPUBuf* Alligator::gpubuf(SliceId slice_id) {
  * @return The GPUBuf entry's slot in the value table.
  */
 const GPUBuf* Alligator::gpubuf(const SliceId& slice_id) const {
-    return reinterpret_cast<const GPUBuf*>(static_cast<const char*>(gpubufs_->host_ptr) + slice_id.id_ * sizeof(GPUBuf));
+    return gpu_table_ + slice_id.id_;
 }
 /** --------------------------------------------------------------------------------------------------------- Destroy
  * @brief Destroys the resources associated with the given slice ID.
  * @param slice_id The ID of the slice.
  */
 void Alligator::destroy(SliceId slice_id) {
-    Placemat::Plate* p = plate(slice_id);
+    Plate* p = plate(slice_id);
     plate(slice_id) = nullptr;
     *gpubuf(slice_id) = GPUBuf{};
     *host_ptr(slice_id) = HostPtr{};
@@ -366,21 +349,22 @@ void Alligator::destroy(SliceId slice_id) {
  * @return The table base.
  */
 const HostPtr* Alligator::host_table() {
-    return static_cast<const HostPtr*>(inst().host_ptrs_->data);
+    return inst().host_ptrs_;
 }
 /** --------------------------------------------------------------------------------------------------------- GPU Table
  * @brief The shared GPUBuf table's host mapping.
  * @return The table base.
  */
 const GPUBuf* Alligator::gpu_table() {
-    return static_cast<const GPUBuf*>(inst().gpubufs_->host_ptr);
+    return inst().gpu_table_;
 }
 /** --------------------------------------------------------------------------------------------------------- GPU Table Address
  * @brief The shared GPUBuf table's device address, 0 without a compute device.
  * @return The device address.
  */
 uint64_t Alligator::gpu_table_address() {
-    return inst().gpubufs_->device_base;
+    const GetGPUBufMethod get_gpu_buf = inst().gpubufs_->placemat->get_gpu_buf();
+    return get_gpu_buf == nullptr ? 0 : get_gpu_buf(inst().gpubufs_->substrate_handle).address;
 }
 /** --------------------------------------------------------------------------------------------------------- Alligator Storage
  * @brief Raw storage for the singleton; zero-initialized, so it exists before any dynamic init runs.

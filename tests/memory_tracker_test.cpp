@@ -4,6 +4,7 @@
  */
 #include <alligator.hpp>
 #include <memory/tracker.hpp>
+#include <memory/plate.hpp>
 #include "functional_support.hpp"
 #include <atomic>
 #include <chrono>
@@ -61,16 +62,28 @@ std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
  * @brief Returns the unused placement context.
  */
 void* context() { return nullptr; }
+/** --------------------------------------------------------------------------------------------------------- Host Pointer
+ * @brief Resolves an Allocation's block.
+ */
+HostPtr host_ptr(void* substrate_handle) { return HostPtr{static_cast<Allocation*>(substrate_handle)->memory}; }
+/** --------------------------------------------------------------------------------------------------------- GPUBuf
+ * @brief Host placements address their GPUBuf by the host pointer.
+ */
+GPUBuf gpu_buf(void* substrate_handle) {
+    const Allocation* allocation = static_cast<Allocation*>(substrate_handle);
+    return GPUBuf{reinterpret_cast<uint64_t>(allocation->memory), static_cast<uint32_t>(allocation->bytes), 0};
+}
 /** --------------------------------------------------------------------------------------------------------- Completed Frees
  * @brief Reads the placement's freed total.
  */
 size_t completed_frees() { return freed_bytes.load(std::memory_order_relaxed); }
 /** --------------------------------------------------------------------------------------------------------- Released
- * @brief Waits up to two seconds for the worker to park a plate's count after its final release.
+ * @brief Waits up to two seconds for the release to clear the plate's base slot, its final step.
  */
-bool released(const Placemat::Plate* plate) {
+bool released(const Plate* plate) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (plate->ref_count->load(std::memory_order_acquire) != Placemat::Plate::RELEASED) {
+    const uint32_t base_id = plate->slice_id.load(std::memory_order_acquire);
+    while (Alligator::host_table()[base_id].ptr != nullptr) {
         if (std::chrono::steady_clock::now() > deadline) return false;
         std::this_thread::yield();
     }
@@ -83,7 +96,7 @@ void tracking() {
     constexpr size_t slab_bytes = 64ull * 1024 * 1024;
     constexpr size_t novel_bytes = 8192;
     const uint16_t type = BuffetMenu::register_type(
-        "tracker_test", slab_bytes, 64, allocate, deallocate, context, true
+        "tracker_test", slab_bytes, 64, allocate, deallocate, context, host_ptr, nullptr, gpu_buf, true
     );
     const Placemat& placement = *BuffetMenu::get(type);
     Slice warmup(64);
@@ -103,7 +116,7 @@ void tracking() {
     require(Memory::total_allocations() == global_allocations,
         "tracker counted a failed allocation");
     Slice novel(novel_bytes, true);
-    const Placemat::Plate* plate = Alligator::plate_for(novel);
+    const Plate* plate = Alligator::plate_for(novel);
     const auto details = Memory::allocation_info(plate);
     if constexpr (BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING) {
         require(details.has_value(), "enabled tracking omitted a live allocation record");
@@ -141,7 +154,7 @@ void tracking() {
         Memory::placement_usage(placement) == initial_allocations,
         "completed deallocation did not update tracker totals");
     Slice undelivered(64, true);
-    const Placemat::Plate* undelivered_plate = Alligator::plate_for(undelivered);
+    const Plate* undelivered_plate = Alligator::plate_for(undelivered);
     {
         SliceQueue queue(1, 1);
         auto producer = queue.producer(0);

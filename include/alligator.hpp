@@ -59,6 +59,25 @@ struct HostMemoryUsage {
     uint64_t available_bytes;
     uint64_t resident_bytes;
 };
+/** --------------------------------------------------------------------------------------------------------- Host Pointer
+ * @struct HostPtr
+ * @brief A simple wrapper around a raw pointer to represent a host memory location.
+ */
+struct HostPtr {
+    void* ptr = nullptr;
+};
+/** --------------------------------------------------------------------------------------------------------- GPUBuf
+ * @struct GPUBuf
+ * @brief Represents a GPU buffer with its address, size, and offset.
+ */
+struct alignas(16) GPUBuf {
+    /// @brief GPU buffer address.
+    uint64_t address = 0;
+    /// @brief Size of the GPU buffer.
+    uint32_t size = 0;
+    /// @brief Offset of the GPU buffer within the memory.
+    uint32_t offset = 0;
+};
 /** --------------------------------------------------------------------------------------------------------- AllocateMethod
  * @brief The method used to allocate a new handle within this placemat.
  * @param size The size of the allocation in bytes.
@@ -66,6 +85,12 @@ struct HostMemoryUsage {
  * @return A pair containing the host pointer and the substrate handle of the newly allocated memory.
  */
 using AllocateMethod = std::pair<void*, void*> (*)(size_t size, void* global_context);
+/** --------------------------------------------------------------------------------------------------------- GetHostPtrMethod
+ * @brief The method used to retrieve the host pointer associated with a plate's substrate handle.
+ * @param substrate_handle The substrate handle of the plate.
+ * @return The host pointer corresponding to the substrate handle.
+ */
+using GetHostPtrMethod = HostPtr (*)(void* substrate_handle);
 /** --------------------------------------------------------------------------------------------------------- DeallocateMethod
  * @brief The method used to deallocate a handle within this placemat.
  * @param host_ptr The host pointer of the memory to be deallocated.
@@ -82,18 +107,6 @@ using DeallocateMethod = std::pair<void*, void*> (*)(void* host_ptr, void* subst
  * @return A pointer to the context associated with the plate.
  */
 using GetContextMethod = void* (*)();
-/** --------------------------------------------------------------------------------------------------------- DeviceAddressMethod
- * @brief The method that maps one plate's substrate handle to the device address of its first byte.
- * @param substrate_handle The substrate handle the allocation method returned.
- * @return The device address, 0 for memory no device can address.
- */
-using DeviceAddressMethod = uint64_t (*)(void* substrate_handle);
-/** --------------------------------------------------------------------------------------------------------- host_device_address
- * @brief The device address method of host-only placements, which have none.
- * @param substrate_handle The substrate handle, unused.
- * @return Always 0.
- */
-inline uint64_t host_device_address(void*) { return 0; }
 /** --------------------------------------------------------------------------------------------------------- ResizeMethod
  * @brief The method used to attempt an in-place resize of one whole-block allocation. Only
  * placements whose substrate can honor it (the C heap's realloc, for example) provide one.
@@ -103,6 +116,12 @@ inline uint64_t host_device_address(void*) { return 0; }
  * @return The resized host and substrate pair, or nulls to fall back to copy-based resizing.
  */
 using ResizeMethod = std::pair<void*, void*> (*)(void* host_ptr, void* substrate_handle, size_t new_size);
+/** --------------------------------------------------------------------------------------------------------- GetGPUBufMethod
+ * @brief The method used to retrieve the GPU buffer associated with a substrate handle.
+ * @param substrate_handle The substrate handle of the GPU buffer.
+ * @return The GPU buffer corresponding to the substrate handle.
+ */
+using GetGPUBufMethod = GPUBuf (*)(void* substrate_handle);
 /** --------------------------------------------------------------------------------------------------------- Comprehension Enforcer
  * @brief Gates non-hot-path methods behind proof the caller read the code. A gated method calls
  * CHECK_read_this(name), which passes only while that gate is armed on the calling thread. Arming is
@@ -141,25 +160,13 @@ static void enforce() { if (!armed()) { ALLIGATOR_THROW(error_message); } } };
  * @brief The gate guarding Placemat construction and its setters.
  */
 SETUP_read_this(placemat_construction, 4 + 13, "You must know what you are doing in order to construct a placemat properly.");
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @struct HostPtr
- * @brief A simple wrapper around a raw pointer to represent a host memory location.
+/** --------------------------------------------------------------------------------------------------------- Plate
+ * @struct Plate
+ * @brief A `Plate` is a specific allocation of memory within a given `Placemat`. One might call these
+ * "slabs" in some contexts, they are large contiguous blocks of memory that the framework hands out
+ * sub-slices of.
  */
-struct HostPtr {
-    void* ptr = nullptr;
-};
-/** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @struct GPUBuf
- * @brief Represents a GPU buffer with its address, size, and offset.
- */
-struct alignas(16) GPUBuf {
-    /// @brief GPU buffer address.
-    uint64_t address = 0;
-    /// @brief Size of the GPU buffer.
-    uint32_t size = 0;
-    /// @brief Offset of the GPU buffer within the memory.
-    uint32_t offset = 0;
-};
+struct Plate;
 /** --------------------------------------------------------------------------------------------------------- Placemat
  * @class Placemat
  * @brief The `Placemat` or placement of a category of memory allocations within the BuffetAlligator
@@ -168,8 +175,6 @@ struct alignas(16) GPUBuf {
  */
 class Placemat {
 public:
-    /// @brief Forward declaration of the `Plate` structure.
-    struct Plate;
     /** ------------------------------------------------------------------------------------------- Allocate
      * @brief Returns the allocation method associated with this placemat.
      * @return The allocation method.
@@ -185,11 +190,17 @@ public:
      * @return The context retrieval method.
      */
     GetContextMethod get_context() const { return get_context_; }
-    /** ------------------------------------------------------------------------------------------- DeviceAddress
-     * @brief Returns the method that maps a substrate handle to its device address.
-     * @return The device address method.
+    /** ------------------------------------------------------------------------------------------- GetHostPtr
+     * @brief Returns the method used to retrieve the host pointer associated with a plate's
+     * substrate handle.
+     * @return The host pointer retrieval method.
      */
-    DeviceAddressMethod device_address() const { return device_address_; }
+    GetHostPtrMethod get_host_ptr() const { return get_host_ptr_; }
+    /** ------------------------------------------------------------------------------------------- GetGPUBuf
+     * @brief Returns the method used to retrieve the GPU buffer associated with a substrate handle.
+     * @return The GPU buffer retrieval method.
+     */
+    GetGPUBufMethod get_gpu_buf() const { return get_gpu_buf_; }
     /** ------------------------------------------------------------------------------------------- Type
      * @brief Returns the registry identifier assigned to this placement.
      * @return The placement registry identifier.
@@ -220,265 +231,19 @@ public:
      * @param plate The plate whose slab was just returned.
      */
     static void record_slab_release(const Plate* plate);
-    /** ------------------------------------------------------------------------------------------- Plate
-     * @struct Plate
-     * @brief A `Plate` is a specific allocation of memory within a given `Placemat`. One might
-     * call these "slabs" in some contexts, they are large contiguous blocks of memory that the
-     * framework hands out sub-slices of.
+    /** ------------------------------------------------------------------------------------------- Create Base Slice ID
+     * @brief Generates a base slice identifier for a given placemat, size, and substrate handle.
+     * @param placemat Pointer to the placemat.
+     * @param size Size of the allocation.
+     * @param substrate_handle Substrate handle associated with the allocation.
+     * @return The generated base slice identifier.
      */
-    struct Plate {
-        /// @brief The placemat that owns this plate.
-        Placemat* placemat;
-        /// @brief The size of the allocation in bytes.
-        size_t size;
-        /// @brief The host-visible base pointer of the allocation.
-        void* host_ptr;
-        /// @brief The special handle associated with this allocation.
-        /// Example: vk::Device for Vulkan, or CUcontext for CUDA.
-        void* substrate_handle;
-        /// @brief The device address of the allocation's first byte, 0 for host-only memory.
-        uint64_t device_base;
-        /** ----------------------------------------------------------------------------- next atomic
-         * @brief We try to pre-allocate a slab or two ahead of the current bump pointer
-         * so that contention around boundaries is minimized when allocating new slices.
-         */
-        std::atomic<Plate*>* next_buf;
-        /** ----------------------------------------------------------------------------- Next
-         * @brief Retrieves or allocates the next handle in the pre-allocated slab
-         * chain, or allocates a new handle if the next handle is not available yet.
-         * @param ahead_alloc The number of plates to make sure are pre-allocated ahead
-         * of the current plate.
-         */
-        Plate* next(size_t ahead_alloc) {
-            Plate* current_next = next_buf->load(std::memory_order_acquire);
-            while (current_next == nullptr
-                || current_next == reinterpret_cast<Plate*>(-1ll)
-            ) {
-                if (next_buf->compare_exchange_strong(
-                    current_next,
-                    reinterpret_cast<Plate*>(-1ll),
-                    std::memory_order_acq_rel)
-                ) {
-                    auto [host_ptr, substrate_handle] =
-                        placemat->allocate()(size, placemat->get_context()());
-                    current_next = new Plate(
-                        placemat,
-                        size,
-                        host_ptr,
-                        substrate_handle,
-                        false
-                    );
-                    record_slab_allocation(current_next);
-                    next_buf->store(current_next, std::memory_order_release);
-                    break;
-                }
-                std::this_thread::yield();
-                current_next = next_buf->load(std::memory_order_acquire);
-            }
-            if (ahead_alloc > 0) {
-                (void)current_next->next(ahead_alloc - 1);
-            }
-            return current_next;
-        }
-        /**
-         * @brief The slice associated with this plate. Now, I know what you're thinking:
-         * "Isn't a slice supposed to be a peice of a handle? That seems kind of circular,
-         * doesn't it?" and you would be correct in wondering that.
-         * This is a trick that we use to keep the `Plate` alive until the final `Slice`
-         * has gone out of scope. What we do is give the `Plate` one giant slice (which
-         * we can then sub-slice), and when the bump pointer reaches the end of the slice,
-         * we simply delete this `Slice` instance which decrements the reference count.
-         * This "frees" the plate but at the same time keeps it alive *if* there are
-         * still other `Slice`s out there referencing it.
-         */
-        std::atomic<Slice*>* slice;
-        /// @brief When this reaches zero, that means nothing is referencing this handle
-        /// anymore, so it gets freed or recycled.
-        std::atomic<int>* ref_count;
-        /** ----------------------------------------------------------------------------- Free Plate
-         * @brief Decrements the reference count and frees the plate if it reaches zero.
-         */
-        /// @brief Parked reference count of a released plate, so a late claim can never revive it.
-        inline static constexpr int RELEASED = INT32_MIN / 2;
-        void free() {
-            if (ref_count->fetch_sub(1, std::memory_order_acquire) == 1) {
-                auto [a, b] = placemat->deallocate()(host_ptr, substrate_handle);
-                host_ptr = a;
-                substrate_handle = b;
-                record_slab_release(this);
-                if (slice->load(std::memory_order_acquire) != nullptr) {
-                    std::string error_msg = "Hmm... something isn't right. The slice"
-                        " should have been nullptr before freeing the plate.";
-                    ALLIGATOR_THROW(error_msg);
-                }
-                // The atomics stay allocated so a late walker reads a parked count, never freed memory.
-                ref_count->store(RELEASED, std::memory_order_release);
-            }
-        }
-        /// @brief The bump pointer for this handle, used to slice the slab into smaller
-        /// allocations.
-        std::atomic<size_t>* bump;
-        /** ----------------------------------------------------------------------------- Claim
-         * @brief Claims a sub-allocation from this plate if the plate has it available.
-         * If it does not, we try the next plate in the chain.
-         * @param size The size of the sub-allocation to claim.
-         * @return A tuple containing the plate pointer, the current bump pointer, and
-         * the size of the allocation - this area in memory is now owned by the caller.
-         */
-        Slice claim(size_t size, bool novel_buffer = false);
-        /** ----------------------------------------------------------------------------- Constructor
-         * @brief Constructs a new Plate object.
-         * @param placemat_ Pointer to the placemat this plate belongs to, so it knows
-         * where it lives.
-         * @param size_ Size of the plate.
-         * @param host_ptr_ Host pointer associated with the plate.
-         * @param substrate_handle_ Substrate handle associated with the plate.
-         * @param final_course Indicates if this is a novel allocation or if it is part
-         * of the chain of buffer allocations.
-         */
-        Plate(
-            Placemat* placemat_,
-            size_t size_,
-            void* host_ptr_,
-            void* substrate_handle_,
-            bool final_course
-        ) : placemat(placemat_)
-        , size(final_course ? 0 : size_)
-        , host_ptr(host_ptr_)
-        , substrate_handle(substrate_handle_)
-        , device_base(placemat_->device_address()(substrate_handle_))
-        , next_buf(new std::atomic<Plate*>(nullptr))
-        , slice(new std::atomic<Slice*>(nullptr))
-        , ref_count(new std::atomic<int>(0))
-        , bump(new std::atomic<size_t>(0)) {
-            if (final_course) {
-                bump->store(size_, std::memory_order_release);
-            } else {
-                slice->store(
-                    placemat->create_main_slice(this),
-                    std::memory_order_release
-                );
-            }
-        }
-        /** ----------------------------------------------------------------------------- Copy Constructor
-         * @brief Constructs a new Plate object as a copy of another.
-         * @param other The Plate object to copy from.
-         */
-        Plate(const Plate& other)
-        : placemat(other.placemat)
-        , size(other.size)
-        , host_ptr(other.host_ptr)
-        , substrate_handle(other.substrate_handle)
-        , device_base(other.device_base)
-        , slice(other.slice)
-        , ref_count(other.ref_count)
-        , bump(other.bump) {
-            ref_count->fetch_add(1, std::memory_order_relaxed);
-        }
-        /** ----------------------------------------------------------------------------- Copy Assignment Operator
-         * @brief Assigns the contents of one Plate object to another.
-         * @param other The Plate object to assign from.
-         * @return Reference to the assigned Plate object.
-         */
-        Plate& operator=(const Plate& other) {
-            if (this != &other) {
-                other.ref_count->fetch_add(1, std::memory_order_relaxed);
-                free();
-                placemat = other.placemat;
-                size = other.size;
-                host_ptr = other.host_ptr;
-                substrate_handle = other.substrate_handle;
-                device_base = other.device_base;
-                slice = other.slice;
-                ref_count = other.ref_count;
-                bump = other.bump;
-            }
-            return *this;
-        }
-        /** ----------------------------------------------------------------------------- Move Constructor
-         * @brief Constructs a new Plate object by moving from another.
-         * @param other The Plate object to move from.
-         */
-        Plate(Plate&& other)
-        : placemat(other.placemat)
-        , size(other.size)
-        , host_ptr(other.host_ptr)
-        , substrate_handle(other.substrate_handle)
-        , device_base(other.device_base)
-        , slice(other.slice)
-        , ref_count(other.ref_count)
-        , bump(other.bump) {
-            other.placemat = nullptr;
-            other.size = 0;
-            other.host_ptr = nullptr;
-            other.substrate_handle = nullptr;
-            other.slice = nullptr;
-            other.ref_count = nullptr;
-            other.bump = nullptr;
-        }
-        /** ----------------------------------------------------------------------------- Move Assignment Operator
-         * @brief Assigns the contents of one Plate object to another by moving.
-         * @param other The Plate object to move from.
-         * @return Reference to the assigned Plate object.
-         */
-        Plate& operator=(Plate&& other) {
-            if (this != &other) {
-                free();
-                placemat = other.placemat;
-                size = other.size;
-                host_ptr = other.host_ptr;
-                substrate_handle = other.substrate_handle;
-                device_base = other.device_base;
-                slice = other.slice;
-                ref_count = other.ref_count;
-                bump = other.bump;
-                other.placemat = nullptr;
-                other.size = 0;
-                other.host_ptr = nullptr;
-                other.substrate_handle = nullptr;
-                other.slice = nullptr;
-                other.ref_count = nullptr;
-                other.bump = nullptr;
-            }
-            return *this;
-        }
-        /** ----------------------------------------------------------------------------- Destructor
-         * @brief Destroys the Plate object and frees its resources.
-         */
-        ~Plate() { free(); }
-    };
+    static uint32_t create_base_slice_id(Placemat* placemat, size_t size, void* substrate_handle);
     /** ------------------------------------------------------------------------------------------- Current Handle
      * @brief Retrieves the current handle (plate) associated with this placemat.
      * @return Pointer to the current plate.
      */
-    Plate* current_plate() const {
-        Plate* current = current_handle_.load(std::memory_order_acquire);
-        while (current == nullptr || current == reinterpret_cast<Plate*>(-1ll)) [[unlikely]] {
-            Plate* expected = nullptr;
-            if (current == nullptr && current_handle_.compare_exchange_strong(
-                expected, reinterpret_cast<Plate*>(-1ll),
-                std::memory_order_acq_rel, std::memory_order_acquire)
-            ) {
-                std::pair<void*, void*> allocation;
-                try {
-                    allocation = allocator_(default_slab_size_, get_context_());
-                } catch (...) {
-                    current_handle_.store(nullptr, std::memory_order_release);
-                    throw;
-                }
-                current = new Plate(
-                    const_cast<Placemat*>(this), default_slab_size_,
-                    allocation.first, allocation.second, false);
-                record_slab_allocation(current);
-                current_handle_.store(current, std::memory_order_release);
-                (void)current->next(1);
-                return current;
-            }
-            std::this_thread::yield();
-            current = current_handle_.load(std::memory_order_acquire);
-        }
-        return current;
-    }
+    Plate* current_plate() const;
     /** ------------------------------------------------------------------------------------------- Set Current Plate
      * @brief Advances the current plate from the one the caller exhausted to its successor,
      * refusing when another claimer already advanced it so the chain can never fork.
@@ -570,15 +335,14 @@ private:
     AllocateMethod allocator_ = nullptr;
     DeallocateMethod deallocator_ = nullptr;
     GetContextMethod get_context_ = nullptr;
-    DeviceAddressMethod device_address_ = &host_device_address;
-    /// @brief Optional in-place resize hook; null on placements whose substrate cannot honor it.
+    GetHostPtrMethod get_host_ptr_ = nullptr;
     ResizeMethod resizer_ = nullptr;
-    Slice* create_main_slice(const Plate* plate) const;
-    Slice create_slice_from(const Plate* plate, size_t offset, size_t size) const;
+    GetGPUBufMethod get_gpu_buf_ = nullptr;
     friend class BuffetMenu;
     friend class Alligator;
     friend class Slice;
     friend class Memory;
+    friend struct Plate;
 };
 /** --------------------------------------------------------------------------------------------------------- SliceId
  * @struct SliceId
@@ -628,10 +392,11 @@ public:
      * @param allocate The allocation function for this placement.
      * @param deallocate The deallocation function for this placement.
      * @param get_context The context retrieval function for this placement.
-     * @param set_as_default Whether to set this placement as the default.
+     * @param get_host_ptr The method to retrieve the host pointer from the substrate handle.
      * @param resize The optional in-place resize hook.
-     * @param device_address The substrate-to-device-address hook, host-only by default.
-     * @return The stable placement identifier.
+     * @param get_gpu_buf The method to retrieve the GPU buffer associated with a substrate handle.
+     * @param set_as_default Whether to set this placement as the default.
+     * @return The index of the registered placement.
      */
     static uint8_t register_type(
         const char* name,
@@ -640,85 +405,33 @@ public:
         AllocateMethod allocate,
         DeallocateMethod deallocate,
         GetContextMethod get_context,
-        bool set_as_default = false,
-        ResizeMethod resize = nullptr,
-        DeviceAddressMethod device_address = &host_device_address
-    ) {
-        set_read_this(placemat_construction, 4 + 13);
-        std::unique_ptr<Placemat> placement = std::make_unique<Placemat>();
-        unset_read_this(placemat_construction);
-        placement->name_ = name;
-        placement->default_slab_size_ = default_slab_size;
-        placement->bump_alignment_ = bump_alignment;
-        placement->allocator_ = allocate;
-        placement->deallocator_ = deallocate;
-        placement->get_context_ = get_context;
-        placement->resizer_ = resize;
-        placement->device_address_ = device_address;
-        placement->type_ = static_cast<uint16_t>(instance().placement_indices_.size());
-        if (set_as_default) {
-            default_placement_slot() = placement.get();
-        }
-        const uint8_t type = static_cast<uint8_t>(instance().placement_indices_.size());
-        instance().placement_indices_[name] = type;
-        set_read_this(add_placement, 90 + 9);
-        placemats()[type] = std::move(placement);
-        unset_read_this(add_placement);
-        instance().placemat_count_.fetch_add(1, std::memory_order_release);
-        return type;
-    }
+        GetHostPtrMethod get_host_ptr,
+        ResizeMethod resize,
+        GetGPUBufMethod get_gpu_buf,
+        bool set_as_default = false
+    );
     /** ------------------------------------------------------------------------------------------- Get
      * @brief Returns the registered Placemat for an identifier.
      * @param type The placement identifier.
      * @return The registered placement factory.
      */
-    static Placemat* get(uint8_t type) {
-        set_read_this(add_placement, 33 + 66);
-        Placemat* placement = instance().placemats()[type].get();
-        unset_read_this(add_placement);
-        return placement;
-    }
+    static Placemat* get(uint8_t type);
     /** ------------------------------------------------------------------------------------------- Get by Name
      * @brief Returns the registered Placemat for a given name.
      * @param name The name of the placement.
      * @return The registered placement factory, or nullptr if not found.
      */
-    static Placemat* get(const std::string& name) {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
-        }
-        auto it = instance().placement_indices_.find(name);
-        Placemat* placement = nullptr;
-        if (it != instance().placement_indices_.end()) {
-            set_read_this(add_placement, 33 + 66);
-            placement = instance().placemats().at(it->second).get();
-            unset_read_this(add_placement);
-        }
-        return placement;
-    }
+    static Placemat* get(const std::string& name);
     /** ------------------------------------------------------------------------------------------- Count
      * @brief Returns the number of Placemat types registered so far.
      * @return The registered placement count.
      */
-    static size_t count() {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
-        }
-        return instance().placemat_count_.load(std::memory_order_acquire);
-    }
+    static size_t count();
     /** ------------------------------------------------------------------------------------------- Default Placement
      * @brief Returns the default Placemat instance, registering the built-ins first if needed.
      * @return The default Placemat pointer.
      */
-    static const Placemat*& default_placement() {
-        if (!instance().builtins_ready_.load(std::memory_order_acquire)) {
-            ensure_builtins_slow();
-        }
-        if (!instance().device_default_ready_.load(std::memory_order_acquire)) {
-            ensure_device_default_slow();
-        }
-        return default_placement_slot();
-    }
+    static const Placemat*& default_placement();
     /** ------------------------------------------------------------------------------------------- Shutdown
      * @brief Stops channel reactors at application quiescence before the process exits.
      */
@@ -731,19 +444,13 @@ public:
     static void register_change_listener(
         void* context,
         void (*callback)(void*)
-    ) {
-        instance().change_listeners_.emplace_back(context, callback);
-    }
+    );
     /** ------------------------------------------------------------------------------------------- Placemats
      * @brief Returns the flat index-to-Placemat table; the registration paths write it, gated
      * readers use it.
      * @return The 256-entry placemat table.
      */
-    static std::array<std::unique_ptr<Placemat>, 256>& placemats() {
-        static std::array<std::unique_ptr<Placemat>, 256> places;
-        CHECK_read_this(add_placement);
-        return places;
-    }
+    static std::array<std::unique_ptr<Placemat>, 256>& placemats();
     /** ------------------------------------------------------------------------------------------- No copy/move */
     BuffetMenu(const BuffetMenu&) = delete;
     BuffetMenu& operator=(const BuffetMenu&) = delete;
@@ -763,80 +470,28 @@ private:
     std::atomic<bool> device_default_claimed_{false};
     /// @brief Set once the device probe has decided the default placement.
     std::atomic<bool> device_default_ready_{false};
-    /** ------------------------------------------------------------------------------------------- Ensure Builtins Slow
-     * @brief Slow path that registers the built-in placements; defined in the library.
+    /** ------------------------------------------------------------------------------------------- Ensure Builtins
+     * @brief Registers the built-in placements; defined in the library.
      */
-    static void ensure_builtins_slow();
-    /** ------------------------------------------------------------------------------------------- Ensure Device Default Slow
-     * @brief Slow path that makes the probed buffer placement the default under unified memory
+    static void ensure_builtins();
+    /** ------------------------------------------------------------------------------------------- Ensure Device Default
+     * @brief Makes the probed buffer placement the default under unified memory
      * when no registration chose one; defined beside the Vulkan context.
      */
-    static void ensure_device_default_slow();
+    static void ensure_device_default();
     /** ------------------------------------------------------------------------------------------- Default Placement Slot
      * @brief The storage behind default_placement(), reachable without the built-in check.
      * @return The default Placemat pointer slot.
      */
-    static const Placemat*& default_placement_slot() {
-        static const Placemat* default_placement = nullptr;
-        return default_placement;
-    }
-    /** ------------------------------------------------------------------------------------------- Register Type Unchecked
-     * @brief Registers one Placemat without the built-in check; the slow path uses this to
-     * give the built-ins their stable identifiers.
-     * @return The stable placement identifier.
-     */
-    static uint16_t register_type_unchecked(
-        const char* name,
-        size_t default_slab_size,
-        size_t bump_alignment,
-        AllocateMethod allocate,
-        DeallocateMethod deallocate,
-        GetContextMethod get_context,
-        bool set_as_default,
-        ResizeMethod resize = nullptr,
-        DeviceAddressMethod device_address = &host_device_address
-    ) {
-        if (default_slab_size < 64 * 1024 * 1024) default_slab_size = 64 * 1024 * 1024;
-        auto& inst = instance();
-        uint16_t type = static_cast<uint16_t>(inst.placement_indices_.size());
-        set_read_this(placemat_construction, 15 + 2);
-        auto placement = std::unique_ptr<Placemat>(new Placemat());
-        unset_read_this(placemat_construction);
-        placement->name_ = name;
-        placement->allocator_ = allocate;
-        placement->default_slab_size_ = default_slab_size;
-        placement->bump_alignment_ = bump_alignment;
-        placement->deallocator_ = deallocate;
-        placement->get_context_ = get_context;
-        placement->resizer_ = resize;
-        placement->device_address_ = device_address;
-        placement->type_ = type;
-        if (set_as_default || default_placement_slot() == nullptr) {
-            default_placement_slot() = placement.get();
-        }
-        inst.placement_indices_.emplace(name, type);
-        set_read_this(add_placement, 60 + 39);
-        inst.placemats()[static_cast<uint8_t>(type)] = std::move(placement);
-        unset_read_this(add_placement);
-        inst.placemat_count_.fetch_add(1, std::memory_order_release);
-        inst.notify_change_listeners();
-        return type;
-    }
+    static const Placemat*& default_placement_slot();
     /** ------------------------------------------------------------------------------------------- Notify Change Listeners
      * @brief Notifies all registered change listeners by invoking their callbacks with the
      * provided context.
      */
-    void notify_change_listeners() {
-        for (auto& listener : change_listeners_) {
-            listener.second(listener.first);
-        }
-    }
+    void notify_change_listeners();
     BuffetMenu() = default;
     std::atomic<size_t> placemat_count_{0};
-    static BuffetMenu& instance() {
-        static BuffetMenu instance;
-        return instance;
-    }
+    static BuffetMenu& instance();
     friend class Memory;
 };
 /** --------------------------------------------------------------------------------------------------------- SliceType Concept
@@ -1736,14 +1391,14 @@ private:
     moodycamel::BlockingConcurrentQueue<ThreadChangeReq> thread_change_queue_;
     std::unique_ptr<ThreadChanger> thread_changer_;
     void maybe_wakeup();
-    struct GatorBuf;
-    GatorBuf* plates_;
-    GatorBuf* host_ptrs_;
+    Plate** plates_;  ///< Plate table indexed by pool index.
+    HostPtr* host_ptrs_;  ///< Host pointer table indexed by pool index.
     /// @brief The shared GPUBuf table, one plate the host writes and shaders read in place.
-    Placemat::Plate* gpubufs_;
+    Plate* gpubufs_;
+    GPUBuf* gpu_table_;  ///< Host mapping of the gpubufs_ plate.
     std::unique_ptr<ConcurrentBitplane> occupancy_;
-    Placemat::Plate*& plate(SliceId slice_id);
-    const Placemat::Plate*& plate(const SliceId& slice_id) const;
+    Plate*& plate(SliceId slice_id);
+    const Plate*& plate(const SliceId& slice_id) const;
     HostPtr* host_ptr(SliceId slice_id);
     const HostPtr* host_ptr(const SliceId& slice_id) const;
     GPUBuf* gpubuf(SliceId slice_id);
@@ -1753,6 +1408,8 @@ private:
     ~Alligator();
     friend class Buffet;
     friend class Placemat;
+    friend struct Plate;
+    friend struct SliceId;
     friend class Slice;
     friend class Memory;
     friend class VulkanKernel;
@@ -1773,7 +1430,7 @@ public:
      * @param slice The slice to resolve.
      * @return The backing plate, or nullptr when the slot is unoccupied.
      */
-    static Placemat::Plate* plate_for(const Slice& slice) {
+    static Plate* plate_for(const Slice& slice) {
         return inst().plate(static_cast<SliceId>(slice.pool_index()));
     }
     /** ------------------------------------------------------------------------------------------- GPUBuf For

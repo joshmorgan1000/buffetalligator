@@ -3,6 +3,7 @@
  * @brief Supplies zero-filled scratch-file mappings through the placement callbacks.
  */
 #include <memory/pressure.hpp>
+#include <memory/plate.hpp>
 #include <cerrno>
 #include <cstdlib>
 #include <fcntl.h>
@@ -98,6 +99,19 @@ std::pair<void*, void*> mmap_deallocate(void* host_ptr, void* substrate_handle) 
  * @brief Returns the process-lifetime scratch placement context.
  */
 void* mmap_context() { return &context; }
+/** --------------------------------------------------------------------------------------------------------- Get Host Pointer
+ * @brief Returns the mapping of one mmap slab.
+ */
+HostPtr mmap_get_host_ptr(void* substrate_handle) {
+    return HostPtr{static_cast<MmapAllocation*>(substrate_handle)->mapping};
+}
+/** --------------------------------------------------------------------------------------------------------- Get GPUBuf
+ * @brief Returns one mmap slab's GPUBuf, addressed by its mapping.
+ */
+GPUBuf mmap_get_gpu_buf(void* substrate_handle) {
+    const MmapAllocation* allocation = static_cast<MmapAllocation*>(substrate_handle);
+    return GPUBuf{reinterpret_cast<uint64_t>(allocation->mapping), static_cast<uint32_t>(allocation->length), 0};
+}
 /** --------------------------------------------------------------------------------------------------------- Allocation
  * @brief Resolves the owning mmap allocation for a Slice from this placement.
  */
@@ -122,7 +136,7 @@ const Placemat* MmapAllocator::register_type(const std::string& directory) {
     context.page_size = static_cast<size_t>(page_size);
     context.placement = BuffetMenu::get(BuffetMenu::register_type(
         "mmap", 64ull * 1024 * 1024, 64, &mmap_allocate, &mmap_deallocate,
-        &mmap_context
+        &mmap_context, &mmap_get_host_ptr, nullptr, &mmap_get_gpu_buf
     ));
     Placemat::PAGE_ALIGNED = context.placement;
     return context.placement;

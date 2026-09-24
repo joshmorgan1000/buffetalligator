@@ -42,12 +42,18 @@ struct VulkanStaticMethods {
      * @return A pointer to the Vulkan context.
      */
     static void* vulkan_get_context();
-    /** ------------------------------------------------------------------------------------------- Device Address
-     * @brief The device address of a slab's first byte.
+    /** ------------------------------------------------------------------------------------------- Get Host Pointer
+     * @brief The persistent host mapping of a slab.
      * @param substrate_handle The VulkanBuffer handle backing the slab.
-     * @return The buffer device address.
+     * @return The host pointer of the slab's mapping.
      */
-    static uint64_t vulkan_device_address(void* substrate_handle);
+    static HostPtr vulkan_get_host_ptr(void* substrate_handle);
+    /** ------------------------------------------------------------------------------------------- Get GPUBuf
+     * @brief The device address and size of a whole slab.
+     * @param substrate_handle The VulkanBuffer handle backing the slab.
+     * @return The slab's GPUBuf entry at offset zero.
+     */
+    static GPUBuf vulkan_get_gpu_buf(void* substrate_handle);
 };
 /** --------------------------------------------------------------------------------------------------------- VulkanPlacements
  * @struct VulkanPlacements
@@ -73,8 +79,8 @@ struct VulkanPlacements {
         static const Placemat* placemat = BuffetMenu::get(BuffetMenu::register_type(
             name, 64 * 1024 * 1024, 4096,
             &VulkanStaticMethods::vulkan_allocator, &VulkanStaticMethods::vulkan_deallocate,
-            &VulkanPlacements::rung_context<Rung>, false, nullptr,
-            &VulkanStaticMethods::vulkan_device_address));
+            &VulkanPlacements::rung_context<Rung>, &VulkanStaticMethods::vulkan_get_host_ptr, nullptr,
+            &VulkanStaticMethods::vulkan_get_gpu_buf));
         return placemat;
     }
     /** ------------------------------------------------------------------------------------------- Prime
@@ -535,11 +541,11 @@ const Placemat* VulkanContext::buffer_placement() {
     if (!instance().device_present_) return BuffetMenu::get("heap");
     return VulkanPlacements::rung<6>("vulkan_buffer");
 }
-/** --------------------------------------------------------------------------------------------------------- ensure_device_default_slow
+/** --------------------------------------------------------------------------------------------------------- ensure_device_default
  * @brief Probes the device once and, under unified memory, makes the buffer rung the default
  * placement unless a registration already chose one; a caller that loses the claim waits.
  */
-void BuffetMenu::ensure_device_default_slow() {
+void BuffetMenu::ensure_device_default() {
     BuffetMenu& menu = instance();
     bool unclaimed = false;
     if (!menu.device_default_claimed_.compare_exchange_strong(unclaimed, true, std::memory_order_acq_rel)) {
@@ -1243,13 +1249,22 @@ std::pair<void*, void*> VulkanStaticMethods::vulkan_deallocate(void* host_ptr, v
     delete static_cast<VulkanBuffer*>(substrate_handle);
     return {nullptr, nullptr};
 }
-/** --------------------------------------------------------------------------------------------------------- Device Address
- * @brief The device address of a slab's first byte.
+/** --------------------------------------------------------------------------------------------------------- Get Host Pointer
+ * @brief The persistent host mapping of a slab.
  * @param substrate_handle The VulkanBuffer handle backing the slab.
- * @return The buffer device address.
+ * @return The host pointer of the slab's mapping.
  */
-uint64_t VulkanStaticMethods::vulkan_device_address(void* substrate_handle) {
-    return static_cast<const VulkanBuffer*>(substrate_handle)->address();
+HostPtr VulkanStaticMethods::vulkan_get_host_ptr(void* substrate_handle) {
+    return HostPtr{static_cast<VulkanBuffer*>(substrate_handle)->host()};
+}
+/** --------------------------------------------------------------------------------------------------------- Get GPUBuf
+ * @brief The device address and size of a whole slab.
+ * @param substrate_handle The VulkanBuffer handle backing the slab.
+ * @return The slab's GPUBuf entry at offset zero.
+ */
+GPUBuf VulkanStaticMethods::vulkan_get_gpu_buf(void* substrate_handle) {
+    const VulkanBuffer* slab = static_cast<const VulkanBuffer*>(substrate_handle);
+    return GPUBuf{slab->address(), static_cast<uint32_t>(slab->size()), 0};
 }
 /** --------------------------------------------------------------------------------------------------------- Get Vulkan Context
  * @brief The un-rung'd context hook: the default rung index.

@@ -38,8 +38,8 @@ include(cmake/NetworkDependencies.cmake)
 add_library(alligator STATIC
     src/memory/slice.cpp
     src/memory/alligator.cpp
-    src/memory/heapbuffet.cpp
-    src/memory/host_memory.cpp
+    src/memory/buffetmenu.cpp
+    src/memory/placemat.cpp
     src/memory/pressure.cpp
     src/memory/mmap_allocator.cpp
     src/containers/slicequeue.cpp
