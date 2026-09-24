@@ -515,18 +515,6 @@ uint32_t VulkanContext::submission_family_slot() {
 vk::BufferCreateInfo VulkanContext::buffer_create_info(vk::DeviceSize bytes, vk::BufferUsageFlags usage) {
     return instance().shared_buffer_info(bytes, usage);
 }
-/** --------------------------------------------------------------------------------------------------------- bit_placement
- * @brief Where device-shared bit stores (planes, survivor masks) live: the zero-copy rung
- * when a device is present (UNIFIED on unified-memory systems, HOST_CACHEABLE on discrete),
- * plain heap without one.
- * @return The placement.
- */
-const Placemat* VulkanContext::bit_placement() {
-    if (!instance().device_present_) return BuffetMenu::get("heap");
-    return instance().device_props_.unified_memory
-        ? VulkanPlacements::rung<4>("vulkan_unified")
-        : VulkanPlacements::rung<2>("vulkan_host_cacheable");
-}
 /** --------------------------------------------------------------------------------------------------------- buffer_placement
  * @brief The placement resolved to the storage-buffer memory type the capability ladder
  * probed at init - the same type the job table and parameter buffers verify against their
@@ -895,6 +883,11 @@ void require_kernel_device() {
     if (!VulkanContext::device_present()) GPU_THROW("Kernel: no Vulkan compute device");
     if (!VulkanContext::device_properties().supports_int64) GPU_THROW("Kernel: shaderInt64 is required");
 }
+/** --------------------------------------------------------------------------------------------------------- reference_shader_source
+ * @brief Generates the reference shader source code.
+ * @param body The body of the shader.
+ * @return The complete GLSL source code for the reference shader.
+ */
 std::string reference_shader_source(std::string_view body) {
     std::string source("#version 450\n");
     source.append(VULKAN_GLSL_KERNEL_CORE);
@@ -902,7 +895,6 @@ std::string reference_shader_source(std::string_view body) {
 layout(local_size_x = 16, local_size_y = 4, local_size_z = 1) in;
 uint vulkan_index() { return gl_WorkGroupID.z; }
 Slice vulkan_resources() { return gpu_slice(U32Array(vulkan_push.vulkan_table_address).v[7]); }
-
 uint vulkan_request() {
     uint64_t table = vulkan_push.vulkan_table_address;
     uint mask = U32Array(table).v[2];
@@ -920,19 +912,45 @@ void main() {
     return source;
 }
 } // namespace
-ShaderState::ShaderState(std::string_view source, std::string_view name, const Slice* references, uint32_t workgroups_x) {
+/** --------------------------------------------------------------------------------------------------------- ShaderState::ShaderState
+ * @brief Constructs a shader state from a single kernel GPU stage.
+ * @param source The GLSL source code of the shader.
+ * @param name The name of the shader.
+ * @param references The reference slice, if any.
+ * @param workgroups_x The number of workgroups in the X dimension.
+ */
+ShaderState::ShaderState(
+    std::string_view source,
+    std::string_view name,
+    const Slice* references,
+    uint32_t workgroups_x
+) {
     require_kernel_device();
     if (!workgroups_x || workgroups_x > VulkanContext::device_properties().max_workgroup_count[0])
         GPU_THROW("Kernel: workgroups_x is outside the device limit");
-    auto words = compile_vulkan_glsl(references ? reference_shader_source(source) : public_shader_source(source),
-        VulkanContext::device_properties().supports_float16, name);
+    auto words = compile_vulkan_glsl(
+        references ? reference_shader_source(source) : public_shader_source(source),
+        VulkanContext::device_properties().supports_float16,
+        name
+    );
     impl_ = std::make_unique<Impl>(std::move(words), name,
         references ? Impl::Format::References : Impl::Format::Slices,
         references ? references->size<uint32_t>() : PUBLIC_LIST_CAPACITY, references);
     impl_->reference_workgroups_x = workgroups_x;
 }
-ShaderState::ShaderState(std::span<const KernelGpuStage> stages, std::string_view name,
-                        const Slice& references, uint32_t resources) {
+/** --------------------------------------------------------------------------------------------------------- ShaderState::ShaderState
+ * @brief Constructs a shader state from multiple kernel GPU stages.
+ * @param stages The array of kernel GPU stages.
+ * @param name The name of the shader.
+ * @param references The reference slice.
+ * @param resources The number of resources.
+ */
+ShaderState::ShaderState(
+    std::span<const KernelGpuStage> stages,
+    std::string_view name,
+    const Slice& references,
+    uint32_t resources
+) {
     require_kernel_device();
     const auto& props = VulkanContext::device_properties();
     std::vector<std::vector<uint32_t>> code;
@@ -944,15 +962,41 @@ ShaderState::ShaderState(std::span<const KernelGpuStage> stages, std::string_vie
     }
     impl_ = std::make_unique<Impl>(std::move(code), stages, name, references, resources);
 }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::ShaderState
+ * @brief Constructs a shader state from precompiled SPIR-V words.
+ * @param words The array of SPIR-V words.
+ * @param count The number of words in the array.
+ * @param name The name of the shader.
+ * @param max_jobs The maximum number of jobs the shader can handle.
+ */
 ShaderState::ShaderState(const uint32_t* words, size_t count, std::string_view name, size_t max_jobs) {
-
     require_kernel_device();
     impl_ = std::make_unique<Impl>(std::vector<uint32_t>(words, words + count), name, Impl::Format::Jobs, max_jobs);
 }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::~ShaderState
+ * @brief Destructor for the shader state.
+ */
 ShaderState::~ShaderState() = default;
+/** --------------------------------------------------------------------------------------------------------- ShaderState::~ShaderState
+ * @brief Destructor for the shader state.
+ */
 const std::vector<uint32_t>& ShaderState::spirv() const { return impl_->words; }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::name
+ * @brief Returns the name of the shader state.
+ * @return The name.
+ */
 const std::string& ShaderState::name() const { return impl_->name; }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::capacity
+ * @brief Returns the capacity of the shader state.
+ * @return The capacity.
+ */
 size_t ShaderState::capacity() const { return impl_->limit; }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch
+ * @brief Dispatches the given number of workgroups for the shader.
+ * @param streams The array of input slices.
+ * @param count The number of input slices.
+ * @param workgroups The number of workgroups to dispatch.
+ */
 void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgroups) const {
     workgroups = std::min(workgroups, VulkanContext::device_properties().max_workgroup_count[0]);
     for (size_t first = 0; first < count; first += impl_->limit) {
@@ -966,15 +1010,30 @@ void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgrou
         impl_->submit(workgroups, uint32_t(n), 1);
     }
 }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::write_job
+ * @brief Writes a job to the shader's command buffer at the specified slot.
+ * @param slot The slot index to write the job to.
+ * @param input The input slice for the job.
+ * @param host_handle The host memory handle associated with the job.
+ */
 void ShaderState::write_job(size_t slot, const Slice& input, const void* host_handle) {
     uint8_t* record = impl_->mapped + 32 + slot * 32;
     *reinterpret_cast<SliceMirror*>(record) = SliceMirror{VulkanKernel::device_address(input), uint32_t(input.size_bytes()), 0};
     std::memcpy(record + 16, host_handle, 16);
 }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch
+ * @brief Dispatches the given number of jobs for the shader.
+ * @param jobs The number of jobs to dispatch.
+ */
 void ShaderState::dispatch(size_t jobs) {
     reinterpret_cast<SliceMirror*>(impl_->mapped)->size = uint32_t(jobs * 32);
     impl_->submit(1, 1, uint32_t(jobs));
 }
+/** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch_references
+ * @brief Dispatches reference work for the shader, updating the indirect command buffer.
+ * @param first The first reference index.
+ * @param count The number of references to dispatch.
+ */
 void ShaderState::dispatch_references(uint32_t first, uint32_t count) {
     reinterpret_cast<uint32_t*>(impl_->mapped)[3] = first;
     for (size_t index = 0; index < impl_->stages.size(); ++index) {

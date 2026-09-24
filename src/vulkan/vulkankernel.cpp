@@ -39,12 +39,4 @@ uint64_t VulkanKernel::device_address(const Slice& slice) {
 uint64_t VulkanKernel::gpu_pool_address() {
     return Alligator::gpu_table_address();
 }
-/** --------------------------------------------------------------------------------------------------------- VulkanKernel::table_placement
- * @brief The placement the shared GPUBuf table is allocated on: the coherent zero-copy rung with a
- * device, plain heap without one.
- * @return The placement.
- */
-const Placemat* VulkanKernel::table_placement() {
-    return VulkanContext::bit_placement();
-}
 } // namespace buffetalligator

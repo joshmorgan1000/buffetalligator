@@ -5417,13 +5417,6 @@ public:
     static bool placement_cpu_cached(uint8_t placement_index) {
         return instance().placement_cpu_cached_[placement_index];
     }
-    /** ------------------------------------------------------------------------------------------- bit_placement
-     * @brief Where device-shared bit stores (planes, survivor masks) live: the zero-copy rung
-     * when a device is present (UNIFIED on unified-memory systems, HOST_CACHEABLE on discrete),
-     * plain heap without one.
-     * @return The placement.
-     */
-    static const Placemat* bit_placement();
     /** ------------------------------------------------------------------------------------------- buffer_placement
      * @brief The placement resolved to the storage-buffer memory type the capability ladder
      * probed at init - the same type the job table and parameter buffers verify against their
