@@ -496,6 +496,12 @@ void VulkanContext::submit_command_buffer(
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &command_buffer;
     context.compute_queues_[queue_slot].submit(submit_info, fence);
+    if (callback != nullptr) {
+        Alligator::inst().submit_waiting([](vk::Device dev, vk::Fence fc, void (*cb)(void*), void* ctx) {
+            dev.waitForFences(fc, VK_TRUE, UINT64_MAX);
+            cb(ctx);
+        }, context.device_, fence, callback, callback_context);
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- queue_family_index
  * @brief The compute queue family leased by this submitting thread.

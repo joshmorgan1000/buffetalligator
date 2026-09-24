@@ -33,6 +33,7 @@
 #include <iostream>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
+#include <unordered_set>
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
@@ -1131,6 +1132,11 @@ public:
      */
     template<typename T>
     const T& operator*() const { return *static_cast<const T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- ID
+     * @brief Returns the ID of the slice.
+     * @return The ID of the slice.
+     */
+    uint32_t id() const { return id_; }
 private:
     SliceId id_;
     friend class Buffet;
@@ -1702,14 +1708,34 @@ class ConcurrentBitplane;
  * @brief Maintains one preallocated Buffer chain per registered Placemat.
  */
 class Alligator {
+public:
+    /** ------------------------------------------------------------------------------------------- Thread Change Request
+     * @struct ThreadChangeReq
+     * @brief Represents a request to change the number of worker or waiter threads.
+     */
+    struct ThreadChangeReq {
+        /// @brief The number of active threads at the time of the thread change request.
+        std::unique_ptr<size_t> current_active;
+        /// @brief The ID of the thread to be shut down.
+        std::unique_ptr<int> shutdown_id;
+    };
 private:
+    std::atomic<size_t> max_thread_count_{32};
     std::atomic<uint64_t> next_slice_{};
     SliceId next_id();
-    std::atomic<size_t> requested_thread_count_{1};
     std::atomic<bool> stop_signal_{false};
-    moodycamel::BlockingConcurrentQueue<Task> task_queue_;
     struct WorkerThread;
-    std::array<std::atomic<WorkerThread*>, 32> worker_threads_;
+    std::atomic<size_t> active_workers_{0};
+    moodycamel::ConcurrentQueue<Task> task_queue_;
+    std::unordered_map<int, std::unique_ptr<WorkerThread>> worker_threads_;
+    struct WaitingThread;
+    std::atomic<size_t> active_waiters_{0};
+    moodycamel::BlockingConcurrentQueue<Task> waiting_task_queue_;
+    std::vector<std::unique_ptr<WaitingThread>> waiting_threads_;
+    struct ThreadChanger;
+    moodycamel::BlockingConcurrentQueue<ThreadChangeReq> thread_change_queue_;
+    std::unique_ptr<ThreadChanger> thread_changer_;
+    void maybe_wakeup();
     struct GatorBuf;
     GatorBuf* plates_;
     GatorBuf* host_ptrs_;
@@ -1730,6 +1756,7 @@ private:
     friend class Slice;
     friend class Memory;
     friend class VulkanKernel;
+    friend struct AlligatorInitializer;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
@@ -1772,6 +1799,20 @@ public:
      * @return The device address, 0 without a compute device.
      */
     static uint64_t gpu_table_address();
+    /** ------------------------------------------------------------------------------------------- Set Max Threads
+     * @brief Sets the maximum number of worker threads allowed.
+     * @param max_threads The maximum number of worker threads.
+     */
+    void set_max_threads(size_t max_threads) {
+        max_thread_count_.store(max_threads, std::memory_order_release);
+    }
+    /** ------------------------------------------------------------------------------------------- Max Threads
+     * @brief Gets the maximum number of worker threads allowed.
+     * @return The maximum number of worker threads.
+     */
+    size_t max_threads() const {
+        return max_thread_count_.load(std::memory_order_acquire);
+    }
     /** ------------------------------------------------------------------------------------------- Submit task
      * @brief Submits a task to the Alligator.
      * @tparam ReturnType The return type of the task.
@@ -1786,6 +1827,24 @@ public:
     auto submit(Func f, Args... a) {
         auto [task, future] = make_task<ReturnType>(std::move(f), std::move(a)...);
         task_queue_.enqueue(std::move(task));
+        maybe_wakeup();
+        return std::move(future);
+    }
+    /** ------------------------------------------------------------------------------------------- Submit waiting task
+     * @brief Submits a task to the waiting task queue of the Alligator. This is a separate thread
+     * pool meant for tasks that mostly just wait, e.g. park on a semaphore or an atomic variable.
+     * @tparam ReturnType The return type of the task.
+     * @tparam Func The type of the callable object.
+     * @tparam Args The types of the arguments to the callable object.
+     * @param f The callable object to be submitted.
+     * @param a The arguments to be passed to the callable object.
+     * @return A std::future representing the result of the submitted task.
+     */
+    template<typename ReturnType = void, typename Func, typename... Args>
+        requires std::is_invocable_r_v<ReturnType, Func, Args...>
+    auto submit_waiting(Func f, Args... a) {
+        auto [task, future] = make_task<ReturnType>(std::move(f), std::move(a)...);
+        waiting_task_queue_.enqueue(std::move(task));
         return std::move(future);
     }
     /** ------------------------------------------------------------------------------------------- Submit task (pre-constructed)
@@ -1795,8 +1854,27 @@ public:
      */
     void submit(Task&& task) {
         task_queue_.enqueue(std::move(task));
+        maybe_wakeup();
+    }
+    /** ------------------------------------------------------------------------------------------- Submit waiting task (pre-constructed)
+     * @brief Submits a pre-constructed erased task to the waiting task queue; hold the future
+     * make_task already returned for it.
+     * @param task The pre-constructed task to be submitted.
+     */
+    void submit_waiting(Task&& task) {
+        waiting_task_queue_.enqueue(std::move(task));
     }
 };
+/** --------------------------------------------------------------------------------------------------------- Alligator Initializer
+ * @struct AlligatorInitializer
+ * @brief Schwarz counter; every including translation unit holds one, so the Alligator is built
+ * before their statics and destroyed after them, and inst() needs no guard.
+ */
+struct AlligatorInitializer {
+    AlligatorInitializer();
+    ~AlligatorInitializer();
+};
+static AlligatorInitializer alligator_initializer;
 EXCEPTION_CLASS(Atomic)
 #define ATOMIC_THROW(msg) throw AtomicException(msg)
 /** --------------------------------------------------------------------------------------------------------- Concepts

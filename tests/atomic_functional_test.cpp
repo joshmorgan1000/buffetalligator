@@ -257,11 +257,11 @@ static void registry_exceptions() {
         "failed construction poisoned the registry lock");
     require_throws([&] { AtomicRegistry::get_or_create_global("failed", initial); },
         "failed global copy was accepted");
-    require(AtomicRegistry::global_empty(), "failed global construction inserted a value");
+    require(!AtomicRegistry::global_contains("failed"), "failed global construction inserted a value");
     AtomicRegistry::create_global("recovered", 73);
     require(AtomicRegistry::get_global("recovered")->load<int>() == 73,
         "failed construction poisoned the global lock");
-    AtomicRegistry::global_clear();
+    AtomicRegistry::remove_global("recovered");
 }
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Dispatches independent container and registry functional cases.
