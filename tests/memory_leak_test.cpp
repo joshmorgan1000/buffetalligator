@@ -76,18 +76,57 @@ size_t settled_residency() {
     return BuffetMenu::memory_usage().resident_bytes;
 }
 /** --------------------------------------------------------------------------------------------------------- Churn
- * @brief One thread's claim, share, view, novel and resize traffic with a bounded live ring.
+ * @brief One thread's claim, share, view, novel and every resize path, with a bounded live ring.
  */
 void churn(const Placemat* placement, size_t max_claim, size_t claims, size_t seed) {
     std::array<Slice, ring_length> ring;
     for (size_t claim = 0; claim < claims; ++claim) {
         const size_t mixed = (seed * 2654435761u + claim * 40503u) % max_claim + 1;
         Slice& slot = ring[claim % ring_length];
-        if (claim % 16 == 0) {
+        const uint8_t marker = static_cast<uint8_t>(claim ^ 0x5a);
+        switch (claim % 16) {
+        case 0:  // Sole novel owner grows in place where the placement can realloc.
             slot = Slice(mixed, true, placement);
+            slot.data<uint8_t>()[0] = marker;
             slot.resize(mixed + 4096, true, true, placement);
-            require(slot.size_bytes() == mixed + 4096, "novel resize returned the wrong size");
-        } else {
+            require(slot.size_bytes() == mixed + 4096 && slot.data<uint8_t>()[0] == marker,
+                "novel growth lost its size or payload");
+            break;
+        case 1:  // Shrinking keeps the backing and narrows to a view.
+            slot = Slice(mixed + 64, true, placement);
+            slot.data<uint8_t>()[0] = marker;
+            slot.resize(mixed / 2 + 1, true, true, placement);
+            require(slot.size_bytes() == mixed / 2 + 1 && slot.data<uint8_t>()[0] == marker,
+                "shrink lost its size or payload");
+            break;
+        case 2: {  // A shared novel buffer must grow by copy and leave the other owner intact.
+            slot = Slice(mixed, true, placement);
+            slot.data<uint8_t>()[0] = marker;
+            Slice other_owner = slot;
+            slot.resize(mixed + 4096, true, true, placement);
+            require(slot.size_bytes() == mixed + 4096 && slot.data<uint8_t>()[0] == marker &&
+                other_owner.size_bytes() == mixed && other_owner.data<uint8_t>()[0] == marker,
+                "shared growth disturbed an owner");
+            break;
+        }
+        case 3:  // A chain claim grows by copy out of its slab.
+            slot = Slice(mixed, false, placement);
+            slot.data<uint8_t>()[0] = marker;
+            slot.resize(mixed + 4096, true, false, placement);
+            require(slot.size_bytes() == mixed + 4096 && slot.data<uint8_t>()[0] == marker,
+                "chain growth lost its size or payload");
+            break;
+        case 4:  // Discarding resize reallocates without carrying the payload.
+            slot = Slice(mixed, false, placement);
+            slot.resize(mixed + 4096, false, false, placement);
+            require(slot.size_bytes() == mixed + 4096, "discarding resize returned the wrong size");
+            break;
+        case 5:  // Resizing a null Slice claims fresh storage.
+            slot = Slice();
+            slot.resize(mixed, true, false, placement);
+            require(slot.size_bytes() == mixed, "null resize returned the wrong size");
+            break;
+        default:
             slot = Slice(mixed, false, placement);
             require(slot.size_bytes() == mixed, "chain claim returned the wrong size");
         }

@@ -131,7 +131,7 @@ struct Plate {
             Slice result = successor->claim(size);
             // NOW we can safely free this plate without affecting the claim we
             // just made.
-            Alligator::inst().submit([](Plate* plate) { plate->free(); }, this);
+            if (slice_id_swap != 0xFFFFFFFFu) Alligator::inst().submit([](Plate* plate) { plate->free(); }, this);
             return result;
         }
         // If we reach here, it means we successfully claimed from this plate.
