@@ -1249,6 +1249,18 @@ uint64_t VulkanStaticMethods::vulkan_device_address(void* substrate_handle) {
 void* VulkanStaticMethods::vulkan_get_context() {
     return VulkanPlacements::rung_context<static_cast<uint8_t>(PlacementIndex::HOST_VISIBLE)>();
 }
+/** --------------------------------------------------------------------------------------------------------- bit_placement
+ * @brief Where device-shared bit stores (planes, survivor masks) live: the zero-copy rung
+ * when a device is present (UNIFIED on unified-memory systems, HOST_CACHEABLE on discrete),
+ * plain heap without one.
+ * @return The placement.
+ */
+const Placemat* VulkanKernel::table_placement() {
+    if (!VulkanContext::instance().device_present_) return BuffetMenu::get("heap");
+    return VulkanContext::instance().device_props_.unified_memory
+        ? VulkanPlacements::rung<4>("vulkan_unified")
+        : VulkanPlacements::rung<2>("vulkan_host_cacheable");
+}
 /** --------------------------------------------------------------------------------------------------------- Placement table
  * @brief The Placemat behind each alligator placement: the heap built-in for the host-only rungs,
  * one Vulkan Placemat per device rung.
