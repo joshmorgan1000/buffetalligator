@@ -159,7 +159,7 @@ struct Alligator::ThreadChanger {
                     if (*req.current_active !=
                             al.active_workers_.load(std::memory_order_acquire)
                     ) {
-                        break;
+                        continue;
                     }
                     al.active_workers_.fetch_add(1, std::memory_order_acq_rel);
                     int new_id = rand();
