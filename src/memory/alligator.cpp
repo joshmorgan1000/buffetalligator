@@ -62,7 +62,7 @@ struct Alligator::WorkerThread {
                && !stop.load(std::memory_order_acquire)) {
             const size_t current_tasks = al.task_queue_.size_approx();
             size_t active_threads = al.active_workers_.load(std::memory_order_acquire);
-            if (current_tasks > 2 * active_threads
+            if (current_tasks > active_threads
                 && active_threads < al.max_thread_count_.load(std::memory_order_acquire)
             ) {
                 al.thread_change_queue_.enqueue({
