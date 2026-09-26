@@ -1,5 +1,7 @@
 # Map comparison results — 2026-09-17
 
+> **REVIEW-STALE (2026-09-26):** snapshot of 2026-09-17. SliceMap has changed three times since (growing unique-key map, 32-bit pool index collapse, aarch64 yield), so its column no longer describes the current implementation; the contenders other than SliceMap and VecSet exist only inside the experiment source. Rerun or keep as history.
+
 ## Full-contract ring: every contender meets the SliceMap ABI
 
 The contenders now all provide what the library SliceMap provides: unique keys

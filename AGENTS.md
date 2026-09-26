@@ -20,6 +20,7 @@ This is NOT a toy. This is a production system and the code you write must treat
 - **We do not write scalar code when vectorized is available. Period.** Use the *existing* SIMD kernels for any iterative computations. If you have a use case or a loop that we don't currently have a SIMD kernel for (for all backends) then stop so we can discuss.
 - **This is a zero-copy framework.*** Do not use `std::memcpy` or similar functions unless *absolutely necessary*.
 - Please avoid the use of python except when it is absolutely necessary. This project requires that a python module be built for the wheel, so that must be tested, but do not write framework test cases in python or use python for any other reason.
+  > **REVIEW-STALE (2026-09-26):** this repository builds no Python module or wheel; the rule reads as carried over from another project.
 - Comments that are not method or class doxy comments (e.g., inline comments) should not exceed a single sentence, try to keep them down to one line if possible.
 - Code comments are not there to explain what the code is doing for documentation purposes. They serve as visual markers, and patterns that IDE helpers pick up on so that human developers don't have to dig through directories and files to remind themselves of what order the arguments of a method is expecting.
 
@@ -191,6 +192,7 @@ If and *only* if those apply, you **must** add a comment to the top-level `@file
 
 - **Do not use a randomly generated dataset for testing.** Random vectors do not resemble real-world embeddings and do not have the features that this algorithm needs to exploit to achieve its performance.
 - **Use all 1 million vectors** in the openai test set for testing, truncating to 10,000 or 100,000 only gains you microseconds of execution time and can hide latent bugs.
+  > **REVIEW-STALE (2026-09-26):** no embedding dataset or vector search lives in this repository; these two testing rules describe the downstream search engine.
 
 ## 7. Frustrating things Codex keeps doing that it shouldn't
 
@@ -198,7 +200,7 @@ If and *only* if those apply, you **must** add a comment to the top-level `@file
 - If I refer to a piece of code as something that you added, or a change that you made, don't respond "that wasn't me". You just have no memory of it. Usually when I refer to a change you made, I am asking *why you did what you did*. I am trying to understand your reasoning behind the change so that I can try and prevent those things in the future. Maybe you had a good reason for the change. Maybe you just didn't notice that the method you wrote already existed. I need to know those things sometimes.
 - Please stop making the assumption that the entire database is going to fit into a pointer.
 
-## 7. Other Rules
+## 8. Other Rules
 
 Use the build script at `run_build.sh`.
 
@@ -206,7 +208,7 @@ NO VALIDATION IN THE HOT PATH!
 KEEP BRANCHING TO A MINIMUM!
 DO NOT CODE ANY FALLBACKS!
 
-## 8. Push the Limits — Never Default Low
+## 9. Push the Limits — Never Default Low
 
 We do not default to the lowest and slowest configuration "to be safe." Probe the hardware at startup and use everything it reports: maximum queue counts, workgroup sizes, features, extensions, memory types, subgroup sizes. Capabilities come from runtime probes, not from folklore about what some old driver might support.
 

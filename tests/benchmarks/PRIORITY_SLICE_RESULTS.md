@@ -1,3 +1,5 @@
+> **REVIEW-STALE (2026-09-26):** round-one record. The "current" column below was superseded the same day by round two in [PRIORITY_SLICE_SHOWDOWN.md](PRIORITY_SLICE_SHOWDOWN.md); keep as history or delete.
+
 # PrioritySlice showdown
 
 Measured on macOS arm64 with Apple clang 17 in a Release build on 2026-09-25. The baseline was Claude's existing PrioritySlice and PrioritySliceT entry before the free-slot hint. Each number is the median of three process runs; each run reports the median of seven timed samples after one warmup. Each sample performs 100,000 deterministic operations. Lower is better.

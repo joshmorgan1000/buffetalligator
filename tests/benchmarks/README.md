@@ -16,6 +16,10 @@ with [baseline and current measurements](PRIORITY_SLICE_RESULTS.md). Round two a
 [its measurements](PRIORITY_SLICE_SHOWDOWN.md), including `HeapSliceT`, the same words as a
 min-max heap for a single owner.
 
+`slicemapvsvecset_backup.cpp` sits beside the experiment, excluded from the build.
+
+> **REVIEW-STALE (2026-09-26):** the backup copy is root-owned, 63 KB, and nothing references it; delete or move it out of the tree.
+
 The script and VS Code build tasks both use `build/`; there is no automatic
 `current/` subdirectory. `--build-dir DIR` uses exactly DIR. Debug and Release
 share that directory, so rebuild Release before interpreting timings.
