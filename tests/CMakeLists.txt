@@ -31,4 +31,4 @@ add_functional_cases(atomic native_atomics complex_atomics atomic_ownership atom
     concurrent_atomics atomic_wait_notify registry global_registry concurrent_registry registry_exceptions)
 add_functional_cases(synchronization mutex barrier_arrival barrier_reuse barrier_release)
 add_functional_cases(map map_rows map_merge map_lifetime map_boundaries concurrent_map map_shared_ownership pipeline)
-add_functional_cases(simd id_search)
+add_functional_cases(simd id_search max_search min_search)

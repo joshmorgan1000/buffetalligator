@@ -2,6 +2,17 @@
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 find_dependency(OpenSSL)
+if(APPLE AND NOT TARGET Folly::folly)
+    execute_process(COMMAND brew --prefix OUTPUT_VARIABLE BUFFETALLIGATOR_BREW_PREFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(BUFFETALLIGATOR_BREW_PREFIX)
+        list(APPEND CMAKE_PREFIX_PATH "${BUFFETALLIGATOR_BREW_PREFIX}"
+            "${BUFFETALLIGATOR_BREW_PREFIX}/opt/zstd")
+    endif()
+endif()
+if(NOT TARGET Folly::folly)
+    find_dependency(folly CONFIG PATHS "@BUFFETALLIGATOR_FOLLY_DIR@" NO_DEFAULT_PATH)
+endif()
 if(NOT TARGET alligator::vulkan)
     add_library(alligator::vulkan SHARED IMPORTED)
     set_target_properties(alligator::vulkan PROPERTIES

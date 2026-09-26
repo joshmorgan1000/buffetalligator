@@ -128,6 +128,10 @@ ABSEIL_REPO="https://github.com/abseil/abseil-cpp.git"
 ABSEIL_SRC="${DEPS_SRC}/abseil"
 ABSEIL_DEPS="${DEPS}/abseil"
 ABSEIL_VERSION="20260107.1"
+FOLLY_REPO="https://github.com/joshmorgan1000/folly.git"
+FOLLY_SRC="${DEPS_SRC}/folly"
+FOLLY_DEPS="${DEPS}/folly"
+FOLLY_VERSION="839090a65ed68d187479bafedd7151c8c14b0142"
 LIBUV_REPO="https://github.com/libuv/libuv.git"
 LIBUV_SRC="${DEPS_SRC}/libuv"
 LIBUV_DEPS="${DEPS}/libuv"
@@ -796,6 +800,114 @@ build_libuv_from_source() {
     echo "${LIBUV_VERSION}" > "${LIBUV_DEPS}/.version"
 }
 # =========================================================================================================== Build stages
+# =========================================================================================================== update logger
+update_logger() {
+    # The logger tracks its main branch: a fetch that cannot reach GitHub keeps the checkout,
+    # while a history that no longer fast-forwards is reported rather than merged.
+    if ! GIT_TERMINAL_PROMPT=0 git -C "${LOGGER_DIR}" fetch --quiet origin 2>/dev/null; then
+        echo "threadsafe-logger: GitHub unreachable, keeping $(git -C "${LOGGER_DIR}" rev-parse --short HEAD)"
+        return 0
+    fi
+    local before after
+    before=$(git -C "${LOGGER_DIR}" rev-parse --short HEAD)
+    git -C "${LOGGER_DIR}" merge --ff-only --quiet origin/main
+    after=$(git -C "${LOGGER_DIR}" rev-parse --short HEAD)
+    if [[ "${before}" == "${after}" ]]; then
+        echo "threadsafe-logger already at ${after}"
+    else
+        echo "threadsafe-logger updated ${before} -> ${after}"
+    fi
+}
+# =========================================================================================================== Folly prerequisites
+folly_prerequisites() {
+    # Folly links Boost components, glog, gflags, fmt, double-conversion, libevent, and the
+    # compression codecs from the system, so they must exist before its configure runs; the
+    # fork otherwise fetches Boost from source and collides with a header-only system Boost.
+    if command -v brew >/dev/null 2>&1; then
+        local package
+        for package in boost fmt glog gflags double-conversion libevent zstd lz4 snappy; do
+            brew list --versions "${package}" >/dev/null 2>&1 \
+                || missing_dependency "${package} (needed by Folly)" "${package}"
+        done
+    elif command -v apt-get >/dev/null 2>&1; then
+        local package
+        for package in libboost-context-dev libboost-filesystem-dev libboost-program-options-dev \
+            libboost-regex-dev libgflags-dev libgoogle-glog-dev libfmt-dev libdouble-conversion-dev \
+            libevent-dev libzstd-dev liblz4-dev libsnappy-dev libbz2-dev liblzma-dev libunwind-dev; do
+            dpkg -s "${package}" >/dev/null 2>&1 \
+                || missing_dependency "${package} (needed by Folly)" "${package}"
+        done
+    fi
+}
+# =========================================================================================================== build Folly
+build_folly_from_source() {
+    local CMAKE_CMD="${CMAKE_CMD:-cmake}"
+    local FOLLY_LIB
+    local FOLLY_CONFIG="${FOLLY_DEPS}/include/folly/folly-config.h"
+    # The fork carries no tags, so the pin is a commit hash and zstd support is checked in the
+    # generated config header: a build that missed the codec is rebuilt.
+    FOLLY_LIB=$(find "${FOLLY_DEPS}" \( -name 'libfolly.a' -o -name 'folly.lib' \) -print -quit 2>/dev/null || true)
+    if [[ -f "${FOLLY_DEPS}/.version" ]] && \
+       [[ "$(cat "${FOLLY_DEPS}/.version" 2>/dev/null)" == "${FOLLY_VERSION}" ]] && \
+       [[ -f "${FOLLY_CONFIG}" ]] && grep -q "FOLLY_HAVE_LIBZSTD 1" "${FOLLY_CONFIG}" && \
+       [[ -n "${FOLLY_LIB}" ]]; then
+        echo "Folly (${FOLLY_VERSION:0:8}) already built at ${FOLLY_DEPS}"
+        return 0
+    fi
+    mkdir -p "${DEPS_SRC}" "${FOLLY_DEPS}"
+    if [[ ! -d "${FOLLY_SRC}/.git" ]]; then
+        rm -rf "${FOLLY_SRC}"
+        echo "Cloning Folly (${FOLLY_VERSION:0:8})..."
+        GIT_TERMINAL_PROMPT=0 git clone "${FOLLY_REPO}" "${FOLLY_SRC}"
+    fi
+    local CURRENT_HEAD
+    CURRENT_HEAD=$(git -C "${FOLLY_SRC}" rev-parse HEAD 2>/dev/null || echo "")
+    local FOLLY_BUILD="${FOLLY_SRC}/build-alligator"
+    if [[ "${CURRENT_HEAD}" != "${FOLLY_VERSION}" ]]; then
+        pushd "${FOLLY_SRC}"
+        GIT_TERMINAL_PROMPT=0 git fetch origin
+        git checkout "${FOLLY_VERSION}"
+        popd
+        rm -rf "${FOLLY_BUILD}"
+    fi
+    echo "Building Folly (${FOLLY_VERSION:0:8}); this is the longest stage on a first build..."
+    local FOLLY_GEN="Unix Makefiles"
+    local FOLLY_NPROC
+    if [[ "$(uname -s)" != "Linux" ]] && command -v ninja >/dev/null 2>&1; then
+        FOLLY_GEN="Ninja"
+    fi
+    FOLLY_NPROC=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+    local -a FOLLY_HINTS=()
+    if command -v brew >/dev/null 2>&1; then
+        # Homebrew keeps zstd keg-only, so its prefix joins the search path explicitly.
+        FOLLY_HINTS+=("-DCMAKE_PREFIX_PATH=$(brew --prefix zstd);$(brew --prefix)")
+    fi
+    rm -rf "${FOLLY_DEPS}"
+    mkdir -p "${FOLLY_BUILD}" "${FOLLY_DEPS}"
+    "${CMAKE_CMD}" -S "${FOLLY_SRC}" -B "${FOLLY_BUILD}" \
+        -G "${FOLLY_GEN}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_STANDARD=20 \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DCMAKE_INSTALL_PREFIX="${FOLLY_DEPS}" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_TESTS=OFF \
+        -DBUILD_BENCHMARKS=OFF \
+        "${FOLLY_HINTS[@]}"
+    "${CMAKE_CMD}" --build "${FOLLY_BUILD}" -j "${FOLLY_NPROC}"
+    "${CMAKE_CMD}" --install "${FOLLY_BUILD}"
+    FOLLY_LIB=$(find "${FOLLY_DEPS}" \( -name 'libfolly.a' -o -name 'folly.lib' \) -print -quit 2>/dev/null)
+    if [[ ! -f "${FOLLY_CONFIG}" ]] || [[ -z "${FOLLY_LIB}" ]]; then
+        echo "Error: Folly install is incomplete at ${FOLLY_DEPS}" >&2
+        exit 1
+    fi
+    if ! grep -q "FOLLY_HAVE_LIBZSTD 1" "${FOLLY_CONFIG}"; then
+        echo "Error: Folly built without zstd; install zstd development files and rerun" >&2
+        exit 1
+    fi
+    echo "${FOLLY_VERSION}" > "${FOLLY_DEPS}/.version"
+}
 run_stage() {
     local label="$1"
     shift
@@ -844,12 +956,16 @@ mkdir -p "${BUILD_DIR}" "${DEPS_SOURCE_DIR}"
 : > "${LOG_FILE}"
 if [[ ! -d "${LOGGER_DIR}/.git" ]]; then
     run_stage "Fetching threadsafe-logger" git clone "${LOGGER_URL}" "${LOGGER_DIR}"
+else
+    run_stage "Updating threadsafe-logger" update_logger
 fi
 run_stage "Preparing libuv TCP and UDP" build_libuv_from_source
 run_stage "Preparing libsodium encryption" build_libsodium_from_source
 run_stage "Preparing libfabric RDMA" build_libfabric_from_source
 run_stage "Staging moodycamel queues" build_moodycamel_from_source
 run_stage "Preparing Abseil" build_abseil_from_source
+folly_prerequisites
+run_stage "Preparing Folly" build_folly_from_source
 run_stage "Preparing simdjson" build_simdjson_from_source
 run_stage "Preparing curl" build_curl_from_source
 run_stage "Preparing Vulkan headers" build_vulkan_headers_from_source

@@ -10,6 +10,12 @@ from the repository root:
 
 See [the measured results and remaining qualification work](MAP_RESULTS.md).
 
+The PrioritySlice showdown uses [priority_slice_benchmark.cpp](priority_slice_benchmark.cpp),
+with [baseline and current measurements](PRIORITY_SLICE_RESULTS.md). Round two adds
+[priority_slice_showdown.cpp](priority_slice_showdown.cpp) against `std::priority_queue`, with
+[its measurements](PRIORITY_SLICE_SHOWDOWN.md), including `HeapSliceT`, the same words as a
+min-max heap for a single owner.
+
 The script and VS Code build tasks both use `build/`; there is no automatic
 `current/` subdirectory. `--build-dir DIR` uses exactly DIR. Debug and Release
 share that directory, so rebuild Release before interpreting timings.

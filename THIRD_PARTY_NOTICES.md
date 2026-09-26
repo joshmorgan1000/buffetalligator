@@ -90,4 +90,6 @@ Vulkan support is built unconditionally; Vulkan-Loader is built on Linux and Mol
 
 ## Built for downstream consumers only
 
+BuffetAlligator links a [Folly fork](https://github.com/joshmorgan1000/folly) at 839090a6 (Apache-2.0), which `run_build.sh` fetches and builds under `deps/folly`; its notice is installed beside the others. Folly pulls Boost (BSL-1.0), glog and gflags (BSD-3-Clause), fmt (MIT), double-conversion (BSD-3-Clause), libevent (BSD-3-Clause), zstd (BSD-3-Clause), lz4 (BSD-2-Clause), and snappy (BSD-3-Clause) from the system.
+
 `run_build.sh` also fetches and builds [Abseil](https://github.com/abseil/abseil-cpp) 20260107.1 (Apache-2.0), [simdjson](https://github.com/simdjson/simdjson) v4.6.3 (Apache-2.0) and [curl](https://github.com/curl/curl) curl-8_20_0 (curl license). BuffetAlligator neither links nor installs them; they are staged under `deps/` for projects that build on top of it, and those projects carry their notices.

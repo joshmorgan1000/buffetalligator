@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -43,10 +44,12 @@
 #endif
 #include <moodycamel/concurrentqueue.h>
 #include <moodycamel/blockingconcurrentqueue.h>
+#include <folly/container/WeightedEvictingCacheMap.h>
 
 namespace buffetalligator {
 class Alligator; class Buffet; class BuffetMenu; class Slice;
-class Memory; class SliceQueue; class SliceChannel;
+class Memory; class SliceQueue; class SliceChannel; class PrioritySlice; class HeapSlice;
+struct SliceHandle;
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 inline static constexpr size_t POOL_BITS = 25;
@@ -797,6 +800,7 @@ private:
     friend class Buffet;
     friend class Placemat;
     friend class SliceQueue;
+    friend struct SliceHandle;
     friend struct SliceNetworkAccess;
 };
 static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
@@ -3623,6 +3627,642 @@ public:
      * @brief Reopens a fully drained queue while every worker is quiescent.
      */
     void reset() noexcept;
+};
+/** --------------------------------------------------------------------------------------------------------- PriorityWords
+ * @struct PriorityWords
+ * @brief The packed slot word shared by the priority containers: 32 key bits above a 32-bit value.
+ */
+struct PriorityWords {
+    /// @brief Three-way order over two 4-byte keys, negative when the left key pops first.
+    using Compare = int (*)(const void* left_key, const void* right_key);
+    /// @brief The all-ones word marking a free slot, which sorts last in the natural order.
+    static constexpr uint64_t EMPTY = ~uint64_t(0);
+    /// @brief The value reserved so no entry equals EMPTY; it is also the null pool index.
+    static constexpr uint32_t NULL_VALUE = 0xFFFFFFFFu;
+    /// @brief Fixed header bytes ahead of a container's words.
+    static constexpr size_t HEADER_BYTES = 64;
+    /** ------------------------------------------------------------------------------------------- Pack
+     * @brief Packs key bits above a value into one slot word.
+     * @param key_bits The 32 key bits.
+     * @param value The 32-bit value.
+     * @return The slot word.
+     */
+    static constexpr uint64_t pack(uint32_t key_bits, uint32_t value) noexcept {
+        return (static_cast<uint64_t>(key_bits) << 32) | value;
+    }
+    /// @brief The key bits of a slot word.
+    static constexpr uint32_t key_of(uint64_t word) noexcept {
+        return static_cast<uint32_t>(word >> 32);
+    }
+    /// @brief The value of a slot word.
+    static constexpr uint32_t value_of(uint64_t word) noexcept {
+        return static_cast<uint32_t>(word);
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- SliceHandle
+ * @struct SliceHandle
+ * @brief Moves a Slice's reference in and out of a bare pool index for containers that store ids.
+ */
+struct SliceHandle {
+    SliceHandle() = delete;
+    /** ------------------------------------------------------------------------------------------- Detach
+     * @brief Takes a Slice's pool index along with its reference, leaving the Slice null.
+     * @param slice The Slice whose reference the container takes.
+     * @return The pool index.
+     */
+    static uint32_t detach(Slice&& slice) noexcept {
+        const uint32_t value = slice.id_;
+        slice.id_ = 0xFFFFFFFFu;
+        return value;
+    }
+    /** ------------------------------------------------------------------------------------------- Adopt
+     * @brief Wraps a pool index whose reference the container holds into an owning Slice.
+     * @param value The pool index.
+     * @return The owning Slice.
+     */
+    static Slice adopt(uint32_t value) noexcept {
+        Slice adopted;
+        adopted.id_ = value;
+        return adopted;
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- PrioritySlice
+ * @class PrioritySlice
+ * @brief Lock-free bounded priority queue of packed key and value words living in one Slice.
+ *
+ * Every entry is one 64-bit slot word holding 32 key bits in its high half and a 32-bit value in
+ * its low half, so a Slice's pool index or any other 32-bit handle rides along with its key.
+ * Without a comparator the unsigned word order is the priority order, so the caller hands in
+ * sortable key bits and ties resolve by value; with a comparator every scan hands it pointers to
+ * copies of the two 4-byte keys. A push takes a free slot, or evicts the worst entry of its
+ * snapshot once every slot is taken and the newcomer beats it; a pop removes the best entry of
+ * its snapshot. A 64-byte header ahead of the slots caches the current worst word, the free slot
+ * count, and the last freed slot, so a push that cannot enter is rejected without a scan and a
+ * push after a pop lands with one CAS. In natural order two caches behind the header hold each
+ * 32-slot block's largest and smallest word, so an eviction or a pop scans the block caches and
+ * then one block rather than every slot; the caches are hints that every scan re-checks. A lost
+ * CAS is another thread's completed operation. Ordering is exact under push-only load and
+ * relaxed under mixed load, where a pop landing between a push's scan and its CAS can let that
+ * push keep a slightly worse entry.
+ */
+class PrioritySlice : public PriorityWords {
+public:
+    /// @brief Slot words per block the natural-order caches summarize.
+    static constexpr size_t BLOCK_WORDS = 32;
+    /** ------------------------------------------------------------------------------------------- Header Bytes
+     * @brief Bytes ahead of the slot words for a capacity: the header plus two block caches.
+     * @param capacity The slot count.
+     * @return The byte offset of the first slot word.
+     */
+    static constexpr size_t header_bytes(size_t capacity) noexcept {
+        const size_t blocks = (capacity + BLOCK_WORDS - 1) / BLOCK_WORDS;
+        const size_t cache = (blocks * sizeof(uint64_t) + 63) & ~size_t(63);
+        return HEADER_BYTES + 2 * cache;
+    }
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Claims storage for a fixed number of entries, all free.
+     * @param capacity The entry count the queue trims itself to.
+     * @param compare The key order, or nullptr for the natural unsigned word order.
+     * @param novel_buffer Whether the storage is its own buffer rather than a slab claim.
+     * @param placement The placement the storage is claimed from.
+     */
+    explicit PrioritySlice(
+        size_t capacity,
+        Compare compare = nullptr,
+        bool novel_buffer = false,
+        const Placemat* placement = Slice::default_placement()
+    );
+    /** ------------------------------------------------------------------------------------------- Constructor - Adopt
+     * @brief Views existing slot words behind header_bytes(capacity), one per 8 bytes, that
+     * already mark free slots EMPTY, and rebuilds the header and block caches from them.
+     * @param storage The Slice holding the header, the block caches, and the slot words.
+     * @param compare The key order, or nullptr for the natural unsigned word order.
+     */
+    explicit PrioritySlice(Slice storage, Compare compare = nullptr);
+    /** ------------------------------------------------------------------------------------------- Move only */
+    PrioritySlice(const PrioritySlice&) = delete;
+    PrioritySlice& operator=(const PrioritySlice&) = delete;
+    PrioritySlice(PrioritySlice&& other) noexcept;
+    PrioritySlice& operator=(PrioritySlice&& other) noexcept;
+    ~PrioritySlice() = default;
+    /** ------------------------------------------------------------------------------------------- Push
+     * @brief Enters a word by taking a free slot or evicting the worst entry it beats, rejecting
+     * without a scan whenever the queue is full and the word does not beat the cached threshold.
+     * @param word The packed entry.
+     * @return EMPTY when a free slot was taken, the evicted word, or `word` itself when rejected.
+     */
+    uint64_t push(uint64_t word) noexcept;
+    /** ------------------------------------------------------------------------------------------- Push Key and Value
+     * @brief Enters a key and value pair.
+     * @param key_bits The 32 key bits.
+     * @param value The 32-bit value.
+     * @return EMPTY when a free slot was taken, the evicted word, or the packed word when
+     * rejected.
+     */
+    uint64_t push(uint32_t key_bits, uint32_t value) noexcept {
+        return push(pack(key_bits, value));
+    }
+    /** ------------------------------------------------------------------------------------------- Pop
+     * @brief Removes and returns the best entry, or EMPTY when no slot holds one.
+     * @return The popped word.
+     */
+    uint64_t pop() noexcept;
+    /** ------------------------------------------------------------------------------------------- Take
+     * @brief Frees one slot and returns the word it held, EMPTY when it was already free.
+     * @param index The slot.
+     * @return The word the slot held.
+     */
+    uint64_t take(size_t index) noexcept;
+    /** ------------------------------------------------------------------------------------------- Best
+     * @brief Returns the best entry without removing it, or EMPTY when no slot holds one.
+     * @return The best word.
+     */
+    uint64_t best() const noexcept;
+    /** ------------------------------------------------------------------------------------------- Worst
+     * @brief Returns the entry the next eviction removes, or EMPTY while a slot is free.
+     * @return The worst word.
+     */
+    uint64_t worst() const noexcept;
+    /** ------------------------------------------------------------------------------------------- Accepts
+     * @brief Reports from the header, without a scan, whether pushing this word would enter.
+     * @param word The packed entry.
+     * @return True when a slot is free or the word beats the cached threshold.
+     */
+    bool accepts(uint64_t word) const noexcept;
+    /** ------------------------------------------------------------------------------------------- Clear
+     * @brief Frees every slot without releasing the values they held.
+     */
+    void clear() noexcept;
+    /** ------------------------------------------------------------------------------------------- Size
+     * @brief Counts the slots holding an entry, exact once every operation has completed.
+     * @return The entry count.
+     */
+    size_t size() const noexcept;
+    /// @brief The slot count.
+    size_t capacity() const noexcept { return capacity_; }
+    /// @brief Whether no slot holds an entry.
+    bool empty() const noexcept { return best() == EMPTY; }
+    /// @brief Whether every slot holds an entry.
+    bool full() const noexcept { return worst() != EMPTY; }
+    /// @brief The key order, or nullptr for the natural order.
+    Compare compare() const noexcept { return compare_; }
+    /** ------------------------------------------------------------------------------------------- Storage
+     * @brief Another view of the header, block caches, and slot words, for kernels or transport.
+     * @return A view sharing the storage.
+     */
+    Slice storage() const { return storage_.slice(); }
+    /// @brief The slot words behind the header and block caches.
+    const uint64_t* words() const noexcept { return words_; }
+private:
+    Slice storage_;  ///< The header, the block caches, and the slot words.
+    uint64_t* header_ = nullptr;  ///< Threshold word, free slot count, free slot hint.
+    uint64_t* max_cache_ = nullptr;  ///< Per-block largest occupied word.
+    uint64_t* min_cache_ = nullptr;  ///< Per-block smallest word, EMPTY for a block with none.
+    uint64_t* words_ = nullptr;  ///< The slot words.
+    size_t capacity_ = 0;  ///< Slot count.
+    size_t blocks_ = 0;  ///< Block count.
+    Compare compare_ = nullptr;  ///< Key order, nullptr for the natural order.
+    size_t block_length(size_t block) const noexcept;
+    uint64_t push_natural(uint64_t word) noexcept;
+    uint64_t pop_natural() noexcept;
+    uint64_t push_ordered(uint64_t word) noexcept;
+    uint64_t pop_ordered() noexcept;
+    void fill_caches(size_t index, uint64_t word) noexcept;
+    void advance_hint(size_t filled) noexcept;
+    void note_free(size_t index) noexcept;
+    int64_t free_from_ring() const noexcept;
+    int64_t free_slot_after(size_t hint) const noexcept;
+    void arm_natural() noexcept;
+    void arm_natural(uint64_t threshold) noexcept;
+    void arm_ordered(uint64_t threshold) noexcept;
+    int64_t worst_ordered(uint64_t& worst, uint64_t& runner_up) const noexcept;
+    int64_t best_ordered(uint64_t& best) const noexcept;
+    bool better(uint64_t word, uint64_t than) const noexcept;
+    uint64_t worse_of(uint64_t left, uint64_t right) const noexcept;
+};
+/** --------------------------------------------------------------------------------------------------------- HeapSlice
+ * @class HeapSlice
+ * @brief Bounded min-max heap of packed key and value words living in one Slice, for one owner.
+ *
+ * The same slot words as PrioritySlice, arranged as a min-max heap behind a 64-byte header
+ * holding the element count, so the best entry pops and the worst entry is evicted in
+ * logarithmic time with no scans. It is not thread-safe: one owner mutates it at a time.
+ */
+class HeapSlice : public PriorityWords {
+public:
+    /** ------------------------------------------------------------------------------------------- Header Bytes
+     * @brief Bytes ahead of the heap positions, the same for every capacity.
+     * @return HEADER_BYTES.
+     */
+    static constexpr size_t header_bytes(size_t) noexcept { return HEADER_BYTES; }
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Claims storage for a fixed number of entries, all free.
+     * @param capacity The entry count the heap trims itself to.
+     * @param compare The key order, or nullptr for the natural unsigned word order.
+     * @param novel_buffer Whether the storage is its own buffer rather than a slab claim.
+     * @param placement The placement the storage is claimed from.
+     */
+    explicit HeapSlice(
+        size_t capacity,
+        Compare compare = nullptr,
+        bool novel_buffer = false,
+        const Placemat* placement = Slice::default_placement()
+    );
+    /** ------------------------------------------------------------------------------------------- Constructor - Adopt
+     * @brief Views an existing heap: a count word in the header and the positions behind it.
+     * @param storage The Slice holding the header and the heap positions.
+     * @param compare The key order, or nullptr for the natural unsigned word order.
+     */
+    explicit HeapSlice(Slice storage, Compare compare = nullptr);
+    /** ------------------------------------------------------------------------------------------- Move only */
+    HeapSlice(const HeapSlice&) = delete;
+    HeapSlice& operator=(const HeapSlice&) = delete;
+    HeapSlice(HeapSlice&& other) noexcept;
+    HeapSlice& operator=(HeapSlice&& other) noexcept;
+    ~HeapSlice() = default;
+    /** ------------------------------------------------------------------------------------------- Push
+     * @brief Enters a word, evicting the worst entry it beats once full.
+     * @param word The packed entry.
+     * @return EMPTY when inserted, the evicted word, or `word` itself when rejected.
+     */
+    uint64_t push(uint64_t word) noexcept;
+    /** ------------------------------------------------------------------------------------------- Push Key and Value
+     * @brief Enters a key and value pair.
+     * @param key_bits The 32 key bits.
+     * @param value The 32-bit value.
+     * @return EMPTY when inserted, the evicted word, or the packed word when rejected.
+     */
+    uint64_t push(uint32_t key_bits, uint32_t value) noexcept {
+        return push(pack(key_bits, value));
+    }
+    /** ------------------------------------------------------------------------------------------- Pop
+     * @brief Removes and returns the best entry, or EMPTY when the heap is empty.
+     * @return The popped word.
+     */
+    uint64_t pop() noexcept;
+    /** ------------------------------------------------------------------------------------------- Take
+     * @brief Removes the word at a heap position, EMPTY when the position is past the count.
+     * @param index The heap position.
+     * @return The removed word.
+     */
+    uint64_t take(size_t index) noexcept;
+    /** ------------------------------------------------------------------------------------------- Best
+     * @brief Returns the best entry without removing it, or EMPTY when the heap is empty.
+     * @return The best word.
+     */
+    uint64_t best() const noexcept;
+    /** ------------------------------------------------------------------------------------------- Worst
+     * @brief Returns the entry the next eviction removes, or EMPTY while room remains.
+     * @return The worst word.
+     */
+    uint64_t worst() const noexcept;
+    /** ------------------------------------------------------------------------------------------- Accepts
+     * @brief Reports whether pushing this word would enter the heap.
+     * @param word The packed entry.
+     * @return True while room remains or when the word beats the worst entry.
+     */
+    bool accepts(uint64_t word) const noexcept;
+    /** ------------------------------------------------------------------------------------------- Clear
+     * @brief Forgets every entry without releasing the values they held.
+     */
+    void clear() noexcept;
+    /** ------------------------------------------------------------------------------------------- Size
+     * @brief The entry count.
+     * @return The entry count.
+     */
+    size_t size() const noexcept;
+    /// @brief The position count.
+    size_t capacity() const noexcept { return capacity_; }
+    /// @brief Whether the heap holds no entry.
+    bool empty() const noexcept { return size() == 0; }
+    /// @brief Whether every position holds an entry.
+    bool full() const noexcept { return size() == capacity_; }
+    /// @brief The key order, or nullptr for the natural order.
+    Compare compare() const noexcept { return compare_; }
+    /** ------------------------------------------------------------------------------------------- Storage
+     * @brief Another view of the header and heap positions, for kernels or transport.
+     * @return A view sharing the storage.
+     */
+    Slice storage() const { return storage_.slice(); }
+    /// @brief The heap positions behind the header.
+    const uint64_t* words() const noexcept { return words_; }
+private:
+    Slice storage_;  ///< The header and the heap positions.
+    uint64_t* header_ = nullptr;  ///< The element count.
+    uint64_t* words_ = nullptr;  ///< The heap positions.
+    size_t capacity_ = 0;  ///< Position count.
+    Compare compare_ = nullptr;  ///< Key order, nullptr for the natural order.
+};
+/** --------------------------------------------------------------------------------------------------------- PriorityT
+ * @class PriorityT
+ * @brief Typed layer over a packed-word priority container: a key of at most 4 bytes and a
+ * 4-byte value or an owned Slice.
+ * @tparam Queue PrioritySlice or HeapSlice.
+ * @tparam K The key type, trivially copyable and 1, 2 or 4 bytes wide.
+ * @tparam V Slice, whose reference the container owns, or any trivially copyable 4-byte type.
+ * @tparam Order The three-way key order, or nullptr for ascending arithmetic order.
+ */
+template<typename Queue, typename K, typename V, int (*Order)(const K*, const K*)>
+class PriorityT final : public Queue {
+    static_assert(
+        std::is_trivially_copyable_v<K> && (sizeof(K) == 1 || sizeof(K) == 2 || sizeof(K) == 4),
+        "PriorityT keys must be trivially copyable and 1, 2 or 4 bytes wide"
+    );
+    /// @brief Whether values are Slices whose references the container owns.
+    static constexpr bool owns_slices = std::is_same_v<V, Slice>;
+    static_assert(owns_slices || (std::is_trivially_copyable_v<V> && sizeof(V) == 4),
+        "PriorityT values must be Slice or a trivially copyable 4-byte type");
+    /// @brief The unsigned type as wide as K.
+    using RawBits = std::conditional_t<sizeof(K) == 4, uint32_t,
+        std::conditional_t<sizeof(K) == 2, uint16_t, uint8_t>>;
+    /** ------------------------------------------------------------------------------------------- Encode
+     * @brief Maps a key to its slot bits: sortable bits in natural order, raw bits under a
+     * comparator.
+     * @param key The key.
+     * @return The 32 key bits.
+     */
+    static uint32_t encode(K key) noexcept {
+        if constexpr (Order != nullptr || !std::is_arithmetic_v<K>) {
+            return static_cast<uint32_t>(std::bit_cast<RawBits>(key));
+        } else if constexpr (std::is_floating_point_v<K>) {
+            const uint32_t bits = std::bit_cast<uint32_t>(key);
+            return bits ^ (static_cast<uint32_t>(static_cast<int32_t>(bits) >> 31) | 0x80000000u);
+        } else if constexpr (std::is_signed_v<K>) {
+            return static_cast<uint32_t>(static_cast<int32_t>(key)) ^ 0x80000000u;
+        } else {
+            return static_cast<uint32_t>(key);
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Decode
+     * @brief Inverts encode.
+     * @param bits The 32 key bits.
+     * @return The key.
+     */
+    static K decode(uint32_t bits) noexcept {
+        if constexpr (Order != nullptr || !std::is_arithmetic_v<K>) {
+            return std::bit_cast<K>(static_cast<RawBits>(bits));
+        } else if constexpr (std::is_floating_point_v<K>) {
+            return std::bit_cast<K>(bits ^ ((bits >> 31) != 0 ? 0x80000000u : 0xFFFFFFFFu));
+        } else if constexpr (std::is_signed_v<K>) {
+            return static_cast<K>(static_cast<int32_t>(bits ^ 0x80000000u));
+        } else {
+            return static_cast<K>(bits);
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Erased Compare
+     * @brief Static trampoline handing the erased scan's key copies to Order.
+     * @param left The left key bits.
+     * @param right The right key bits.
+     * @return Order's result.
+     */
+    static int erased_compare(const void* left, const void* right) {
+        return Order(static_cast<const K*>(left), static_cast<const K*>(right));
+    }
+    /// @brief The erased comparator: nullptr keeps the natural order.
+    static constexpr PriorityWords::Compare erased() noexcept {
+        if constexpr (Order == nullptr) {
+            return nullptr;
+        } else {
+            return &erased_compare;
+        }
+    }
+public:
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Claims storage for a fixed number of entries, all free.
+     * @param capacity The entry count the container trims itself to.
+     * @param novel_buffer Whether the storage is its own buffer rather than a slab claim.
+     * @param placement The placement the storage is claimed from.
+     */
+    explicit PriorityT(
+        size_t capacity,
+        bool novel_buffer = false,
+        const Placemat* placement = Slice::default_placement()
+    ) : Queue(capacity, erased(), novel_buffer, placement) {}
+    /** ------------------------------------------------------------------------------------------- Constructor - Adopt
+     * @brief Views existing storage laid out as the container expects.
+     * @param storage The Slice holding the container.
+     */
+    explicit PriorityT(Slice storage) : Queue(std::move(storage), erased()) {}
+    /** ------------------------------------------------------------------------------------------- Move only */
+    PriorityT(const PriorityT&) = delete;
+    PriorityT& operator=(const PriorityT&) = delete;
+    PriorityT(PriorityT&& other) noexcept = default;
+    PriorityT& operator=(PriorityT&& other) noexcept = default;
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Releases every owned Slice still held.
+     */
+    ~PriorityT() { clear(); }
+    /** ------------------------------------------------------------------------------------------- Push
+     * @brief Enters a key and value, evicting the worst entry once full.
+     * @param key The key.
+     * @param value The value.
+     * @return True when the entry entered, false when the container was full of better entries.
+     */
+    bool push(K key, V value) noexcept requires (!owns_slices) {
+        const uint64_t word = PriorityWords::pack(encode(key), std::bit_cast<uint32_t>(value));
+        return Queue::push(word) != word;
+    }
+    /** ------------------------------------------------------------------------------------------- Push Slice
+     * @brief Enters a key and takes the Slice's reference, releasing whichever entry loses its
+     * place.
+     * @param key The key.
+     * @param value The Slice the container takes ownership of.
+     * @return True when the entry entered, false when it was released as the worst.
+     */
+    bool push(K key, Slice&& value) noexcept requires owns_slices {
+        const uint32_t handle = SliceHandle::detach(std::move(value));
+        const uint64_t word = PriorityWords::pack(encode(key), handle);
+        const uint64_t displaced = Queue::push(word);
+        if (displaced != PriorityWords::EMPTY) {
+            SliceHandle::adopt(PriorityWords::value_of(displaced));
+        }
+        return displaced != word;
+    }
+    /** ------------------------------------------------------------------------------------------- Pop
+     * @brief Removes the best entry into key and value, leaving both untouched when none is
+     * held.
+     * @param key Receives the key.
+     * @param value Receives the value.
+     * @return True when an entry was removed.
+     */
+    bool pop(K& key, V& value) noexcept requires (!owns_slices) {
+        const uint64_t word = Queue::pop();
+        if (word == PriorityWords::EMPTY) return false;
+        key = decode(PriorityWords::key_of(word));
+        value = std::bit_cast<V>(PriorityWords::value_of(word));
+        return true;
+    }
+    /** ------------------------------------------------------------------------------------------- Pop Slice
+     * @brief Removes the best entry, handing its Slice reference to the caller.
+     * @param key Receives the key.
+     * @param value Receives the owning Slice.
+     * @return True when an entry was removed.
+     */
+    bool pop(K& key, Slice& value) noexcept requires owns_slices {
+        const uint64_t word = Queue::pop();
+        if (word == PriorityWords::EMPTY) return false;
+        key = decode(PriorityWords::key_of(word));
+        value = SliceHandle::adopt(PriorityWords::value_of(word));
+        return true;
+    }
+    /** ------------------------------------------------------------------------------------------- Best
+     * @brief Reads the best entry without removing it.
+     * @param key Receives the key.
+     * @param value Receives the value.
+     * @return True when an entry was found.
+     */
+    bool best(K& key, V& value) const noexcept requires (!owns_slices) {
+        const uint64_t word = Queue::best();
+        if (word == PriorityWords::EMPTY) return false;
+        key = decode(PriorityWords::key_of(word));
+        value = std::bit_cast<V>(PriorityWords::value_of(word));
+        return true;
+    }
+    /** ------------------------------------------------------------------------------------------- Best Key
+     * @brief Reads the key of the best entry without removing it.
+     * @param key Receives the key.
+     * @return True when an entry was found.
+     */
+    bool best(K& key) const noexcept {
+        const uint64_t word = Queue::best();
+        if (word == PriorityWords::EMPTY) return false;
+        key = decode(PriorityWords::key_of(word));
+        return true;
+    }
+    /** ------------------------------------------------------------------------------------------- Worst
+     * @brief Reads the key the next eviction removes.
+     * @param key Receives the key.
+     * @return True when the container is full, false while room remains.
+     */
+    bool worst(K& key) const noexcept {
+        const uint64_t word = Queue::worst();
+        if (word == PriorityWords::EMPTY) return false;
+        key = decode(PriorityWords::key_of(word));
+        return true;
+    }
+    /** ------------------------------------------------------------------------------------------- Accepts
+     * @brief Reports whether a push with this key would enter, counting a key equal to the worst
+     * as rejected even though the natural order lets a smaller value win the tie.
+     * @param key The key.
+     * @return True while room remains or when the key beats the worst key.
+     */
+    bool accepts(K key) const noexcept {
+        return Queue::accepts(PriorityWords::pack(encode(key), PriorityWords::NULL_VALUE - 1));
+    }
+    /** ------------------------------------------------------------------------------------------- Clear
+     * @brief Removes every entry, releasing owned Slices.
+     */
+    void clear() noexcept {
+        if constexpr (owns_slices) {
+            for (uint64_t word = Queue::pop(); word != PriorityWords::EMPTY; word = Queue::pop()) {
+                SliceHandle::adopt(PriorityWords::value_of(word));
+            }
+        } else {
+            Queue::clear();
+        }
+    }
+};
+/// @brief Typed lock-free PrioritySlice.
+template<typename K, typename V, int (*Order)(const K*, const K*) = nullptr>
+using PrioritySliceT = PriorityT<PrioritySlice, K, V, Order>;
+/// @brief Typed single-owner HeapSlice.
+template<typename K, typename V, int (*Order)(const K*, const K*) = nullptr>
+using HeapSliceT = PriorityT<HeapSlice, K, V, Order>;
+/** --------------------------------------------------------------------------------------------------------- SliceWeight
+ * @struct SliceWeight
+ * @brief Weighs a cached Slice by its byte size.
+ */
+struct SliceWeight {
+    template<typename Key>
+    size_t operator()(const Key&, const Slice& slice) const noexcept { return slice.size_bytes(); }
+};
+/** --------------------------------------------------------------------------------------------------------- SliceCache
+ * @class SliceCache
+ * @brief Byte-budgeted least-recently-used cache of Slices: Folly's implicitly weighted evicting
+ * map with every entry weighing its Slice's size, so the budget is bytes of alligator memory and
+ * eviction, erase, and clear release the Slice. One owner mutates it at a time.
+ * @tparam Key The key type, hashed by folly::HeterogeneousAccessHash.
+ */
+template<typename Key = int64_t>
+class SliceCache {
+private:
+    using Map = folly::ImplicitlyWeightedEvictingCacheMap<Key, Slice, SliceWeight>;
+    Map map_;  ///< The weighted map; values are the owned Slices.
+public:
+    using const_iterator = typename Map::const_iterator;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Creates an empty cache with a byte budget.
+     * @param max_bytes The total Slice bytes kept before the least recently used entries go.
+     */
+    explicit SliceCache(size_t max_bytes) : map_(max_bytes) {}
+    /** ------------------------------------------------------------------------------------------- Move only */
+    SliceCache(const SliceCache&) = delete;
+    SliceCache& operator=(const SliceCache&) = delete;
+    SliceCache(SliceCache&& other) noexcept = default;
+    SliceCache& operator=(SliceCache&& other) noexcept = default;
+    /** ------------------------------------------------------------------------------------------- Set
+     * @brief Stores a Slice under a key, replacing any previous one, and evicts the least recently
+     * used entries until the budget holds; an entry larger than the budget stays alone.
+     * @param key The key.
+     * @param value The Slice the cache takes ownership of.
+     */
+    void set(const Key& key, Slice&& value) { map_.set(key, std::move(value)); }
+    /** ------------------------------------------------------------------------------------------- Get
+     * @brief Borrows a key's Slice and marks it most recently used.
+     * @param key The key.
+     * @return The cached Slice, valid until it is evicted or erased, or nullptr when absent.
+     */
+    const Slice* get(const Key& key) {
+        const const_iterator found = map_.find(key);
+        return found == map_.end() ? nullptr : &found->second;
+    }
+    /** ------------------------------------------------------------------------------------------- Peek
+     * @brief Borrows a key's Slice without touching its recency.
+     * @param key The key.
+     * @return The cached Slice, or nullptr when absent.
+     */
+    const Slice* peek(const Key& key) const {
+        const const_iterator found = map_.findWithoutPromotion(key);
+        return found == map_.end() ? nullptr : &found->second;
+    }
+    /** ------------------------------------------------------------------------------------------- View
+     * @brief Returns an owning view of a key's Slice that outlives eviction, marking it most
+     * recently used.
+     * @param key The key.
+     * @return A view sharing the Slice, or a null Slice when absent.
+     */
+    Slice view(const Key& key) {
+        const Slice* found = get(key);
+        return found == nullptr ? Slice() : found->slice();
+    }
+    /// @brief Whether a key is cached.
+    bool exists(const Key& key) const { return map_.exists(key); }
+    /** ------------------------------------------------------------------------------------------- Erase
+     * @brief Drops a key and releases its Slice.
+     * @param key The key.
+     */
+    void erase(const Key& key) {
+        if (map_.exists(key)) map_.erase(key);
+    }
+    /// @brief The entry count.
+    size_t size() const { return map_.size(); }
+    /// @brief Whether no entry is cached.
+    bool empty() const { return map_.empty(); }
+    /// @brief The bytes the cached Slices weigh.
+    size_t bytes() const { return map_.getCurrentTotalWeight(); }
+    /// @brief The byte budget.
+    size_t capacity() const { return map_.getMaxTotalWeight(); }
+    /** ------------------------------------------------------------------------------------------- Resize
+     * @brief Changes the byte budget, evicting least recently used entries down to it.
+     * @param max_bytes The new budget.
+     */
+    void resize(size_t max_bytes) { map_.setMaxTotalWeight(max_bytes); }
+    /// @brief Releases every Slice.
+    void clear() { map_.clear(); }
+    /// @brief Iterates from most to least recently used.
+    const_iterator begin() const { return map_.begin(); }
+    /// @brief The end of the iteration.
+    const_iterator end() const { return map_.end(); }
 };
 /** --------------------------------------------------------------------------------------------------------- SliceChannel
  * @class SliceChannel
