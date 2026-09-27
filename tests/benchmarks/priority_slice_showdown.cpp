@@ -30,12 +30,15 @@ constexpr size_t REPETITIONS = 7;
 volatile uint64_t checksum = 0;
 /// @brief Which container a measurement drives.
 enum class Subject { slice, heap_slice, std_heap };
+/// @brief The queue operation measured by one benchmark case.
+enum class Workload { accepted_push, rejected_push, pop_and_refill, pop_and_rotate };
 /** --------------------------------------------------------------------------------------------------------- Std Heap
  * @brief A std::priority_queue in the order that suits the workload, with bounded push.
  */
-template<int Workload>
+template<Workload Mode>
 struct StdHeap {
-    using Heap = std::conditional_t<Workload < 2, MaxHeap, MinHeap>;
+    using Heap = std::conditional_t<Mode == Workload::accepted_push
+        || Mode == Workload::rejected_push, MaxHeap, MinHeap>;
     Heap heap;
     size_t capacity;
     bool push(uint32_t key, uint32_t value) {
@@ -81,21 +84,21 @@ struct SliceSubject {
 /** --------------------------------------------------------------------------------------------------------- Run
  * @brief Drives one workload on a subject and returns nanoseconds per operation.
  */
-template<int Workload, typename Target>
+template<Workload Mode, typename Target>
 double run(Target& target, size_t capacity) {
     for (uint32_t index = 0; index < capacity; ++index) {
-        const uint32_t key =
-            Workload == 0 ? ITEMS + static_cast<uint32_t>(capacity) + index : index;
+        const uint32_t key = Mode == Workload::accepted_push
+            ? ITEMS + static_cast<uint32_t>(capacity) + index : index;
         if (!target.push(key, index)) throw std::runtime_error("failed to fill");
     }
     uint64_t observed = 0;
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t index = 0; index < ITEMS; ++index) {
-        if constexpr (Workload == 0) {
+        if constexpr (Mode == Workload::accepted_push) {
             observed += target.push(ITEMS - index, index);
-        } else if constexpr (Workload == 1) {
+        } else if constexpr (Mode == Workload::rejected_push) {
             observed += target.push(ITEMS + static_cast<uint32_t>(capacity) + index, index);
-        } else if constexpr (Workload == 2) {
+        } else if constexpr (Mode == Workload::pop_and_refill) {
             const uint32_t key = target.pop();
             observed += key;
             observed += target.push(key, index);
@@ -106,8 +109,10 @@ double run(Target& target, size_t capacity) {
         }
     }
     const auto end = std::chrono::steady_clock::now();
-    if ((Workload == 0 && observed != ITEMS) || (Workload == 1 && observed != 0)
-        || (Workload == 2 && observed != ITEMS) || (Workload == 3 && observed != 2 * ITEMS)) {
+    if ((Mode == Workload::accepted_push && observed != ITEMS)
+        || (Mode == Workload::rejected_push && observed != 0)
+        || (Mode == Workload::pop_and_refill && observed != ITEMS)
+        || (Mode == Workload::pop_and_rotate && observed != 2 * ITEMS)) {
         throw std::runtime_error("workload returned an unexpected result");
     }
     checksum = checksum + observed;
@@ -116,49 +121,50 @@ double run(Target& target, size_t capacity) {
 /** --------------------------------------------------------------------------------------------------------- Measure
  * @brief Builds a fresh subject and times one workload on it.
  */
-template<Subject Which, int Workload>
+template<Subject Which, Workload Mode>
 double measure(size_t capacity) {
     if constexpr (Which == Subject::slice) {
         SliceSubject<PrioritySliceT<uint32_t, uint32_t>> target(capacity);
-        return run<Workload>(target, capacity);
+        return run<Mode>(target, capacity);
     } else if constexpr (Which == Subject::heap_slice) {
         SliceSubject<HeapSliceT<uint32_t, uint32_t>> target(capacity);
-        return run<Workload>(target, capacity);
+        return run<Mode>(target, capacity);
     } else {
-        StdHeap<Workload> target{{}, capacity};
-        return run<Workload>(target, capacity);
+        StdHeap<Mode> target{{}, capacity};
+        return run<Mode>(target, capacity);
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Median
  * @brief Runs a workload with one warmup and returns the median of the timed repetitions.
  */
-template<Subject Which, int Workload>
+template<Subject Which, Workload Mode>
 double median(size_t capacity) {
     std::array<double, REPETITIONS> samples;
-    (void)measure<Which, Workload>(capacity);
-    for (double& sample : samples) sample = measure<Which, Workload>(capacity);
+    (void)measure<Which, Mode>(capacity);
+    for (double& sample : samples) sample = measure<Which, Mode>(capacity);
     std::sort(samples.begin(), samples.end());
     return samples[REPETITIONS / 2];
 }
 /** --------------------------------------------------------------------------------------------------------- Report
  * @brief Logs one workload row: the three subjects at one capacity.
  */
-template<int Workload>
+template<Workload Mode>
 void report(size_t capacity, const char* workload) {
-    const double slice = median<Subject::slice, Workload>(capacity);
-    const double heap_slice = median<Subject::heap_slice, Workload>(capacity);
-    const double std_heap = median<Subject::std_heap, Workload>(capacity);
+    const double slice = median<Subject::slice, Mode>(capacity);
+    const double heap_slice = median<Subject::heap_slice, Mode>(capacity);
+    const double std_heap = median<Subject::std_heap, Mode>(capacity);
     LOG_INFO_STREAM << "capacity=" << capacity << " " << workload
-        << (Workload < 2 ? " ns/op" : " ns/pair") << " PrioritySliceT=" << slice
+        << ((Mode == Workload::accepted_push || Mode == Workload::rejected_push)
+            ? " ns/op" : " ns/pair") << " PrioritySliceT=" << slice
         << " HeapSliceT=" << heap_slice << " std::priority_queue=" << std_heap;
 }
 } // namespace
 int main() {
     for (size_t capacity : {size_t(32), size_t(256), size_t(1024)}) {
-        report<0>(capacity, "accepted-push");
-        report<1>(capacity, "rejected-push");
-        report<2>(capacity, "pop-and-refill");
-        report<3>(capacity, "pop-and-rotate");
+        report<Workload::accepted_push>(capacity, "accepted-push");
+        report<Workload::rejected_push>(capacity, "rejected-push");
+        report<Workload::pop_and_refill>(capacity, "pop-and-refill");
+        report<Workload::pop_and_rotate>(capacity, "pop-and-rotate");
     }
     LOG_INFO_STREAM << "PrioritySlice showdown checksum=" << checksum;
 }

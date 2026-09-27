@@ -8,6 +8,7 @@
 
 namespace buffetalligator {
 namespace {
+static_assert(std::atomic_ref<uint64_t>::is_always_lock_free);
 /// @brief Header word caching the current worst word, EMPTY whenever a slot may be free.
 constexpr size_t THRESHOLD = 0;
 /// @brief Header word counting free slots.
@@ -23,13 +24,141 @@ constexpr size_t HEADER_WORDS = PrioritySlice::HEADER_BYTES / sizeof(uint64_t);
 /// @brief Slot words per cached block.
 constexpr size_t BLOCK = PrioritySlice::BLOCK_WORDS;
 /** --------------------------------------------------------------------------------------------------------- Slot
- * @brief The atomic view of one word.
+ * @brief The atomic view of one Slice-backed word.
  * @param words The words.
  * @param index The word.
  * @return The word's atomic.
  */
-inline std::atomic<uint64_t>& slot(uint64_t* words, size_t index) noexcept {
-    return *reinterpret_cast<std::atomic<uint64_t>*>(words + index);
+inline std::atomic_ref<uint64_t> slot(uint64_t* words, size_t index) noexcept {
+    return std::atomic_ref<uint64_t>(words[index]);
+}
+/** --------------------------------------------------------------------------------------------------------- Atomic Find
+ * @brief Finds a word in atomic snapshots using the existing SIMD search.
+ * @param words The shared words.
+ * @param size The number of words.
+ * @param value The sought word.
+ * @return The matching index, or -1.
+ */
+int64_t atomic_find(uint64_t* words, size_t size, uint64_t value) noexcept {
+    uint64_t snapshot[PrioritySlice::BLOCK_WORDS];
+    for (size_t base = 0; base < size; base += PrioritySlice::BLOCK_WORDS) {
+        const size_t length = std::min(PrioritySlice::BLOCK_WORDS, size - base);
+        for (size_t offset = 0; offset < length; ++offset) {
+            snapshot[offset] = slot(words, base + offset).load(std::memory_order_relaxed);
+        }
+        const int64_t found = SIMDMisc::find_id(snapshot, length, static_cast<int64_t>(value));
+        if (found >= 0) return static_cast<int64_t>(base) + found;
+    }
+    return -1;
+}
+/** --------------------------------------------------------------------------------------------------------- Atomic Max Index
+ * @brief Finds the largest and second largest words in atomic snapshots with SIMD reductions.
+ * @param words The shared words.
+ * @param size The number of words, at least one.
+ * @param maximum Receives the largest word.
+ * @param runner_up Receives the second largest word.
+ * @return The largest word's index.
+ */
+size_t atomic_max_index(
+    uint64_t* words,
+    size_t size,
+    uint64_t& maximum,
+    uint64_t& runner_up
+) noexcept {
+    uint64_t snapshot[PrioritySlice::BLOCK_WORDS];
+    const size_t first_length = std::min(PrioritySlice::BLOCK_WORDS, size);
+    for (size_t offset = 0; offset < first_length; ++offset) {
+        snapshot[offset] = slot(words, offset).load(std::memory_order_relaxed);
+    }
+    size_t index = SIMDMisc::max_index(snapshot, first_length, maximum, runner_up);
+    for (size_t base = PrioritySlice::BLOCK_WORDS; base < size;
+         base += PrioritySlice::BLOCK_WORDS) {
+        const size_t length = std::min(PrioritySlice::BLOCK_WORDS, size - base);
+        for (size_t offset = 0; offset < length; ++offset) {
+            snapshot[offset] = slot(words, base + offset).load(std::memory_order_relaxed);
+        }
+        uint64_t local_maximum;
+        uint64_t local_runner_up;
+        const size_t local_index = SIMDMisc::max_index(
+            snapshot, length, local_maximum, local_runner_up);
+        if (local_maximum > maximum) {
+            runner_up = std::max(maximum, local_runner_up);
+            maximum = local_maximum;
+            index = base + local_index;
+        } else if (local_maximum > runner_up) {
+            runner_up = local_maximum;
+        }
+    }
+    return index;
+}
+/** --------------------------------------------------------------------------------------------------------- Atomic Min Index
+ * @brief Finds the smallest word in atomic snapshots with SIMD reductions.
+ * @param words The shared words.
+ * @param size The number of words, at least one.
+ * @param minimum Receives the smallest word.
+ * @return The smallest word's index.
+ */
+size_t atomic_min_index(uint64_t* words, size_t size, uint64_t& minimum) noexcept {
+    uint64_t snapshot[PrioritySlice::BLOCK_WORDS];
+    const size_t first_length = std::min(PrioritySlice::BLOCK_WORDS, size);
+    for (size_t offset = 0; offset < first_length; ++offset) {
+        snapshot[offset] = slot(words, offset).load(std::memory_order_relaxed);
+    }
+    size_t index = SIMDMisc::min_index(snapshot, first_length, minimum);
+    for (size_t base = PrioritySlice::BLOCK_WORDS; base < size;
+         base += PrioritySlice::BLOCK_WORDS) {
+        const size_t length = std::min(PrioritySlice::BLOCK_WORDS, size - base);
+        for (size_t offset = 0; offset < length; ++offset) {
+            snapshot[offset] = slot(words, base + offset).load(std::memory_order_relaxed);
+        }
+        uint64_t local_minimum;
+        const size_t local_index = SIMDMisc::min_index(snapshot, length, local_minimum);
+        if (local_minimum < minimum) {
+            minimum = local_minimum;
+            index = base + local_index;
+        }
+    }
+    return index;
+}
+/** --------------------------------------------------------------------------------------------------------- Atomic Min Index With Runner-Up
+ * @brief Finds the two smallest words in atomic snapshots with SIMD reductions.
+ * @param words The shared words.
+ * @param size The number of words, at least one.
+ * @param minimum Receives the smallest word.
+ * @param runner_up Receives the second smallest word.
+ * @return The smallest word's index.
+ */
+size_t atomic_min_index(
+    uint64_t* words,
+    size_t size,
+    uint64_t& minimum,
+    uint64_t& runner_up
+) noexcept {
+    uint64_t snapshot[PrioritySlice::BLOCK_WORDS];
+    const size_t first_length = std::min(PrioritySlice::BLOCK_WORDS, size);
+    for (size_t offset = 0; offset < first_length; ++offset) {
+        snapshot[offset] = slot(words, offset).load(std::memory_order_relaxed);
+    }
+    size_t index = SIMDMisc::min_index(snapshot, first_length, minimum, runner_up);
+    for (size_t base = PrioritySlice::BLOCK_WORDS; base < size;
+         base += PrioritySlice::BLOCK_WORDS) {
+        const size_t length = std::min(PrioritySlice::BLOCK_WORDS, size - base);
+        for (size_t offset = 0; offset < length; ++offset) {
+            snapshot[offset] = slot(words, base + offset).load(std::memory_order_relaxed);
+        }
+        uint64_t local_minimum;
+        uint64_t local_runner_up;
+        const size_t local_index = SIMDMisc::min_index(
+            snapshot, length, local_minimum, local_runner_up);
+        if (local_minimum < minimum) {
+            runner_up = std::min(minimum, local_runner_up);
+            minimum = local_minimum;
+            index = base + local_index;
+        } else if (local_minimum < runner_up) {
+            runner_up = local_minimum;
+        }
+    }
+    return index;
 }
 /** --------------------------------------------------------------------------------------------------------- Cache Words
  * @brief Words in each block cache, padded to a cache line.
@@ -54,7 +183,7 @@ size_t checked_bytes(size_t capacity) {
  * @param cache The cache word.
  * @param word The floor.
  */
-inline void raise(std::atomic<uint64_t>& cache, uint64_t word) noexcept {
+inline void raise(std::atomic_ref<uint64_t> cache, uint64_t word) noexcept {
     uint64_t current = cache.load(std::memory_order_relaxed);
     while (current < word && !cache.compare_exchange_weak(
         current, word, std::memory_order_relaxed, std::memory_order_relaxed)) {}
@@ -64,7 +193,7 @@ inline void raise(std::atomic<uint64_t>& cache, uint64_t word) noexcept {
  * @param cache The cache word.
  * @param word The ceiling.
  */
-inline void lower(std::atomic<uint64_t>& cache, uint64_t word) noexcept {
+inline void lower(std::atomic_ref<uint64_t> cache, uint64_t word) noexcept {
     uint64_t current = cache.load(std::memory_order_relaxed);
     while (word < current && !cache.compare_exchange_weak(
         current, word, std::memory_order_relaxed, std::memory_order_relaxed)) {}
@@ -218,7 +347,7 @@ uint64_t PrioritySlice::worse_of(uint64_t left, uint64_t right) const noexcept {
  * @param word The word that entered.
  */
 void PrioritySlice::arm_ordered(uint64_t word) noexcept {
-    std::atomic<uint64_t>& threshold = slot(header_, THRESHOLD);
+    std::atomic_ref<uint64_t> threshold = slot(header_, THRESHOLD);
     uint64_t current = threshold.load(std::memory_order_relaxed);
     while (current != EMPTY && better(current, word) && !threshold.compare_exchange_weak(
         current, word, std::memory_order_release, std::memory_order_relaxed)) {}
@@ -229,7 +358,7 @@ void PrioritySlice::arm_ordered(uint64_t word) noexcept {
 void PrioritySlice::arm_natural() noexcept {
     uint64_t threshold;
     uint64_t runner_up;
-    (void)SIMDMisc::max_index(max_cache_, blocks_, threshold, runner_up);
+    (void)atomic_max_index(max_cache_, blocks_, threshold, runner_up);
     arm_natural(threshold);
 }
 /** --------------------------------------------------------------------------------------------------------- Arm Natural With
@@ -275,10 +404,9 @@ int64_t PrioritySlice::free_from_ring() const noexcept {
  * @return The free slot.
  */
 int64_t PrioritySlice::free_slot_after(size_t hint) const noexcept {
-    const int64_t ahead =
-        SIMDMisc::find_id(words_ + hint, capacity_ - hint, static_cast<int64_t>(EMPTY));
+    const int64_t ahead = atomic_find(words_ + hint, capacity_ - hint, EMPTY);
     if (ahead >= 0) return ahead + static_cast<int64_t>(hint);
-    return SIMDMisc::find_id(words_, hint, static_cast<int64_t>(EMPTY));
+    return atomic_find(words_, hint, EMPTY);
 }
 /** --------------------------------------------------------------------------------------------------------- Fill Caches
  * @brief Folds a word that took a free slot into its block's caches and arms the threshold when
@@ -366,8 +494,8 @@ uint64_t PrioritySlice::push(uint64_t word) noexcept {
  * @return EMPTY when a free slot was taken, the evicted word, or `word` itself when rejected.
  */
 uint64_t PrioritySlice::push_natural(uint64_t word) noexcept {
-    std::atomic<uint64_t>& threshold = slot(header_, THRESHOLD);
-    std::atomic<uint64_t>& free_slots = slot(header_, FREE_SLOTS);
+    std::atomic_ref<uint64_t> threshold = slot(header_, THRESHOLD);
+    std::atomic_ref<uint64_t> free_slots = slot(header_, FREE_SLOTS);
     if (free_slots.load(std::memory_order_relaxed) == 0
         && word >= threshold.load(std::memory_order_relaxed)) return word;
     while (true) {
@@ -399,13 +527,13 @@ uint64_t PrioritySlice::push_natural(uint64_t word) noexcept {
         uint64_t cached = EMPTY;
         uint64_t cached_runner_up = 0;
         if (blocks_ != 1) {
-            block = SIMDMisc::max_index(max_cache_, blocks_, cached, cached_runner_up);
+            block = atomic_max_index(max_cache_, blocks_, cached, cached_runner_up);
         }
         uint64_t* block_words = words_ + block * BLOCK;
         uint64_t worst;
         uint64_t runner_up;
         const size_t offset =
-            SIMDMisc::max_index(block_words, block_length(block), worst, runner_up);
+            atomic_max_index(block_words, block_length(block), worst, runner_up);
         if (blocks_ != 1 && worst != cached) {
             slot(max_cache_, block).compare_exchange_strong(
                 cached, worst, std::memory_order_relaxed, std::memory_order_relaxed);
@@ -441,8 +569,8 @@ uint64_t PrioritySlice::push_natural(uint64_t word) noexcept {
  * @return EMPTY when a free slot was taken, the evicted word, or `word` itself when rejected.
  */
 uint64_t PrioritySlice::push_ordered(uint64_t word) noexcept {
-    std::atomic<uint64_t>& threshold = slot(header_, THRESHOLD);
-    std::atomic<uint64_t>& free_slots = slot(header_, FREE_SLOTS);
+    std::atomic_ref<uint64_t> threshold = slot(header_, THRESHOLD);
+    std::atomic_ref<uint64_t> free_slots = slot(header_, FREE_SLOTS);
     if (free_slots.load(std::memory_order_relaxed) == 0
         && !better(word, threshold.load(std::memory_order_relaxed))) return word;
     while (true) {
@@ -500,9 +628,9 @@ uint64_t PrioritySlice::pop_natural() noexcept {
         uint64_t cached = EMPTY;
         uint64_t best;
         if (blocks_ != 1) {
-            block = SIMDMisc::min_index(min_cache_, blocks_, cached);
+            block = atomic_min_index(min_cache_, blocks_, cached);
             if (cached == EMPTY) {
-                const size_t index = SIMDMisc::min_index(words_, capacity_, best);
+                const size_t index = atomic_min_index(words_, capacity_, best);
                 if (best == EMPTY) return EMPTY;
                 lower(slot(min_cache_, index / BLOCK), best);
                 continue;
@@ -511,7 +639,7 @@ uint64_t PrioritySlice::pop_natural() noexcept {
         uint64_t* block_words = words_ + block * BLOCK;
         uint64_t runner_up;
         const size_t offset =
-            SIMDMisc::min_index(block_words, block_length(block), best, runner_up);
+            atomic_min_index(block_words, block_length(block), best, runner_up);
         if (blocks_ != 1 && best != cached) {
             slot(min_cache_, block).compare_exchange_strong(
                 cached, best, std::memory_order_relaxed, std::memory_order_relaxed);
@@ -523,7 +651,7 @@ uint64_t PrioritySlice::pop_natural() noexcept {
         )) continue;
         if (blocks_ != 1) {
             slot(min_cache_, block).store(runner_up, std::memory_order_relaxed);
-            std::atomic<uint64_t>& block_max = slot(max_cache_, block);
+            std::atomic_ref<uint64_t> block_max = slot(max_cache_, block);
             if (block_max.load(std::memory_order_relaxed) == best) {
                 block_max.store(0, std::memory_order_relaxed);
             }
@@ -563,7 +691,7 @@ uint64_t PrioritySlice::take(size_t index) noexcept {
     if (compare_ == nullptr && blocks_ != 1) {
         const size_t block = index / BLOCK;
         uint64_t next;
-        (void)SIMDMisc::min_index(words_ + block * BLOCK, block_length(block), next);
+        (void)atomic_min_index(words_ + block * BLOCK, block_length(block), next);
         slot(min_cache_, block).store(next, std::memory_order_relaxed);
         uint64_t cached_max = word;
         slot(max_cache_, block).compare_exchange_strong(
@@ -581,11 +709,10 @@ uint64_t PrioritySlice::take(size_t index) noexcept {
 uint64_t PrioritySlice::best() const noexcept {
     uint64_t best;
     if (compare_ == nullptr) {
-        (void)SIMDMisc::min_index(words_, capacity_, best);
+        (void)atomic_min_index(words_, capacity_, best);
     } else {
         (void)best_ordered(best);
     }
-    std::atomic_thread_fence(std::memory_order_acquire);
     return best;
 }
 /** --------------------------------------------------------------------------------------------------------- Worst
@@ -596,11 +723,10 @@ uint64_t PrioritySlice::worst() const noexcept {
     uint64_t worst;
     uint64_t runner_up;
     if (compare_ == nullptr) {
-        (void)SIMDMisc::max_index(words_, capacity_, worst, runner_up);
+        (void)atomic_max_index(words_, capacity_, worst, runner_up);
     } else {
         (void)worst_ordered(worst, runner_up);
     }
-    std::atomic_thread_fence(std::memory_order_acquire);
     return worst;
 }
 /** --------------------------------------------------------------------------------------------------------- Accepts
@@ -620,9 +746,11 @@ void PrioritySlice::clear() noexcept {
     for (size_t index = 0; index < capacity_; ++index) {
         slot(words_, index).store(EMPTY, std::memory_order_relaxed);
     }
-    for (size_t block = 0; block < blocks_; ++block) {
-        slot(max_cache_, block).store(0, std::memory_order_relaxed);
-        slot(min_cache_, block).store(EMPTY, std::memory_order_relaxed);
+    if (blocks_ != 1) {
+        for (size_t block = 0; block < blocks_; ++block) {
+            slot(max_cache_, block).store(0, std::memory_order_relaxed);
+            slot(min_cache_, block).store(EMPTY, std::memory_order_relaxed);
+        }
     }
     slot(header_, FREE_HINT).store(0, std::memory_order_relaxed);
     for (size_t entry = 0; entry <= RING_MASK; ++entry) {
@@ -637,7 +765,9 @@ void PrioritySlice::clear() noexcept {
  */
 size_t PrioritySlice::size() const noexcept {
     size_t count = 0;
-    for (size_t index = 0; index < capacity_; ++index) count += words_[index] != EMPTY;
+    for (size_t index = 0; index < capacity_; ++index) {
+        count += slot(words_, index).load(std::memory_order_relaxed) != EMPTY;
+    }
     return count;
 }
 } // namespace buffetalligator

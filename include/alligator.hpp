@@ -1234,6 +1234,10 @@ static_assert(SliceType<SliceT<uint8_t>>, "SliceT must satisfy the SliceType con
  * @tparam Func The type of the callable object.
  * @tparam Args The types of the arguments to the callable object.
  */
+struct Task;
+template<typename ReturnType = void, typename Func, typename... Args>
+    requires std::is_invocable_r_v<ReturnType, Func, Args...>
+std::pair<Task, std::future<ReturnType>> make_task(Func f, Args... a);
 /** --------------------------------------------------------------------------------------------------------- Task
  * @struct Task
  * @brief One type-erased unit of executor work: a pair of static operation pointers (run and
@@ -1350,7 +1354,7 @@ struct TaskState {
  * @param a The arguments to pass to the callable.
  * @return The task and its future.
  */
-template<typename ReturnType = void, typename Func, typename... Args>
+template<typename ReturnType, typename Func, typename... Args>
     requires std::is_invocable_r_v<ReturnType, Func, Args...>
 std::pair<Task, std::future<ReturnType>> make_task(Func f, Args... a) {
     using State = TaskState<ReturnType, Func, Args...>;
@@ -4027,6 +4031,10 @@ class PriorityT final : public Queue {
         }
     }
 public:
+    /// @brief Encodes a typed key for the natural packed-word priority order.
+    static uint32_t key_bits(K key) noexcept { return encode(key); }
+    /// @brief Decodes a key from its packed-word bits.
+    static K key_from_bits(uint32_t bits) noexcept { return decode(bits); }
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Claims storage for a fixed number of entries, all free.
      * @param capacity The entry count the container trims itself to.
