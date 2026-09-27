@@ -1295,6 +1295,7 @@ struct Task {
      * @return A future representing the result of the subsequent task.
      */
     template<typename ReturnType2 = void, typename Func2, typename... Args2>
+        requires std::is_invocable_r_v<ReturnType2, Func2, Args2...>
     auto after_this(Func2 f, Args2... a) {
         auto [task, future] = make_task<ReturnType2>(std::move(f), std::move(a)...);
         after_this_task = std::make_unique<Task>(std::move(task));
