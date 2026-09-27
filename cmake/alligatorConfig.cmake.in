@@ -1,4 +1,6 @@
 @PACKAGE_INIT@
+# find_dependency() below rewrites PACKAGE_PREFIX_DIR, so this package's install prefix is saved first.
+set(BUFFETALLIGATOR_PREFIX_DIR "${PACKAGE_PREFIX_DIR}")
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 find_dependency(OpenSSL)
@@ -16,19 +18,19 @@ endif()
 if(NOT TARGET alligator::vulkan)
     add_library(alligator::vulkan SHARED IMPORTED)
     set_target_properties(alligator::vulkan PROPERTIES
-        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/@BUFFETALLIGATOR_VULKAN_FILENAME@"
-        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
+        IMPORTED_LOCATION "${BUFFETALLIGATOR_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/@BUFFETALLIGATOR_VULKAN_FILENAME@"
+        INTERFACE_INCLUDE_DIRECTORIES "${BUFFETALLIGATOR_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@")
 endif()
 if(NOT TARGET alligator::shaderc)
     add_library(alligator::shaderc STATIC IMPORTED)
     set_target_properties(alligator::shaderc PROPERTIES
-        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/libshaderc_combined.a")
+        IMPORTED_LOCATION "${BUFFETALLIGATOR_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/libshaderc_combined.a")
 endif()
 foreach(dependency IN ITEMS uv sodium fabric)
     if(NOT TARGET alligator::${dependency})
         add_library(alligator::${dependency} STATIC IMPORTED)
         set_target_properties(alligator::${dependency} PROPERTIES
-            IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/lib${dependency}.a")
+            IMPORTED_LOCATION "${BUFFETALLIGATOR_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/alligator/lib${dependency}.a")
     endif()
 endforeach()
 set_property(TARGET alligator::uv PROPERTY INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS}")
