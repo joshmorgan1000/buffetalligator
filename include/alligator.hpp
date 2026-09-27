@@ -1301,6 +1301,16 @@ struct Task {
         after_this_task = std::make_unique<Task>(std::move(task));
         return std::move(future);
     }
+    /** ------------------------------------------------------------------------------------------- After this (Task)
+     * @brief Schedules a task to be executed after the current task completes.
+     * @param task The subsequent task to be executed.
+     * @return A future representing the result of the subsequent task.
+     */
+    template<typename ReturnType2 = void>
+    auto after_this(Task&& task) {
+        after_this_task = std::make_unique<Task>(std::move(task));
+        return after_this_task->get_future();
+    }
 };
 /** --------------------------------------------------------------------------------------------------------- Task State
  * @struct TaskState
