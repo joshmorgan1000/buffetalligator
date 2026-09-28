@@ -284,8 +284,15 @@ build_abseil_from_source() {
 }
 # =========================================================================================================== build libfabric
 build_libfabric_from_source() {
+    # ELF symbol versioning (fi_*@@FABRIC_1.x) cannot link into consumers' shared objects, so Linux builds libfabric embedded.
+    local FABRIC_STAMP="${LIBFABRIC_VERSION}"
+    local FABRIC_EMBEDDED_FLAGS=()
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        FABRIC_STAMP="${LIBFABRIC_VERSION}-embedded"
+        FABRIC_EMBEDDED_FLAGS+=("--enable-embedded")
+    fi
     if [[ "${REBUILD_VENDORED}" == false && -f "${LIBFABRIC_DEPS}/.version" ]] && \
-       [[ "$(cat "${LIBFABRIC_DEPS}/.version" 2>/dev/null)" == "${LIBFABRIC_VERSION}" ]] && \
+       [[ "$(cat "${LIBFABRIC_DEPS}/.version" 2>/dev/null)" == "${FABRIC_STAMP}" ]] && \
        [[ -f "${LIBFABRIC_DEPS}/lib/libfabric.a" ]] && \
        [[ -f "${LIBFABRIC_DEPS}/include/rdma/fabric.h" ]]; then
         echo "libfabric (${LIBFABRIC_VERSION}) already built at ${LIBFABRIC_DEPS}"
@@ -327,14 +334,20 @@ build_libfabric_from_source() {
             --disable-shared \
             --enable-static \
             --enable-pic \
-            "${FABRIC_HMEM_FLAGS[@]+"${FABRIC_HMEM_FLAGS[@]}"}")
+            "${FABRIC_HMEM_FLAGS[@]+"${FABRIC_HMEM_FLAGS[@]}"}" \
+            "${FABRIC_EMBEDDED_FLAGS[@]+"${FABRIC_EMBEDDED_FLAGS[@]}"}")
     make -C "${LIBFABRIC_SRC}" -j "${F_NPROC}"
     make -C "${LIBFABRIC_SRC}" install
+    # Embedded mode builds the archive without installing it.
+    if [[ "${FABRIC_STAMP}" == *-embedded ]]; then
+        mkdir -p "${LIBFABRIC_DEPS}/lib"
+        cp "${LIBFABRIC_SRC}/src/.libs/libfabric.a" "${LIBFABRIC_DEPS}/lib/libfabric.a"
+    fi
     if [[ ! -f "${LIBFABRIC_DEPS}/lib/libfabric.a" ]]; then
         echo "Error: ${LIBFABRIC_DEPS}/lib/libfabric.a not produced" >&2
         exit 1
     fi
-    echo "${LIBFABRIC_VERSION}" > "${LIBFABRIC_DEPS}/.version"
+    echo "${FABRIC_STAMP}" > "${LIBFABRIC_DEPS}/.version"
 }
 # =========================================================================================================== stage moodycamel queues (header-only)
 build_moodycamel_from_source() {
