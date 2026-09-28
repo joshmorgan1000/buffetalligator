@@ -168,7 +168,6 @@ struct Alligator::ThreadChanger {
                     ) {
                         new_id = rand();
                     }
-                    LOG_TRACE_STREAM << "Alligator: creating new worker thread " << new_id;
                     auto new_worker = std::make_unique<WorkerThread>(&al, new_id);
                     WorkerThread* worker_ptr = new_worker.get();
                     al.worker_threads_[new_id] = std::move(new_worker);
