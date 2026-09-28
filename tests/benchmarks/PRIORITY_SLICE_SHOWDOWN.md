@@ -167,9 +167,9 @@ Josh asked whether Folly has a lock-free priority queue. It does not. `folly::Re
 is a Mound (Liu and Spear, ICPP 2012): a heap of sorted linked lists with a `folly::SpinLock` on every
 node, hazard pointers for optimistic reads, heap-allocated nodes, unbounded size, and a "relaxed" pop
 that hands out a shared batch of popped nodes. `folly::FlatCombiningPriorityQueue` combines under a
-lock. Neither can trim to a capacity. The vendored `deps/folly` build from 2026-09-20 still links, so
-the comparison below is measured, not argued. Folly's queue orders by value, so the packed word was
-pushed with its key bits inverted to pop the smallest key first.
+lock. Neither can trim to a capacity. The comparison below used the vendored `deps/folly` build
+from 2026-09-20, before Folly was removed as a dependency. Folly's queue orders by value, so the
+packed word was pushed with its key bits inverted to pop the smallest key first.
 
 Apple M4, pushers and poppers in pairs, random keys, million operations per second:
 

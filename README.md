@@ -94,10 +94,33 @@ Every container hands out and stores `Slice` handles; payloads live in arena mem
 - `SliceQueue`: producer and consumer handles that move Slices through thread-local blocks with semaphore wakeups.
 - `PrioritySlice` and `PrioritySliceT<K, V>`: lock-free bounded priority queue in one Slice. Entries are 64-bit words, key bits above a 32-bit value; a push either takes a free slot or evicts the worst entry it beats, a header rejects hopeless pushes in constant time, and per-block caches confine each scan to one 32-slot block. Ordering is exact under push-only load and relaxed under mixed load.
 - `HeapSlice` and `HeapSliceT<K, V>`: the same words as a single-owner min-max heap, popping the best and evicting the worst in logarithmic time.
-- `SliceCache<Key>`: byte-budgeted least-recently-used cache of Slices built on Folly's implicitly weighted evicting map, every entry weighing its Slice's size.
+- `SliceCache<Key, Evict>`: byte-budgeted cache of Slices with default least-recently-used eviction or a custom compile-time eviction function; every entry weighs its Slice's size, and keys support `std::hash<Key>` and equality.
 - `SIMDMisc`: the identifier, maximum, and minimum scan kernels the containers use, with backends for Apple simd, AVX-512, AVX2, SSE4.2, VSX, and NEON.
 
-Folly itself is linked publicly, so its containers, `RelaxedConcurrentPriorityQueue` among them, are available to consumers through `alligator::alligator`.
+Pass a free or static function as the cache's second template argument to choose which entry is evicted:
+
+```cpp
+using buffetalligator::Slice;
+using buffetalligator::SliceCache;
+using buffetalligator::SliceCacheIterator;
+
+/** --------------------------------------------------------------------------------------------------------- Evict Most Recent
+ * @brief Selects the most recently used eligible entry for eviction.
+ */
+template<typename Key>
+SliceCacheIterator<Key> evict_most_recent(
+    SliceCacheIterator<Key> first, SliceCacheIterator<Key>
+) noexcept {
+    return first;
+}
+SliceCache<int64_t, evict_most_recent<int64_t>> cache(128);
+cache.set(1, Slice(64));
+cache.set(2, Slice(64));
+cache.set(3, Slice(64)); // Evicts key 2 and protects the newly stored key 3.
+cache.resize(64); // Evicts key 3 and retains key 1.
+```
+
+The function receives a nonempty `[first, last)` range in most-to-least-recently-used order, exposing immutable key and Slice pairs. It must be `noexcept`, return an iterator inside that range, and never reenter or mutate the cache. Each call selects one victim; the cache releases it and repeats until its byte budget holds. During `set`, the new or replaced entry is excluded from the range and an oversized entry stays alone; during `resize`, every entry is eligible. The function is invoked directly through its compile-time template argument. Omit it to retain default LRU eviction.
 
 ## Networking
 
@@ -140,7 +163,7 @@ BuffetAlligator requires a C++20 compiler, CMake 3.20 or newer, Git, and a platf
 ./run_build.sh
 ```
 
-The script updates threadsafe-logger to its main branch, then prepares libuv, libsodium, libfabric, the moodycamel queues, Abseil, Folly, simdjson, curl, the Vulkan headers and runtime, and shaderc under `deps`, then builds the library, runs its contract tests, and installs into `build/install`. Folly's system libraries (Boost components, glog, gflags, fmt, double-conversion, libevent, zstd, lz4, snappy) are checked first and offered for installation through Homebrew or apt. Useful options are `--skip-tests`, `--clean`, `--rebuild-vendored`, `--deps-only`, and `-DNAME=VALUE` passthrough to CMake; `--help` lists the rest. See `THIRD_PARTY_NOTICES.md` for dependency notices.
+The script updates threadsafe-logger to its main branch, then prepares libuv, libsodium, libfabric, the moodycamel queues, Abseil, simdjson, curl, the Vulkan headers and runtime, and shaderc under `deps`, then builds the library, runs its contract tests, and installs into `build/install`. Useful options are `--skip-tests`, `--clean`, `--rebuild-vendored`, `--deps-only`, and `-DNAME=VALUE` passthrough to CMake; `--help` lists the rest. See `THIRD_PARTY_NOTICES.md` for dependency notices.
 
 ### Functional validation
 
@@ -152,7 +175,7 @@ Functional cases run independently with release-build assertions and time limits
 ctest --test-dir build -L functional --output-on-failure
 ```
 
-The priority queue, heap, cache, SIMD kernel, and Folly container tests run in the ordinary suite; the priority queue test includes sixteen-pusher exact trimming and exact-once accounting under concurrent pushers and poppers.
+The priority queue, heap, cache, and SIMD kernel tests run in the ordinary suite; the priority queue test includes sixteen-pusher exact trimming and exact-once accounting under concurrent pushers and poppers.
 
 ### Container benchmarks
 
@@ -203,7 +226,7 @@ find_package(alligator CONFIG REQUIRED)
 target_link_libraries(your_target PRIVATE alligator::alligator)
 ```
 
-The exported config resolves Folly from the `deps/folly` prefix recorded at configure time and Folly's system libraries from the machine, so a consumer needs the same Homebrew or apt packages the build script checks for.
+The exported config resolves OpenSSL and platform threads from the system and the installed library dependencies from the installation prefix.
 
 Concurrent claims and independent `Slice` handles are supported. Concurrent mutation of the same `Slice` object requires external synchronization.
 

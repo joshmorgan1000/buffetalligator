@@ -77,7 +77,6 @@ The build pins the following upstream projects, links or installs them with the 
 | [Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader) | v1.4.350 | Apache-2.0 or MIT | shared runtime, Linux |
 | [MoltenVK](https://github.com/KhronosGroup/MoltenVK) | v1.4.1 | Apache-2.0 with bundled third-party notices | shared runtime, macOS |
 | [shaderc](https://github.com/google/shaderc) | v2026.2 | Apache-2.0 | `libshaderc_combined` linked statically and privately |
-| [Folly fork](https://github.com/joshmorgan1000/folly) | 839090a6 | Apache-2.0 | static libraries under `deps/folly`, linked publicly; consumers resolve it through the exported package config |
 
 `libshaderc_combined` bundles the following, whose notices are installed under `share/licenses/alligator/shaderc`:
 
@@ -88,10 +87,6 @@ The build pins the following upstream projects, links or installs them with the 
 | [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) | MIT-style Khronos license |
 
 Vulkan support is built unconditionally; Vulkan-Loader is built on Linux and MoltenVK on macOS. OpenSSL is discovered from the system and is not vendored.
-
-## Folly system dependencies
-
-Folly is built from source but resolves Boost (BSL-1.0), glog and gflags (BSD-3-Clause), fmt (MIT), double-conversion (BSD-3-Clause), libevent (BSD-3-Clause), zstd (BSD-3-Clause), lz4 (BSD-2-Clause), snappy (BSD-3-Clause), bzip2, and xz from the system. `run_build.sh` checks for them before configuring Folly and offers to install them; they are not vendored and their notices are not copied.
 
 ## Built for downstream consumers only
 

@@ -54,7 +54,6 @@ add_library(alligator STATIC
 )
 add_library(alligator::alligator ALIAS alligator)
 include(cmake/AllocatorBackends.cmake)
-include(cmake/FollyDependency.cmake)
 target_include_directories(alligator
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -68,7 +67,6 @@ target_compile_features(alligator PUBLIC cxx_std_20)
 target_compile_definitions(alligator PUBLIC
     BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=$<BOOL:${BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING}>)
 target_link_libraries(alligator PUBLIC logging::logging Threads::Threads OpenSSL::SSL OpenSSL::Crypto
-    Folly::folly
     PRIVATE alligator::uv alligator::sodium alligator::fabric)
 if(UNIX AND NOT APPLE)
     set_source_files_properties(src/network/ba_network.c src/network/ba_wire.c

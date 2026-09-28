@@ -16,6 +16,8 @@
 #include <cstring>
 #include <concepts>
 #include <future>
+#include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -44,7 +46,6 @@
 #endif
 #include <moodycamel/concurrentqueue.h>
 #include <moodycamel/blockingconcurrentqueue.h>
-#include <folly/container/WeightedEvictingCacheMap.h>
 
 namespace buffetalligator {
 class Alligator; class Buffet; class BuffetMenu; class Slice;
@@ -4185,53 +4186,244 @@ using PrioritySliceT = PriorityT<PrioritySlice, K, V, Order>;
 /// @brief Typed single-owner HeapSlice.
 template<typename K, typename V, int (*Order)(const K*, const K*) = nullptr>
 using HeapSliceT = PriorityT<HeapSlice, K, V, Order>;
-/** --------------------------------------------------------------------------------------------------------- SliceWeight
- * @struct SliceWeight
- * @brief Weighs a cached Slice by its byte size.
+template<typename Key>
+class SliceCacheIterator;
+template<typename Key = int64_t,
+    SliceCacheIterator<Key> (*Evict)(SliceCacheIterator<Key>, SliceCacheIterator<Key>) noexcept
+        = nullptr>
+class SliceCache;
+/** --------------------------------------------------------------------------------------------------------- Slice Cache Iterator
+ * @class SliceCacheIterator
+ * @brief Borrows immutable key and Slice pairs in most-to-least recently used order.
+ * @tparam Key The cache key type.
  */
-struct SliceWeight {
-    template<typename Key>
-    size_t operator()(const Key&, const Slice& slice) const noexcept { return slice.size_bytes(); }
+template<typename Key>
+class SliceCacheIterator {
+private:
+    /** ------------------------------------------------------------------------------------------- Link
+     * @brief Links entries in most-to-least recently used order.
+     */
+    struct Link {
+        mutable const Link* previous = this;
+        mutable const Link* next = this;
+    };
+    /** ------------------------------------------------------------------------------------------- Entry
+     * @brief Holds one immutable key and its owned Slice in a stable hash node.
+     */
+    struct Entry : Link {
+        const size_t hash;
+        mutable std::pair<const Key, Slice> value;
+        /** --------------------------------------------------------------------------------- Constructor
+         * @brief Copies the key and takes ownership of the Slice.
+         */
+        Entry(const Key& key, Slice&& slice)
+            : hash(std::hash<Key>{}(key)), value(key, std::move(slice)) {}
+    };
+    const Link* entry_ = nullptr;
+    explicit SliceCacheIterator(const Link* entry) noexcept : entry_(entry) {}
+    template<typename CacheKey,
+        SliceCacheIterator<CacheKey> (*Select)(
+            SliceCacheIterator<CacheKey>, SliceCacheIterator<CacheKey>
+        ) noexcept>
+    friend class SliceCache;
+public:
+    using iterator_category = std::bidirectional_iterator_tag;
+    using value_type = std::pair<const Key, Slice>;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const value_type*;
+    using reference = const value_type&;
+    SliceCacheIterator() noexcept = default;
+    reference operator*() const noexcept {
+        return static_cast<const Entry*>(entry_)->value;
+    }
+    pointer operator->() const noexcept { return &operator*(); }
+    SliceCacheIterator& operator++() noexcept {
+        entry_ = entry_->next;
+        return *this;
+    }
+    SliceCacheIterator operator++(int) noexcept {
+        SliceCacheIterator previous = *this;
+        ++*this;
+        return previous;
+    }
+    SliceCacheIterator& operator--() noexcept {
+        entry_ = entry_->previous;
+        return *this;
+    }
+    SliceCacheIterator operator--(int) noexcept {
+        SliceCacheIterator previous = *this;
+        --*this;
+        return previous;
+    }
+    bool operator==(const SliceCacheIterator&) const noexcept = default;
 };
 /** --------------------------------------------------------------------------------------------------------- SliceCache
  * @class SliceCache
- * @brief Byte-budgeted least-recently-used cache of Slices: Folly's implicitly weighted evicting
- * map with every entry weighing its Slice's size, so the budget is bytes of alligator memory and
- * eviction, erase, and clear release the Slice. One owner mutates it at a time.
- * @tparam Key The key type, hashed by folly::HeterogeneousAccessHash.
+ * @brief Owns Slices within a byte budget with compile-time eviction for one mutating owner.
+ * @tparam Key The copyable key type, supporting std::hash<Key> and equality.
+ * @tparam Evict A noexcept selector returning an eligible iterator, or nullptr for LRU eviction.
+ * @pre Evict returns within its nonempty [first, last) range without reentering the cache.
  */
-template<typename Key = int64_t>
+template<typename Key,
+    SliceCacheIterator<Key> (*Evict)(SliceCacheIterator<Key>, SliceCacheIterator<Key>) noexcept>
 class SliceCache {
 private:
-    using Map = folly::ImplicitlyWeightedEvictingCacheMap<Key, Slice, SliceWeight>;
-    Map map_;  ///< The weighted map; values are the owned Slices.
+    using Link = typename SliceCacheIterator<Key>::Link;
+    using Entry = typename SliceCacheIterator<Key>::Entry;
+    /** ------------------------------------------------------------------------------------------- Identity
+     * @brief Locates an owned node without invoking user key operations during eviction.
+     */
+    struct Identity {
+        const Entry* entry;
+    };
+    /** ------------------------------------------------------------------------------------------- Hash
+     * @brief Hashes stored entries and lookup keys identically.
+     */
+    struct Hash {
+        using is_transparent = void;
+        size_t operator()(const Entry& entry) const noexcept { return entry.hash; }
+        size_t operator()(Identity identity) const noexcept { return identity.entry->hash; }
+        size_t operator()(const Key& key) const { return std::hash<Key>{}(key); }
+    };
+    /** ------------------------------------------------------------------------------------------- Equal
+     * @brief Compares immutable keys without constructing temporary entries.
+     */
+    struct Equal {
+        using is_transparent = void;
+        bool operator()(const Entry& left, const Entry& right) const {
+            return left.value.first == right.value.first;
+        }
+        bool operator()(const Entry& left, const Key& right) const {
+            return left.value.first == right;
+        }
+        bool operator()(const Key& left, const Entry& right) const {
+            return left == right.value.first;
+        }
+        bool operator()(const Entry& left, Identity right) const noexcept {
+            return &left == right.entry;
+        }
+        bool operator()(Identity left, const Entry& right) const noexcept {
+            return left.entry == &right;
+        }
+    };
+    using Map = std::unordered_set<Entry, Hash, Equal>;
+    Map map_;
+    Link order_;
+    size_t bytes_ = 0;
+    size_t capacity_;
+    /** ------------------------------------------------------------------------------------------- Unlink
+     * @brief Removes a linked entry from its recency order.
+     */
+    static void unlink(const Link& entry) noexcept {
+        entry.previous->next = entry.next;
+        entry.next->previous = entry.previous;
+    }
+    /** ------------------------------------------------------------------------------------------- Prepend
+     * @brief Places an unlinked entry at the most recently used end.
+     */
+    void prepend(const Link& entry) noexcept {
+        entry.previous = &order_;
+        entry.next = order_.next;
+        order_.next->previous = &entry;
+        order_.next = &entry;
+    }
+    /** ------------------------------------------------------------------------------------------- Promote
+     * @brief Moves a linked entry to the most recently used end.
+     */
+    void promote(const Link& entry) noexcept {
+        unlink(entry);
+        prepend(entry);
+    }
+    /** ------------------------------------------------------------------------------------------- Remove
+     * @brief Releases an indexed entry and removes its byte weight.
+     */
+    void remove(typename Map::const_iterator entry) {
+        bytes_ -= entry->value.second.size_bytes();
+        unlink(*entry);
+        map_.erase(entry);
+    }
+    /** ------------------------------------------------------------------------------------------- Evict
+     * @brief Releases the policy-selected entry from a nonempty eligible recency range.
+     * @param first The most recently used eligible entry.
+     */
+    void evict(const Link* first) {
+        const Link* victim;
+        if constexpr (Evict == nullptr) {
+            victim = order_.previous;
+        } else {
+            victim = Evict(const_iterator(first), end()).entry_;
+        }
+        remove(map_.find(Identity{static_cast<const Entry*>(victim)}));
+    }
+    /** ------------------------------------------------------------------------------------------- Take Order
+     * @brief Reattaches transferred entries and empties the source order.
+     */
+    void take_order(SliceCache& other) noexcept {
+        if (!map_.empty()) {
+            order_.next = other.order_.next;
+            order_.previous = other.order_.previous;
+            order_.next->previous = &order_;
+            order_.previous->next = &order_;
+        }
+        other.order_.next = other.order_.previous = &other.order_;
+    }
 public:
-    using const_iterator = typename Map::const_iterator;
+    using const_iterator = SliceCacheIterator<Key>;
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Creates an empty cache with a byte budget.
-     * @param max_bytes The total Slice bytes kept before the least recently used entries go.
+     * @param max_bytes The total Slice bytes kept before eviction begins.
      */
-    explicit SliceCache(size_t max_bytes) : map_(max_bytes) {}
+    explicit SliceCache(size_t max_bytes) : capacity_(max_bytes) {}
     /** ------------------------------------------------------------------------------------------- Move only */
     SliceCache(const SliceCache&) = delete;
     SliceCache& operator=(const SliceCache&) = delete;
-    SliceCache(SliceCache&& other) noexcept = default;
-    SliceCache& operator=(SliceCache&& other) noexcept = default;
+    SliceCache(SliceCache&& other) noexcept
+        : map_(std::move(other.map_)), bytes_(std::exchange(other.bytes_, 0)),
+          capacity_(std::exchange(other.capacity_, 0)) {
+        take_order(other);
+    }
+    SliceCache& operator=(SliceCache&& other) noexcept {
+        if (this != &other) {
+            clear();
+            map_ = std::move(other.map_);
+            bytes_ = std::exchange(other.bytes_, 0);
+            capacity_ = std::exchange(other.capacity_, 0);
+            take_order(other);
+        }
+        return *this;
+    }
     /** ------------------------------------------------------------------------------------------- Set
-     * @brief Stores a Slice under a key, replacing any previous one, and evicts the least recently
-     * used entries until the budget holds; an entry larger than the budget stays alone.
+     * @brief Stores and protects a Slice while evicting policy-selected entries to meet the budget.
      * @param key The key.
-     * @param value The Slice the cache takes ownership of.
+     * @param value The owned Slice, kept alone when larger than the budget.
      */
-    void set(const Key& key, Slice&& value) { map_.set(key, std::move(value)); }
+    void set(const Key& key, Slice&& value) {
+        const size_t weight = value.size_bytes();
+        auto found = map_.find(key);
+        if (found == map_.end()) {
+            found = map_.emplace(key, std::move(value)).first;
+            prepend(*found);
+        } else {
+            bytes_ -= found->value.second.size_bytes();
+            found->value.second = std::move(value);
+            promote(*found);
+        }
+        const size_t remaining = capacity_ - std::min(capacity_, weight);
+        while (map_.size() > 1 && (bytes_ > remaining || weight > capacity_)) {
+            evict(order_.next->next);
+        }
+        bytes_ += weight;
+    }
     /** ------------------------------------------------------------------------------------------- Get
      * @brief Borrows a key's Slice and marks it most recently used.
      * @param key The key.
      * @return The cached Slice, valid until it is evicted or erased, or nullptr when absent.
      */
     const Slice* get(const Key& key) {
-        const const_iterator found = map_.find(key);
-        return found == map_.end() ? nullptr : &found->second;
+        const auto found = map_.find(key);
+        if (found == map_.end()) return nullptr;
+        promote(*found);
+        return &found->value.second;
     }
     /** ------------------------------------------------------------------------------------------- Peek
      * @brief Borrows a key's Slice without touching its recency.
@@ -4239,8 +4431,8 @@ public:
      * @return The cached Slice, or nullptr when absent.
      */
     const Slice* peek(const Key& key) const {
-        const const_iterator found = map_.findWithoutPromotion(key);
-        return found == map_.end() ? nullptr : &found->second;
+        const auto found = map_.find(key);
+        return found == map_.end() ? nullptr : &found->value.second;
     }
     /** ------------------------------------------------------------------------------------------- View
      * @brief Returns an owning view of a key's Slice that outlives eviction, marking it most
@@ -4253,33 +4445,41 @@ public:
         return found == nullptr ? Slice() : found->slice();
     }
     /// @brief Whether a key is cached.
-    bool exists(const Key& key) const { return map_.exists(key); }
+    bool exists(const Key& key) const { return map_.find(key) != map_.end(); }
     /** ------------------------------------------------------------------------------------------- Erase
      * @brief Drops a key and releases its Slice.
      * @param key The key.
      */
     void erase(const Key& key) {
-        if (map_.exists(key)) map_.erase(key);
+        const auto found = map_.find(key);
+        if (found != map_.end()) remove(found);
     }
     /// @brief The entry count.
     size_t size() const { return map_.size(); }
     /// @brief Whether no entry is cached.
     bool empty() const { return map_.empty(); }
     /// @brief The bytes the cached Slices weigh.
-    size_t bytes() const { return map_.getCurrentTotalWeight(); }
+    size_t bytes() const { return bytes_; }
     /// @brief The byte budget.
-    size_t capacity() const { return map_.getMaxTotalWeight(); }
+    size_t capacity() const { return capacity_; }
     /** ------------------------------------------------------------------------------------------- Resize
-     * @brief Changes the byte budget, evicting least recently used entries down to it.
+     * @brief Changes the byte budget, evicting policy-selected entries without protection.
      * @param max_bytes The new budget.
      */
-    void resize(size_t max_bytes) { map_.setMaxTotalWeight(max_bytes); }
+    void resize(size_t max_bytes) {
+        capacity_ = max_bytes;
+        while (bytes_ > capacity_) evict(order_.next);
+    }
     /// @brief Releases every Slice.
-    void clear() { map_.clear(); }
+    void clear() {
+        map_.clear();
+        order_.next = order_.previous = &order_;
+        bytes_ = 0;
+    }
     /// @brief Iterates from most to least recently used.
-    const_iterator begin() const { return map_.begin(); }
+    const_iterator begin() const { return const_iterator(order_.next); }
     /// @brief The end of the iteration.
-    const_iterator end() const { return map_.end(); }
+    const_iterator end() const { return const_iterator(&order_); }
 };
 /** --------------------------------------------------------------------------------------------------------- SliceChannel
  * @class SliceChannel
