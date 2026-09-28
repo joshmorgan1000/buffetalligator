@@ -72,16 +72,18 @@ struct HostPtr {
 };
 /** --------------------------------------------------------------------------------------------------------- GPUBuf
  * @struct GPUBuf
- * @brief Represents a GPU buffer with its address, size, and offset.
+ * @brief Stores a slice's slab base address, byte length, and slab-relative byte offset.
  */
 struct alignas(16) GPUBuf {
-    /// @brief GPU buffer address.
+    /// @brief GPU address of the backing slab, unchanged by slicing.
     uint64_t address = 0;
-    /// @brief Size of the GPU buffer.
+    /// @brief Size of the slice in bytes.
     uint32_t size = 0;
-    /// @brief Offset of the GPU buffer within the memory.
+    /// @brief Byte offset of the slice within the backing slab.
     uint32_t offset = 0;
 };
+static_assert(sizeof(GPUBuf) == 16 && offsetof(GPUBuf, size) == 8
+    && offsetof(GPUBuf, offset) == 12, "GPUBuf must match the GLSL GPUBufRef record.");
 /** --------------------------------------------------------------------------------------------------------- AllocateMethod
  * @brief The method used to allocate a new handle within this placemat.
  * @param size The size of the allocation in bytes.
@@ -6223,9 +6225,9 @@ public:
 /** --------------------------------------------------------------------------------------------------------- Vulkan GLSL Kernel Prelude
  * @brief GLSL prelude and host-side mirrors for Buffet Alligator's persistent megakernel dispatch.
  *
- * GPU-side model: one push constant (the job table address), one workgroup shape (16, 4, jobs).
- * The table holds one 16-byte descriptor per stage; entry k points at stage k's job array, an
- * array of 32-byte job records (a 16-byte input descriptor plus 16 bytes of host-only handle).
+ * GPU-side model: one push block with the job table and shared GPUBufRef pool addresses.
+ * The table holds one 4-byte Slice ID per stage, resolving that stage's job array in the pool.
+ * Each 32-byte job record holds a 4-byte input Slice ID, 12 reserved bytes, and a 16-byte host handle.
  * The job count arrives as gl_NumWorkGroups.z via indirect dispatch — nothing is pushed per
  * round, and the command buffer never changes.
  *
@@ -6236,7 +6238,7 @@ public:
  * Z (jobs) is one workgroup per job; the invocation's z is its job index.
  */
 /** --------------------------------------------------------------------------------------------------------- VULKAN_GLSL_KERNEL_CORE
- * @brief The 16-byte Slice descriptor mirror and every load/store helper over it. Contains no
+ * @brief The 4-byte Slice pool ID and every load/store helper over it. Contains no
  * #version line so it can be injected after a user's own, and is idempotent via its guard.
  */
 inline constexpr std::string_view VULKAN_GLSL_KERNEL_CORE = R"glsl(#extension GL_EXT_buffer_reference : require
@@ -6254,39 +6256,24 @@ layout(push_constant) uniform AlligatorPush {
     uint64_t vulkan_table_address;  ///< This engine's table: job records or the parameters list
     uint64_t vulkan_pool_address;   ///< The global GPUBufRef table, shared host and device
 } vulkan_push;
-// ------------------------------------------------------------------------------------------------- Slice (16 bytes)
+// ------------------------------------------------------------------------------------------------- Slice (4-byte pool ID)
 struct Slice {
-    uint64_t device_address;  ///< The slab's device address
-    uint32_t size;            ///< The claim's size in bytes
-    uint32_t offset;          ///< The claim's byte offset within the slab
+    uint32_t id;  ///< Index into the shared GPUBufRef table
 };
-layout(buffer_reference, std430, buffer_reference_align = 8) buffer SliceRef {
-    uint64_t device_address;
-    uint32_t size;
-    uint32_t offset;
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SliceRef {
+    uint32_t id;
 };
 // ------------------------------------------------------------------------------------------------- GPUBufRef pool (16-byte entries)
-// The device half of the index-linked pool; host-side state lives in the CPUBufRef array at the same index.
+// The CPU and GPU read the same mapped GPUBuf records at the same pool indices.
 struct GPUBufRef {
-    uint64_t address;      ///< The slice's absolute device address
+    uint64_t address;      ///< The backing slab's device address
     uint32_t size;         ///< The slice's size in bytes
-    uint32_t offset;       ///< The slice's byte offset within its slab, informational
+    uint32_t offset;       ///< The slice's byte offset within its slab
 };
-layout(buffer_reference, std430, buffer_reference_align = 16) buffer GPUBufRefArray {
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer GPUBufRefArray {
     GPUBufRef refs[];
 };
-Slice gpu_slice(uint32_t index) {
-    GPUBufRef ref = GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index];
-    Slice s;
-    s.device_address = ref.address;
-    s.size = ref.size;
-    s.offset = 0u;
-    return s;
-}
-uint64_t gpu_slice_address(uint32_t index) { return gpu_slice(index).device_address; }
-uint gpu_slice_size(uint32_t index) {
-    return GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[index].size;
-}
+Slice gpu_slice(uint32_t index) { return Slice(index); }
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer I32Array { int v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer F32Array { float v[]; };
@@ -6296,23 +6283,17 @@ layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array 
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
 // ------------------------------------------------------------------------------------------------- Slice basics
-uint64_t slice_address(Slice s) { return s.device_address + uint64_t(s.offset); }
-bool slice_is_null(Slice s) { return s.size == 0u || s.device_address == 0ul; }
-uint slice_size(Slice s) { return s.size; }
-Slice slice_sub(Slice s, uint64_t offset, uint64_t length) {
-    Slice r = s;
-    r.offset = s.offset + uint32_t(offset);
-    r.size = uint32_t(length);
-    return r;
+uint64_t slice_address(Slice s) {
+    GPUBufRef ref = GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[s.id];
+    return ref.address + uint64_t(ref.offset);
 }
-Slice slice_read(uint64_t address) {
-    SliceRef ref = SliceRef(address);
-    Slice s;
-    s.device_address = ref.device_address;
-    s.size = ref.size;
-    s.offset = ref.offset;
-    return s;
+bool slice_is_null(Slice s) { return s.id == 0xFFFFFFFFu; }
+uint slice_size(Slice s) {
+    return GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[s.id].size;
 }
+Slice slice_read(uint64_t address) { return Slice(SliceRef(address).id); }
+uint64_t gpu_slice_address(uint32_t index) { return slice_address(gpu_slice(index)); }
+uint gpu_slice_size(uint32_t index) { return slice_size(gpu_slice(index)); }
 // ------------------------------------------------------------------------------------------------- Word-native loads
 uint  slice_load_u32(Slice s, uint index) { return U32Array(slice_address(s)).v[index]; }
 int   slice_load_i32(Slice s, uint index) { return I32Array(slice_address(s)).v[index]; }
@@ -6455,9 +6436,9 @@ inline constexpr std::string_view VULKAN_GLSL_KERNEL_TAIL = R"glsl(
 #endif
 // ------------------------------------------------------------------------------------------------- Job decoding
 // The push block (table address + GPUBufRef pool) is declared in the kernel core above.
-// A job record is 32 bytes: the input Slice descriptor followed by 16 bytes of host-only handle.
+// A job record is 32 bytes: a Slice ID, 12 reserved bytes, and a 16-byte host handle.
 Slice vulkan_job_array() {
-    return slice_read(vulkan_push.vulkan_table_address + uint64_t(VULKAN_STAGE) * 16ul);
+    return slice_read(vulkan_push.vulkan_table_address + uint64_t(VULKAN_STAGE) * 4ul);
 }
 Slice vulkan_job(uint job_index) {
     return slice_read(slice_address(vulkan_job_array()) + uint64_t(job_index) * 32ul);
@@ -6503,11 +6484,10 @@ void main() {
     if (!slice_is_null(blob)) {
         const uint dimensions = slice_load_u32(blob, 1u);
         // Header is 12 bytes; vectors begin at the 16-byte mark
-        Slice a = slice_sub(blob, 16u, uint64_t(dimensions) * 4ul);
-        Slice b = slice_sub(blob, 16u + uint64_t(dimensions) * 4ul, uint64_t(dimensions) * 4ul);
         const float contributes = vulkan_part() == 0u ? 1.0 : 0.0;
         for (uint d = vulkan_lane(); d < dimensions; d += 16u) {
-            const float diff = slice_load_f32(a, d) - slice_load_f32(b, d);
+            const float diff = slice_load_f32(blob, 4u + d)
+                - slice_load_f32(blob, 4u + dimensions + d);
             partial += contributes * diff * diff;
         }
     }

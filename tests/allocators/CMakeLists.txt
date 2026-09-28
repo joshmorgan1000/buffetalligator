@@ -7,6 +7,9 @@ endforeach()
 add_executable(buffetalligator_vulkan_allocator_test vulkan_test.cpp)
 target_include_directories(buffetalligator_vulkan_allocator_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(buffetalligator_vulkan_allocator_test PRIVATE alligator::alligator)
-add_test(NAME buffetalligator_allocator_vulkan COMMAND buffetalligator_vulkan_allocator_test)
-set_tests_properties(buffetalligator_allocator_vulkan PROPERTIES
-    TIMEOUT 30 LABELS "allocators;gpu" SKIP_RETURN_CODE 77)
+foreach(case IN ITEMS vulkan_buffer vulkan_claims vulkan_novel_views)
+    add_test(NAME buffetalligator_allocator_${case}
+        COMMAND buffetalligator_vulkan_allocator_test ${case})
+    set_tests_properties(buffetalligator_allocator_${case} PROPERTIES
+        TIMEOUT 30 LABELS "allocators;gpu" SKIP_RETURN_CODE 77)
+endforeach()

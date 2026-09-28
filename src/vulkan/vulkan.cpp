@@ -587,25 +587,15 @@ struct KernelPush {
     uint64_t pool;   ///< The global GPUBufRef table's device address
 };
 static_assert(sizeof(KernelPush) == 16, "KernelPush must mirror the GLSL push block");
-/** --------------------------------------------------------------------------------------------------------- SliceMirror
- * @struct SliceMirror
- * @brief The host copy of the GLSL `Slice` descriptor (vulkanglsl.hpp): address, size, offset in bytes.
- */
-struct alignas(16) SliceMirror {
-    uint64_t device_address;  ///< Absolute device address of the claim's slab
-    uint32_t size;            ///< Claim size in bytes
-    uint32_t offset;          ///< Claim offset within the addressed buffer
-};
-static_assert(sizeof(SliceMirror) == 16, "SliceMirror must match the GLSL Slice descriptor.");
 /// @brief Slices one prepared Shader binds per round; longer lists dispatch in rounds.
 constexpr size_t PUBLIC_LIST_CAPACITY = 1024;
 /** --------------------------------------------------------------------------------------------------------- Public GLSL Tail
- * @brief Binds the list descriptor's address and hands workgroup Y its own slice.
+ * @brief Resolves the parameter list's pool ID and hands workgroup Y its own slice.
  */
 inline constexpr std::string_view PUBLIC_GLSL_TAIL = R"glsl(
 Slice vulkan_list() { return slice_read(vulkan_push.vulkan_table_address); }
-uint vulkan_count() { return slice_size(vulkan_list()) / 16u; }
-Slice vulkan_slice(uint index) { return slice_read(slice_address(vulkan_list()) + uint64_t(index) * 16ul); }
+uint vulkan_count() { return slice_size(vulkan_list()) / 4u; }
+Slice vulkan_slice(uint index) { return slice_read(slice_address(vulkan_list()) + uint64_t(index) * 4ul); }
 uint vulkan_index() { return gl_WorkGroupID.y; }
 layout(local_size_x = 16, local_size_y = 4, local_size_z = 1) in;
 )glsl";
@@ -771,6 +761,7 @@ struct ShaderState::Impl {
     vk::DeviceMemory memory{};
     uint8_t* mapped = nullptr;
     uint64_t address = 0;
+    Slice parameters;
     std::vector<vk::CommandPool> command_pools;
     std::vector<vk::CommandBuffer> commands;
     vk::Fence fence{};
@@ -826,8 +817,7 @@ struct ShaderState::Impl {
             stage_pipelines.push_back(built.value);
             device.destroyShaderModule(module); module = nullptr;
         }
-        const size_t bytes = 32 + (format == Format::References ? stages.size() * 16
-            : limit * (format == Format::Jobs ? 32 : 16));
+        const size_t bytes = 32 + stages.size() * 16;
 
         buffer = device.createBuffer(VulkanContext::buffer_create_info(bytes,
             vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eStorageBuffer
@@ -847,7 +837,9 @@ struct ShaderState::Impl {
             reinterpret_cast<uint32_t*>(mapped)[2] = uint32_t(refs->size<uint32_t>() - 1);
             reinterpret_cast<uint32_t*>(mapped)[7] = resources;
         } else {
-            *reinterpret_cast<SliceMirror*>(mapped) = SliceMirror{address, 0, 32};
+            parameters = Slice(limit * (format == Format::Jobs ? 32 : sizeof(Slice)),
+                VulkanContext::buffer_placement());
+            *reinterpret_cast<uint32_t*>(mapped) = parameters.pool_index();
         }
         command_pools.reserve(VulkanContext::compute_families().size());
         commands.reserve(VulkanContext::compute_families().size());
@@ -1016,12 +1008,11 @@ void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgrou
     workgroups = std::min(workgroups, VulkanContext::device_properties().max_workgroup_count[0]);
     for (size_t first = 0; first < count; first += impl_->limit) {
         const size_t n = std::min(impl_->limit, count - first);
-        auto* entries = reinterpret_cast<SliceMirror*>(impl_->mapped + 32);
+        auto* entries = impl_->parameters.data<uint32_t>();
         for (size_t i = 0; i < n; ++i) {
-            entries[i] = SliceMirror{VulkanKernel::device_address(streams[first + i]),
-                uint32_t(streams[first + i].size_bytes()), 0};
+            entries[i] = streams[first + i].pool_index();
         }
-        reinterpret_cast<SliceMirror*>(impl_->mapped)->size = uint32_t(n * 16);
+        Alligator::gpubuf_for(impl_->parameters)->size = uint32_t(n * sizeof(Slice));
         impl_->submit(workgroups, uint32_t(n), 1);
     }
 }
@@ -1032,8 +1023,8 @@ void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgrou
  * @param host_handle The host memory handle associated with the job.
  */
 void ShaderState::write_job(size_t slot, const Slice& input, const void* host_handle) {
-    uint8_t* record = impl_->mapped + 32 + slot * 32;
-    *reinterpret_cast<SliceMirror*>(record) = SliceMirror{VulkanKernel::device_address(input), uint32_t(input.size_bytes()), 0};
+    uint8_t* record = impl_->parameters.data<uint8_t>() + slot * 32;
+    *reinterpret_cast<uint32_t*>(record) = input.pool_index();
     std::memcpy(record + 16, host_handle, 16);
 }
 /** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch
@@ -1041,7 +1032,7 @@ void ShaderState::write_job(size_t slot, const Slice& input, const void* host_ha
  * @param jobs The number of jobs to dispatch.
  */
 void ShaderState::dispatch(size_t jobs) {
-    reinterpret_cast<SliceMirror*>(impl_->mapped)->size = uint32_t(jobs * 32);
+    Alligator::gpubuf_for(impl_->parameters)->size = uint32_t(jobs * 32);
     impl_->submit(1, 1, uint32_t(jobs));
 }
 /** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch_references

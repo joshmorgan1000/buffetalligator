@@ -30,7 +30,8 @@ std::string VulkanKernel::device_name() {
  */
 uint64_t VulkanKernel::device_address(const Slice& slice) {
     if (slice.is_null()) return 0;
-    return Alligator::gpubuf_for(slice)->address;
+    const GPUBuf& buffer = *Alligator::gpubuf_for(slice);
+    return buffer.address == 0 ? 0 : buffer.address + buffer.offset;
 }
 /** --------------------------------------------------------------------------------------------------------- VulkanKernel::gpu_pool_address
  * @brief The device address of the alligator's shared GPUBuf table, 0 without a compute device.

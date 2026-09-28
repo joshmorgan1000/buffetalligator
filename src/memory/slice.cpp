@@ -32,7 +32,7 @@ Slice SliceId::slice(size_t offset, size_t size) const {
     const GPUBuf base = *alligator.gpubuf(*this);
     const uint32_t length = size == SIZE_MAX ? base.size - static_cast<uint32_t>(offset) : static_cast<uint32_t>(size);
     *alligator.gpubuf(view_id) = GPUBuf{
-        base.address + offset, length, base.offset + static_cast<uint32_t>(offset)};
+        base.address, length, base.offset + static_cast<uint32_t>(offset)};
     *alligator.host_ptr(view_id) = HostPtr{static_cast<uint8_t*>(alligator.host_ptr(*this)->ptr) + offset};
     alligator.plate(view_id) = alligator.plate(*this);
     return Slice(view_id);
@@ -187,7 +187,6 @@ Slice Slice::slice(size_t offset, size_t length) const {
     HostPtr* host = Alligator::inst().host_ptr(view.id_);
     host->ptr = static_cast<uint8_t*>(host->ptr) + offset;
     GPUBuf* gpu = Alligator::inst().gpubuf(view.id_);
-    gpu->address += offset;
     gpu->size = length;
     gpu->offset += offset;
     return view;
