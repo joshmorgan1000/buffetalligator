@@ -11,6 +11,7 @@ foreach(source IN LISTS test_sources)
     endif()
 endforeach()
 set_tests_properties(buffetalligator_memory_tracker_test PROPERTIES TIMEOUT 30)
+set_tests_properties(buffetalligator_worker_pool_idle_test PROPERTIES TIMEOUT 15 LABELS functional)
 foreach(case IN ITEMS vulkan_shader_identity vulkan_reference_dispatch vulkan_job_dispatch
     vulkan_embedded_slices vulkan_dispatch_rounds)
     add_test(NAME buffetalligator_${case} COMMAND buffetalligator_shader_slice_test ${case})

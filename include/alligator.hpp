@@ -1401,7 +1401,7 @@ private:
     std::atomic<bool> stop_signal_{false};
     struct WorkerThread;
     std::atomic<size_t> active_workers_{0};
-    moodycamel::ConcurrentQueue<Task> task_queue_;
+    moodycamel::BlockingConcurrentQueue<Task> task_queue_;
     std::unordered_map<int, std::unique_ptr<WorkerThread>> worker_threads_;
     struct WaitingThread;
     std::atomic<size_t> active_waiters_{0};

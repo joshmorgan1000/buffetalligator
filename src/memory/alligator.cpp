@@ -8,7 +8,6 @@
 #include <memory/tracker.hpp>
 #include <containers/bitplane.hpp>
 #include <memory/plate.hpp>
-#include <chrono>
 #include <new>
 
 namespace buffetalligator {
@@ -39,8 +38,7 @@ void Alligator::maybe_wakeup() {
 }
 /** ------------------------------------------------------------------------------------------- Worker Thread
  * @struct WorkerThread
- * @brief One pool worker; slots 0..requested-1 hold the live set, and a worker whose slot
- * index is at or beyond the requested count decommissions itself.
+ * @brief Runs queued tasks and parks until more work or a stop wakeup arrives.
  */
 struct Alligator::WorkerThread {
     /// @brief The owning Alligator, handed in so the thread never touches inst().
@@ -52,17 +50,21 @@ struct Alligator::WorkerThread {
     /// @brief The thread object, started by start() once the worker is published in its slot.
     std::thread thread_;
     /** ----------------------------------------------------------------------------- Work Loop
-     * @brief Fills empty slots below the requested count, scales the request from queue depth,
-     * runs tasks, and exits once its own slot falls outside the requested count.
+     * @brief Blocks for tasks, requests workers for the backlog, and exits when stopped.
      */
     void work() {
         Alligator& al = *alligator;
-        size_t yield_count = 0;
         while (!al.stop_signal_.load(std::memory_order_acquire)
                && !stop.load(std::memory_order_acquire)) {
+            Task task;
+            al.task_queue_.wait_dequeue(task);
+            if (al.stop_signal_.load(std::memory_order_acquire)
+                || stop.load(std::memory_order_acquire)) {
+                break;
+            }
             const size_t current_tasks = al.task_queue_.size_approx();
-            size_t active_threads = al.active_workers_.load(std::memory_order_acquire);
-            if (current_tasks > active_threads
+            const size_t active_threads = al.active_workers_.load(std::memory_order_acquire);
+            if (current_tasks >= active_threads
                 && active_threads < al.max_thread_count_.load(std::memory_order_acquire)
             ) {
                 al.thread_change_queue_.enqueue({
@@ -70,28 +72,9 @@ struct Alligator::WorkerThread {
                     nullptr
                 });
             }
-            Task task;
-            if (al.task_queue_.try_dequeue(task)) {
-                task.execute();
-                if (task.after_this_task != nullptr) {
-                    al.task_queue_.enqueue(std::move(*task.after_this_task));
-                }
-                yield_count = 0;
-            } else {
-                if (++yield_count > SIZE_MAX >> 14) {
-                    LOG_TRACE_STREAM << "Alligator: shutting down worker thread " << id;
-                    size_t desired = active_threads - 1;
-                    if (al.active_workers_.compare_exchange_strong(
-                        active_threads, desired, std::memory_order_acq_rel
-                    )) {
-                        al.thread_change_queue_.enqueue({
-                            nullptr,
-                            std::make_unique<int>(id)
-                        });
-                        return;
-                    }
-                }
-                std::this_thread::yield();
+            task.execute();
+            if (task.after_this_task != nullptr) {
+                al.task_queue_.enqueue(std::move(*task.after_this_task));
             }
         }
         al.active_workers_.fetch_sub(1, std::memory_order_release);
@@ -143,42 +126,38 @@ struct Alligator::ThreadChanger {
         while (!al.stop_signal_.load(std::memory_order_acquire)
                 && !stop.load(std::memory_order_acquire)
         ) {
-            ThreadChangeReq req;
-            if (al.thread_change_queue_.wait_dequeue_timed(
-                req, std::chrono::milliseconds(100))
-            ) {
-                if (req.shutdown_id) {
-                    int id_to_shutdown = *req.shutdown_id;
-                    auto it = al.worker_threads_.find(id_to_shutdown);
-                    if (it != al.worker_threads_.end()) {
-                        al.worker_threads_.erase(it);
-                    }
+            ThreadChangeReq request;
+            al.thread_change_queue_.wait_dequeue(request);
+            if (al.stop_signal_.load(std::memory_order_acquire)
+                || stop.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (request.shutdown_id) {
+                int id_to_shutdown = *request.shutdown_id;
+                auto it = al.worker_threads_.find(id_to_shutdown);
+                if (it != al.worker_threads_.end()) {
+                    al.worker_threads_.erase(it);
+                }
+                continue;
+            }
+            if (request.current_active) {
+                if (*request.current_active !=
+                        al.active_workers_.load(std::memory_order_acquire)
+                ) {
                     continue;
                 }
-                if (req.current_active) {
-                    if (*req.current_active !=
-                            al.active_workers_.load(std::memory_order_acquire)
-                    ) {
-                        continue;
-                    }
-                    al.active_workers_.fetch_add(1, std::memory_order_acq_rel);
-                    int new_id = rand();
-                    while (al.worker_threads_.find(new_id)
-                           != al.worker_threads_.end()
-                    ) {
-                        new_id = rand();
-                    }
-                    auto new_worker = std::make_unique<WorkerThread>(&al, new_id);
-                    WorkerThread* worker_ptr = new_worker.get();
-                    al.worker_threads_[new_id] = std::move(new_worker);
-                    worker_ptr->start();
-                    continue;
+                al.active_workers_.fetch_add(1, std::memory_order_acq_rel);
+                int new_id = rand();
+                while (al.worker_threads_.find(new_id)
+                        != al.worker_threads_.end()
+                ) {
+                    new_id = rand();
                 }
-                for (auto& [id, worker_ptr] : al.worker_threads_) {
-                    if (worker_ptr) {
-                        worker_ptr->stop.store(true, std::memory_order_release);
-                    }
-                }
+                auto new_worker = std::make_unique<WorkerThread>(&al, new_id);
+                WorkerThread* worker_ptr = new_worker.get();
+                al.worker_threads_[new_id] = std::move(new_worker);
+                worker_ptr->start();
+                continue;
             }
         }
     }
@@ -195,6 +174,7 @@ struct Alligator::ThreadChanger {
     ThreadChanger(Alligator* alligator_) : alligator(alligator_) {}
     ~ThreadChanger() {
         stop.store(true, std::memory_order_release);
+        alligator->thread_change_queue_.enqueue(ThreadChangeReq{});
         if (thread_.joinable()) {
             thread_.join();
         }
@@ -204,8 +184,7 @@ struct Alligator::ThreadChanger {
 };
 /** ------------------------------------------------------------------------------------------- Waiting Thread
  * @struct WaitingThread
- * @brief One pool waiting thread; slots 0..requested-1 hold the live set, and a waiting
- * thread whose slot index is at or beyond the requested count decommissions itself.
+ * @brief Runs waiting tasks and parks until more work or a stop wakeup arrives.
  */
 struct Alligator::WaitingThread {
     /// @brief The owning Alligator, handed in so the thread never touches inst().
@@ -215,9 +194,7 @@ struct Alligator::WaitingThread {
     /// @brief The stop signal for this waiting thread.
     std::atomic<bool> stop{false};
     /** ----------------------------------------------------------------------------- Work Loop
-     * @brief Fills empty slots below the requested count, scales the request from
-     * queue depth, runs tasks, and exits once its own slot falls outside the
-     * requested count.
+     * @brief Blocks for waiting tasks and forwards their continuations to the worker pool.
      */
     void work() {
         Alligator& al = *alligator;
@@ -225,13 +202,14 @@ struct Alligator::WaitingThread {
             && !stop.load(std::memory_order_acquire)
         ) {
             Task task;
-            if (al.waiting_task_queue_.wait_dequeue_timed(
-                task, std::chrono::milliseconds(100))
-            ) {
-                task.execute();
-                if (task.after_this_task != nullptr) {
-                    al.task_queue_.enqueue(std::move(*task.after_this_task));
-                }
+            al.waiting_task_queue_.wait_dequeue(task);
+            if (al.stop_signal_.load(std::memory_order_acquire)
+                || stop.load(std::memory_order_acquire)) {
+                break;
+            }
+            task.execute();
+            if (task.after_this_task != nullptr) {
+                al.submit(std::move(*task.after_this_task));
             }
         }
     }
@@ -399,13 +377,16 @@ Alligator& Alligator::inst() {
     return *std::launder(reinterpret_cast<Alligator*>(alligator_storage));
 }
 /** --------------------------------------------------------------------------------------------------------- Destructor
- * @brief Destroys the Alligator instance and signals it to stop.
+ * @brief Stops pool growth, wakes every parked thread, and joins without draining queued tasks.
  */
 Alligator::~Alligator() {
-    thread_changer_->stop.store(true, std::memory_order_release);
     stop_signal_.store(true, std::memory_order_release);
-    if (thread_changer_ && thread_changer_->thread_.joinable()) {
-        thread_changer_->thread_.join();
+    thread_changer_.reset();
+    for (size_t index = 0; index < worker_threads_.size(); ++index) {
+        task_queue_.enqueue(Task{});
+    }
+    for (size_t index = 0; index < waiting_threads_.size(); ++index) {
+        waiting_task_queue_.enqueue(Task{});
     }
     worker_threads_.clear();
     waiting_threads_.clear();
