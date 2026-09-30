@@ -51,6 +51,9 @@ if(BUFFETALLIGATOR_LTO_SUPPORTED AND NOT APPLE)
     check_cxx_compiler_flag(-ffat-lto-objects BUFFETALLIGATOR_HAS_FAT_LTO_OBJECTS)
 endif()
 add_library(alligator STATIC
+    src/gpu/runtime.cpp
+    src/gpu/shader.cpp
+    src/gpu/shader_source.cpp
     src/memory/slice.cpp
     src/memory/alligator.cpp
     src/memory/chainbuffet.cpp
@@ -123,7 +126,7 @@ install(TARGETS alligator
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
-install(FILES include/alligator.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/concurrentqueue/include/moodycamel"
         "${BUFFETALLIGATOR_DEPS_DIR}/readerwriterqueue/include/moodycamel"
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

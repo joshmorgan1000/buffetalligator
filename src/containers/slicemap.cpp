@@ -367,7 +367,7 @@ struct SliceMap::State {
         table->buckets[bucket].store(reinterpret_cast<uintptr_t>(node), std::memory_order_release);
     }
     /** ------------------------------------------------------------------------------------------- Try Resize
-     * @brief Doubles the table once insertion traffic exceeds one node per bucket.
+     * @brief Keeps exclusive resize ownership until the doubled table's bucket splits complete.
      */
     void try_resize(Table* superseded) {
         if (table_.load(std::memory_order_acquire) != superseded) return;
@@ -379,7 +379,6 @@ struct SliceMap::State {
             while ((positions_.load(std::memory_order_acquire) & ~kPopulationMask) != 0) {
                 cpu_relax();
             }
-            auto replacement = std::make_unique<Table>(superseded->bucket_count * 2);
             for (size_t index = 0; index < superseded->bucket_count; ++index) {
                 const uintptr_t head = superseded->buckets[index]
                     .load(std::memory_order_relaxed) & ~kMark;
@@ -389,10 +388,13 @@ struct SliceMap::State {
             Table* published = replacement.release();
             published->retired = superseded;
             table_.store(published, std::memory_order_seq_cst);
-            resizing_.store(false, std::memory_order_release);
+#if defined(BUFFETALLIGATOR_TEST_MAP_GROWTH)
+            BUFFETALLIGATOR_TEST_MAP_GROWTH(*this, *published);
+#endif
             for (size_t bucket = 1; bucket < published->bucket_count; bucket += 2) {
                 split(published, bucket);
             }
+            resizing_.store(false, std::memory_order_release);
             return;
         }
         resizing_.store(false, std::memory_order_release);

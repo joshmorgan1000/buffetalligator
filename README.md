@@ -10,81 +10,60 @@ BuffetAlligator is a C++20 memory arena that serves 32-bit `Slice` handles from 
 
 The project is pre-release. API and ABI compatibility are not guaranteed until 1.0.
 
-## Placemat
+## Memory placement and granules
 
-Each registered `Placemat` (placement) is a process-lifetime factory and owns one independent Buffer chain. A placement supplies only allocation, deallocation, context, and stable host-pointer access. Device addresses, transfers, and synchronization remain private to the consuming implementation.
+A registered `BuffetDescriptor` supplies allocation, release, host access, and device-address hooks for one `ChainBuffet`. Chains allocate on demand, prepare successors during rollover, and reclaim drained backing buffers after their last counted owner releases them. Custom descriptors must be registered before concurrent use and remain valid for the process lifetime.
 
-BuffetAlligator includes basic heap and 64-byte-aligned heap placements, plus the Vulkan buffer placement described below. Aligned heap is the default on hosts without unified memory; on a unified-memory machine the one-time device probe makes the Vulkan buffer placement the default, so ordinary Slices are host-coherent GPU buffers. Applications may register additional placements before creating the first `Slice` and may install a default placement strategy method.
-
-Arena initialization allocates a 64 MiB current slab and a 64 MiB successor for every registered placement. The two built-in placements therefore commit 256 MiB before custom placements; each custom placement adds 128 MiB. The allocator thread then keeps a runway of additional prepared successors beyond each active slab so chain rollovers never wait on allocation; teardown of drained slabs is also deferred to that thread. Placemat callbacks may run concurrently on the calling thread and the dedicated allocator thread, and placement instances must remain alive for the process lifetime.
+`Slice` is a four-byte owning handle. A default Slice is null; copying creates a distinct identifier sharing the backing allocation, and moving leaves the source null. Allocation sizes round up to 64 bytes. Sub-slice starts round down and ends round up to cover the requested range within the represented parent. `size_bytes()` reports that represented range. The GPU record remains 16 bytes, with `uint32_t` size and offset fields in 64-byte units; no exact-byte side record is stored.
 
 ```cpp
 #include <alligator.hpp>
 
-buffetalligator::Slice bytes(4096);
-auto* values = bytes.data<uint32_t>();
-```
-
-Dedicated novel buffers remain available for long-lived claims:
-
-```cpp
+buffetalligator::Slice bytes(65);
+auto* values = bytes.data<uint32_t>(); // 128 represented bytes.
 buffetalligator::Slice long_lived(1024 * 1024, true);
 ```
 
-### File and GPU allocators
+Dedicated allocations are useful for long-lived claims that should not retain an otherwise drained slab. Borrowed pointers remain valid only while an owning Slice or backing buffer remains alive.
 
-Everything below is declared in `<alligator.hpp>`; there are no separate allocator headers. Register placements before creating the first Slice; each backend registers one process-lifetime placement.
+### File-backed storage
 
 ```cpp
 #include <alligator.hpp>
+#include <alligator/easymmap.hpp>
 
 using namespace buffetalligator;
-const Placemat* mapped = MmapAllocator::register_type("/path/to/scratch");
+const BuffetDescriptor* mapped = MmapBuffer::register_type("/path/to/scratch");
 Slice bytes(4096, mapped);
 bytes.data<uint64_t>()[0] = 42;
-MmapAllocator::flush(bytes);
+MmapBuffer::flush(bytes);
 ```
 
-The mmap allocator reserves storage for each slab in the supplied directory and maps it with `MAP_SHARED`. Its temporary files are unlinked immediately and remain open until the existing arena reclamation callback releases the slab. Choose a directory on disk for disk-backed scratch storage; a RAM filesystem provides RAM-backed storage. Fresh slabs are zero-filled by the filesystem, without eagerly touching every mapped page. `file_descriptor(slice)` returns a borrowed slab descriptor, and `file_offset(slice)` includes sub-slice offsets. `flush(slice)` synchronously writes the covered pages back; these scratch files do not provide reopenable persistent storage. `enable_spillover(reserve_bytes, resume_bytes)`, called before the first Slice, makes new slabs fall back to the mmap placement whenever available host RAM would drop below `reserve_bytes`, and returns to heap slabs once it climbs above `resume_bytes`.
+`MmapBuffer` creates shared mappings backed by temporary files in the supplied directory. Files are unlinked immediately and their descriptors remain open through backing-buffer ownership. `file_descriptor(slice)` borrows the descriptor, `file_offset(slice)` includes the view offset, and `flush(slice)` writes the covered pages. These scratch files do not provide reopenable persistent storage.
 
-Vulkan is not optional. The library links the Vulkan runtime unconditionally (MoltenVK on macOS, Vulkan-Loader on Linux), probes for a device once, and on a machine without one simply reports no device (`GPU::exists()`, `VulkanKernel::available()`). With a device, `VulkanContext::buffer_placement()` is the placement whose slabs are zero-initialized, persistently mapped, coherent storage and transfer buffers; `VulkanContext::device_address(slice)` returns the device address of a Slice's first byte, and `VulkanContext::gpu_usage()` reports the bytes held in Vulkan slabs. Byte offsets from Slices are not a promise of descriptor-offset alignment, so callers must observe their device's binding requirements. Keep Slices alive until submitted GPU work finishes, and establish CPU/GPU synchronization in the consuming application.
+### GPU execution
 
-> **REVIEW-STALE (2026-09-26):** `CudaAllocator` and `MetalAllocator` are declared in `alligator.hpp` with `register_type`, `device_address` or `buffer` and `buffer_offset`, and `memory_usage()`, and their sources exist as `src/memory/cuda_allocator.cpp` and `src/memory/metal_allocator.mm`, but neither file is in the CMake source list, so neither backend is compiled or tested. Decide whether they return to the build or leave the tree; the table below describes the declared surface only.
+Include `<alligator/easygpu.hpp>` for `GPU`, `Shader`, `ShaderSource`, and completion results; Vulkan interop is declared separately in `<alligator/easyvulkan.hpp>`. Backend SDK types are absent from the portable GPU header.
 
-| Placement | Registration | Native access | Allocation |
-| --- | --- | --- | --- |
-| CUDA | `CudaAllocator::register_type(CUcontext, CudaMemoryKind)` | `device_address(slice)` | Managed memory by default; explicitly selectable mapped pinned host memory |
-| Metal | `MetalAllocator::register_type(void* device)` | `buffer(slice)`, `buffer_offset(slice)` | Zero-initialized shared `MTLBuffer` |
+Set `ALLIGATOR_GPU_BACKEND` before the first Slice or GPU operation: `auto`, `cpu`, `vulkan`, or `metal`. Automatic selection prefers compatible native Metal on Apple builds, then Vulkan, then CPU when no compatible device exists. Explicit unavailable backend requests fail. Selection freezes the device address domain and metadata placement. Default payloads use the active placement on physically unified devices and aligned host memory otherwise; GPU inputs require a compatible device-visible placement.
 
-These placements use the existing allocation and reclamation callbacks. They do not add pressure policy, relocation, GPU submissions, or changes to the arena chain and containers.
+Vulkan remains linked on every build through MoltenVK on macOS or Vulkan-Loader on Linux. `VulkanContext::buffer_placement()` selects its coherent mapped buffers, `VulkanKernel::device_address(slice)` resolves a live Slice address, and `VulkanKernel::gpu_usage()` reports tracked Vulkan backing bytes. Native Metal uses shared buffers and the pinned SPIRV-Cross compiler for GLSL translation. CUDA integration is gated by the documented [compiler feasibility failure](experiments/cuda_glsl_gate/README.md).
 
-### Memory usage
+`ShaderSource` accepts GLSL, Metal, and CUDA source members; preparation owns the source bytes. Vulkan compiles GLSL. Metal uses its native source when supplied and otherwise translates GLSL. Public list shaders define `alligator_main` and resolve Slice identities through the stable region directory with 64-byte granule conversion.
 
-Detailed allocation-location tracking is controlled at compile time and disabled by default:
+Shader dispatch accepts a `ShaderResult` and an optional static callback plus `void*` context. Accepted work retains directly bound identities, prepared resources, and explicitly supplied embedded dependencies through retirement. Completion runs on Kitchen workers after device writes are CPU-visible. Call `result.rethrow()` to inspect terminal failure; `Shader::dispatch` provides `co_await`. An external coroutine-frame owner must retain the result and call `cancel()` before concurrent frame destruction. Admission can apply backpressure when prepared slots are busy.
+
+`GPU::encode` and `GPU::decode` use versioned portable source records and a bounded program cache. `GPU::exists()`, `unified_memory()`, `device_name()`, and `memory_usage()` report the selected backend; unavailable native memory counters remain empty optionals.
+
+### Memory accounting
+
+Internal backing-allocation counters track allocations and releases by placement, including dedicated buffers. Slice copies and views do not allocate another payload. Optional allocation-site records are disabled by default and can be enabled with:
 
 ```sh
 ./run_build.sh -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=ON
 ```
 
-The internal `Memory` tracker always counts completed backing slab allocations and deallocations
-globally and per placement, including dedicated buffers; Slice copies and views do not add
-allocations. The optional switch adds live records containing the allocation site's file, line,
-function, timestamp, byte count, and placement, queried with `Memory::allocation_info(plate)`.
-Disabling it removes the record map and its locking; the same API remains callable, detail hooks
-become no-ops, and detail queries return no value.
-
-```cpp
-#include <alligator.hpp>
-
-const buffetalligator::HostMemoryUsage usage = buffetalligator::BuffetMenu::memory_usage();
-// usage.physical_bytes, usage.available_bytes, usage.resident_bytes
-```
-
-This explicit query reports bytes and does not run on Slice access or allocation. On Linux, physical and available memory come from `/proc/meminfo` (`MemTotal`, `MemAvailable`); process residency is the approximate `/proc/self/statm` resident-page count. On macOS, capacity comes from `hw.memsize`, available memory is an estimate using free plus inactive pages, and process residency comes from `MACH_TASK_BASIC_INFO`. These are host measurements, not container limits or live arena allocation totals; macOS available memory is not the system's memory-pressure classification.
-
-`VulkanContext::gpu_usage()` reports the bytes currently held in Vulkan slabs. The declared but unbuilt CUDA and Metal backends also declare `memory_usage()` returning `DeviceMemoryUsage`, whose fields are optional bytes; see the review note above.
-
-Allocator tests cover mmap writeback, retained views, chain advancement, worker cleanup, host statistics, and native Vulkan writes through Slice storage. Run them with `ctest --test-dir build -L allocators --output-on-failure`. They build with `BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS`, which follows the tests option, and the Vulkan case reports a skip when no device is present. The build exports `BUFFETALLIGATOR_HAS_VULKAN=1` to consumers.
+These internal diagnostic records are separate from Slice metadata. Installed consumers receive backend feature definitions through `alligator::alligator`. Allocator regressions run with `ctest --test-dir build -L allocators --output-on-failure`; hardware absence is reported as a skip, while translation and execution errors fail the test.
 
 ## Containers
 

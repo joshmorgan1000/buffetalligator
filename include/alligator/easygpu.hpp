@@ -1,18 +1,22 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- EasyGPU
- * @file include/alligator/easygpu.hpp
- * @brief EasyGPU utilities for the Alligator library.
+ * @file easygpu.hpp
+ * @brief Portable prepared shaders with owned completion results and coroutine suspension.
  */
 #include <logging.hpp>
 #include <alligator.hpp>
-#include <alligator/easyvulkan.hpp>
-#include <semaphore>
+#include <cstddef>
+#include <cstdint>
+#include <coroutine>
 #include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- GPUException
- * @class GPUException
- * @brief A GPUException is thrown when a GPU operation fails.
+/** --------------------------------------------------------------------------------------------------------- GPU Exception
+ * @brief Reports shader preparation, admission, execution, or completion failures.
  */
 class GPUException : public threadsafe_logger::Exception {
 public:
@@ -21,7 +25,6 @@ public:
 };
 #define ALLIGATOR_GPU_THROW(msg) throw GPUException(msg)
 /** --------------------------------------------------------------------------------------------------------- Device Memory Usage
- * @struct DeviceMemoryUsage
  * @brief Reports native device measurements with unavailable quantities left empty.
  */
 struct DeviceMemoryUsage {
@@ -30,122 +33,135 @@ struct DeviceMemoryUsage {
     std::optional<uint64_t> process_bytes;
     std::optional<uint64_t> budget_bytes;
 };
-/// @brief Forward declaration of the internal shader state used by the Shader class.
+/** --------------------------------------------------------------------------------------------------------- Shader Source
+ * @brief Supplies owned-at-preparation native bodies and the portable GLSL body.
+ */
+struct ShaderSource {
+    std::string_view glsl;
+    std::string_view metal;
+    std::string_view cuda;
+};
 class ShaderState;
+struct ShaderOperation;
+class ShaderAwaiter;
+/** --------------------------------------------------------------------------------------------------------- Shader Result
+ * @brief Owns completion state independently of the Shader, its callback, and suspended frame.
+ */
+class ShaderResult {
+private:
+    std::shared_ptr<ShaderOperation> operation_;
+    friend class Shader;
+    friend class ShaderAwaiter;
+public:
+    ShaderResult();
+    ShaderResult(const ShaderResult&);
+    ShaderResult& operator=(const ShaderResult&);
+    ShaderResult(ShaderResult&&) noexcept;
+    ShaderResult& operator=(ShaderResult&&) noexcept;
+    ~ShaderResult();
+    /** ------------------------------------------------------------------------------------------- Ready
+     * @brief Reports retirement after device writes become host-visible.
+     */
+    bool ready() const;
+    /** ------------------------------------------------------------------------------------------- Rethrow
+     * @brief Rethrows a completed operation's failure and rejects an unready result.
+     */
+    void rethrow() const;
+    /** ------------------------------------------------------------------------------------------- Cancel
+     * @brief Detaches suspension and waits for any executing continuation before frame destruction.
+     */
+    void cancel() const;
+};
+/** --------------------------------------------------------------------------------------------------------- Shader Awaiter
+ * @brief Suspends on owned work whose external frame owner must cancel before concurrent destruction.
+ */
+class ShaderAwaiter {
+private:
+    ShaderResult result_;
+    explicit ShaderAwaiter(ShaderResult result);
+    friend class Shader;
+public:
+    ShaderAwaiter(const ShaderAwaiter&) = delete;
+    ShaderAwaiter& operator=(const ShaderAwaiter&) = delete;
+    ShaderAwaiter(ShaderAwaiter&&) noexcept;
+    ShaderAwaiter& operator=(ShaderAwaiter&&) noexcept;
+    ~ShaderAwaiter();
+    bool await_ready() const;
+    bool await_suspend(std::coroutine_handle<> continuation);
+    void await_resume();
+    /** ------------------------------------------------------------------------------------------- Result
+     * @brief Returns the cancellation handle the frame owner retains before starting suspension.
+     */
+    ShaderResult result() const;
+};
 /** --------------------------------------------------------------------------------------------------------- Shader
- * @class Shader
- * @brief Prepared `alligator_main(Slice)` GLSL: a call binds a list of slices and each workgroup
- * column processes its own slice in place.
+ * @brief Prepares one backend program and admits asynchronous dispatches with retained Slice identities.
  */
 class Shader {
 private:
-    /// @brief Internal state of the shader, managed by the Shader class.
     std::unique_ptr<ShaderState> state_;
+    explicit Shader(std::unique_ptr<ShaderState> state);
+    friend struct GPU;
 public:
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Compiles GLSL and prepares every Vulkan resource used by subsequent calls.
-     * @param source GLSL defining `void alligator_main(Slice slice)`, the slice this workgroup owns.
-     * @param name Diagnostic name reported by shader compilation errors.
-     */
-    explicit Shader(
-        std::string_view source,
-        std::string_view name = "alligator_shader"
-    );
-    /** ------------------------------------------------------------------------------------------- Move-only ownership */
+    explicit Shader(const ShaderSource& source, std::string_view name = "alligator_shader");
+    explicit Shader(std::string_view glsl, std::string_view name = "alligator_shader");
     Shader(const Shader&) = delete;
     Shader& operator=(const Shader&) = delete;
-    Shader(Shader&& other) noexcept;
-    Shader& operator=(Shader&& other) noexcept;
-    /** ------------------------------------------------------------------------------------------- Destructor */
+    Shader(Shader&&) noexcept;
+    Shader& operator=(Shader&&) noexcept;
     ~Shader();
-    /** ------------------------------------------------------------------------------------------- Shader Functor invocation
-     * @brief Runs the shader over a list of slices: Y is shaped to the list's length and
-     * workgroup column `i` receives `slices[i]`, writing its results into that slice.
-     * @param slices Device-visible slices, one per workgroup column.
-     * @param count How many slices are bound.
-     * @param callback Optional function invoked with each slice once the shader has completed.
-     * @param workgroups Number of 64-invocation workgroups along X per slice.
-     * @return A shared pointer to a LightweightSemaphore that can optionally be waited on until
-     * the shader has completed execution.
+    /** ------------------------------------------------------------------------------------------- Dispatch
+     * @brief Accepts zero-copy work and invokes done once on Kitchen after every round retires.
+     * @param slices Bound Slice identities retained before admission returns.
+     * @param count Number of bound slices.
+     * @param result Owned terminal state published before done executes.
+     * @param done Completion callback whose exceptions are retained in result.
+     * @param context Caller context kept alive through callback return.
+     * @param workgroups Number of workgroups along X per Slice.
+     * @param dependencies Additional Slice identities embedded in bound payloads.
      */
-    std::binary_semaphore operator()(
-        const Slice* slices,
-        size_t count,
-        void (*callback)(Slice slice) = nullptr,
-        uint32_t workgroups = 1
-    ) const;
-    /** ------------------------------------------------------------------------------------------- Shader Functor invocation (one)
-     * @brief Runs the shader over a single slice.
-     * @param slice The device-visible slice, processed in place.
-     * @param callback Optional function invoked with the slice once the shader has completed.
-     * @param workgroups Number of 64-invocation workgroups along X.
-     * @return A binary semaphore that can optionally be waited on until the shader has completed
-     * execution.
+    void operator()(const Slice* slices, size_t count, ShaderResult& result,
+        void (*done)(void*) = nullptr, void* context = nullptr, uint32_t workgroups = 1,
+        std::span<const Slice> dependencies = {}) const;
+    void operator()(const Slice& slice, ShaderResult& result,
+        void (*done)(void*) = nullptr, void* context = nullptr, uint32_t workgroups = 1,
+        std::span<const Slice> dependencies = {}) const;
+    /** ------------------------------------------------------------------------------------------- Awaitable Dispatch
+     * @brief Admits retained work whose continuation resumes on a Kitchen worker.
      */
-    std::binary_semaphore operator()(
-        const Slice& slice,
-        void (*callback)(Slice slice) = nullptr,
-        uint32_t workgroups = 1
-    ) const;
+    ShaderAwaiter dispatch(const Slice* slices, size_t count, uint32_t workgroups = 1,
+        std::span<const Slice> dependencies = {}) const;
 };
-static_assert(sizeof(Shader) == sizeof(void*), "Shader's public ABI must remain one opaque pointer.");
-/** --------------------------------------------------------------------------------------------------------- GPU struct
- * @struct GPU
- * @brief Encapsulates static methods used for GPU compute operations.
+static_assert(sizeof(Shader) == sizeof(void*), "Shader must remain one opaque pointer.");
+/** --------------------------------------------------------------------------------------------------------- GPU
+ * @brief Prepares portable programs and reports the active compute device.
  */
 struct GPU {
-    /** ------------------------------------------------------------------------------------------- available
-     * @brief True when a Vulkan compute device is present.
-     * @return True when the GPU can execute programs.
-     */
     static bool exists();
-    /** ------------------------------------------------------------------------------------------- unified_memory
-     * @brief True when the device shares memory with the CPU, so stream Slices bind with no
-     * copies.
-     * @return True under unified memory.
-     */
     static bool unified_memory();
-    /** ------------------------------------------------------------------------------------------- device_name
-     * @brief The compute device's name, empty when no device is present.
-     * @return The device name.
-     */
     static std::string device_name();
-    /** ------------------------------------------------------------------------------------------- encode
-     * @brief Flattens a recorded program into one Slice: header, register seeds, constants, then
-     * the instruction stream as a contiguous run of 8-byte instructions.
-     * @param program The recorded program.
-     * @return The encoded program; place it, move it, or hand it to run() below like any Slice.
+    static DeviceMemoryUsage memory_usage();
+    /** ------------------------------------------------------------------------------------------- Encode
+     * @brief Serializes versioned little-endian BAGP source fields with eight-byte payload alignment.
      */
     static Slice encode(const Shader& program);
-    /** ------------------------------------------------------------------------------------------- decode
-     * @brief Rebuilds a recorded program from its encoded Slice.
-     * @param program An encoded program.
-     * @return The program.
-     * @throw ShaderException when the Slice is not an encoded program of this version.
+    /** ------------------------------------------------------------------------------------------- Decode
+     * @brief Validates a portable source record and prepares it for the active device.
      */
     static Shader decode(const Slice& program);
-    /** ------------------------------------------------------------------------------------------- run
-     * @brief Executes a recorded program on the GPU over the bound streams.
-     * @param program The recorded program.
-     * @param streams One Slice per workgroup column; column i processes streams[i] in place.
-     * @param stream_count How many Slices are bound; becomes the dispatch's Y extent.
-     */
-    static void run(const Shader& program, Slice* streams, size_t stream_count);
-    /** ------------------------------------------------------------------------------------------- run
-     * @brief Decodes an encoded program and executes it on the GPU.
-     * @param program A compile_glsl program (job-table engine, one job per Slice).
-     * @param streams One Slice per job.
-     * @param stream_count How many jobs this round binds.
-     */
-    static void run(const Slice& program, Slice* streams, size_t stream_count);
-    /** ------------------------------------------------------------------------------------------- compile_glsl
-     * @brief Compiles a kernel body under the alligator prelude into SPIR-V words held in a Slice.
-     * The body defines main() against the prelude's Slice-addressing helpers; the workgroup shape
-     * (16x4) and the 8-byte job-table push block are injected.
-     * @param body GLSL defining main(); the shape is injected, not authored.
-     * @return The SPIR-V words, one per four bytes.
-     * @throw GPUException when compilation fails or no device is present.
+    static void run(const Shader& program, const Slice* streams, size_t count, ShaderResult& result,
+        void (*done)(void*) = nullptr, void* context = nullptr,
+        std::span<const Slice> dependencies = {});
+    static void run(const Slice& program, const Slice* streams, size_t count, ShaderResult& result,
+        void (*done)(void*) = nullptr, void* context = nullptr,
+        std::span<const Slice> dependencies = {});
+    static ShaderAwaiter dispatch(const Shader& program, const Slice* streams, size_t count,
+        std::span<const Slice> dependencies = {});
+    static ShaderAwaiter dispatch(const Slice& program, const Slice* streams, size_t count,
+        std::span<const Slice> dependencies = {});
+    /** ------------------------------------------------------------------------------------------- Compile GLSL
+     * @brief Prepares a job-table main body and returns its portable encoded source record.
      */
     static Slice compile_glsl(std::string_view body);
 };
-} // namespace alligator
+} // namespace buffetalligator

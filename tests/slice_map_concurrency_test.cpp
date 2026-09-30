@@ -3,6 +3,7 @@
  * @brief Checks replacement ownership, bucket growth, shared-key publication, and reclamation.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -58,22 +59,22 @@ void replacement_ownership() {
     const size_t before = Memory::total_freed();
     map.add_slice(7, payload(7, 1, true));
     map.add_slice(7, payload(7, 2, true));
-    require(frees_reached(before + sizeof(Value)) == before + sizeof(Value),
+    require(frees_reached(before + 64) == before + 64,
         "replacement did not release the previous unshared Slice");
     require(map.size() == 1 && map.find(7) == 0, "replacement consumed a second position");
     Slice retained = map.get_slice(7);
     map.add_slice(7, payload(7, 3, true));
-    require(frees_reached(before + sizeof(Value)) == before + sizeof(Value),
+    require(frees_reached(before + 64) == before + 64,
         "replacement released backing still held by a retained Slice");
     require(retained.get_as<Value>().version == 2 && map.slice_at(0).get_as<Value>().version == 3,
         "replacement changed a retained payload or missed its stable slot");
     retained.free();
-    require(frees_reached(before + 2 * sizeof(Value)) == before + 2 * sizeof(Value),
+    require(frees_reached(before + 128) == before + 128,
         "last retained view did not release its old backing");
     map.add_slice(7, Slice());
     require(map.size() == 1 && map.find(7) == 0 && !map.get_slice(7),
         "null replacement lost the existing key");
-    require(frees_reached(before + 3 * sizeof(Value)) == before + 3 * sizeof(Value),
+    require(frees_reached(before + 192) == before + 192,
         "null replacement retained the old payload");
     SliceMapT<std::shared_ptr<int>> typed(1), source(1);
     auto object = std::make_shared<int>(10);

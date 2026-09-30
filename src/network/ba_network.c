@@ -64,13 +64,18 @@ static uv_loop_t ba_network_loop;
 static uv_thread_t ba_network_thread;
 static uv_async_t ba_network_mailbox;
 static uv_mutex_t ba_network_mutex;
+static uv_cond_t ba_network_shutdown_done;
 static ba_net_command* ba_network_head;
 static ba_net_command* ba_network_tail;
+static ba_net_command ba_network_shutdown_command = {.operation = 3};
 static ba_net_peer* ba_network_peers;
 static ba_net_reply* ba_network_reply;
 static int ba_network_status;
 static _Atomic int ba_network_stopped;
 static _Atomic int ba_network_started;
+static _Thread_local int ba_network_is_reactor;
+static int ba_network_joining;
+static int ba_network_joined;
 static void ba_network_execute(ba_net_command* command);
 /** --------------------------------------------------------------------------------------------------------- Retain
  * @brief Keeps a peer alive while a libuv or fabric operation references it.
@@ -732,7 +737,7 @@ static void ba_network_commands(uv_async_t* mailbox) {
     while (command) {
         ba_net_command* next = command->next;
         ba_network_execute(command);
-        uv_sem_post(&command->completion);
+        if (command->operation != 3) uv_sem_post(&command->completion);
         command = next;
     }
 }
@@ -741,6 +746,7 @@ static void ba_network_commands(uv_async_t* mailbox) {
  */
 static void ba_network_run(void* unused) {
     (void)unused;
+    ba_network_is_reactor = 1;
     uv_run(&ba_network_loop, UV_RUN_DEFAULT);
     uv_loop_close(&ba_network_loop);
 }
@@ -774,14 +780,21 @@ static void ba_network_initialize(void) {
     }
     ba_network_status = uv_mutex_init(&ba_network_mutex);
     if (ba_network_status) return;
+    ba_network_status = uv_cond_init(&ba_network_shutdown_done);
+    if (ba_network_status) {
+        uv_mutex_destroy(&ba_network_mutex);
+        return;
+    }
     ba_network_status = uv_loop_init(&ba_network_loop);
     if (ba_network_status) {
+        uv_cond_destroy(&ba_network_shutdown_done);
         uv_mutex_destroy(&ba_network_mutex);
         return;
     }
     ba_network_status = uv_async_init(&ba_network_loop, &ba_network_mailbox, ba_network_commands);
     if (ba_network_status) {
         uv_loop_close(&ba_network_loop);
+        uv_cond_destroy(&ba_network_shutdown_done);
         uv_mutex_destroy(&ba_network_mutex);
         return;
     }
@@ -790,6 +803,7 @@ static void ba_network_initialize(void) {
         uv_close((uv_handle_t*)&ba_network_mailbox, NULL);
         uv_run(&ba_network_loop, UV_RUN_DEFAULT);
         uv_loop_close(&ba_network_loop);
+        uv_cond_destroy(&ba_network_shutdown_done);
         uv_mutex_destroy(&ba_network_mutex);
         return;
     }
@@ -816,8 +830,6 @@ static int ba_network_submit(ba_net_command* command) {
         uv_sem_destroy(&command->completion);
         return UV_ECANCELED;
     }
-    if (command->operation == 3)
-        atomic_store_explicit(&ba_network_stopped, 1, memory_order_release);
     if (ba_network_tail) ba_network_tail->next = command;
     else ba_network_head = command;
     ba_network_tail = command;
@@ -857,10 +869,41 @@ int ba_net_send(const ba_slice_t* slice, const char* address, uint16_t port, uin
     return ba_network_submit(&command);
 }
 /** --------------------------------------------------------------------------------------------------------- Shutdown
- * @brief Joins the reactor before the allocator is shut down at application quiescence.
+ * @brief Requests callback-safe shutdown and shares one completed join among non-reactor callers.
  */
 void ba_net_shutdown(void) {
     if (!atomic_load_explicit(&ba_network_started, memory_order_acquire)) return;
-    ba_net_command command = {.operation = 3};
-    if (!ba_network_submit(&command)) uv_thread_join(&ba_network_thread);
+    uv_mutex_lock(&ba_network_mutex);
+    if (!atomic_load_explicit(&ba_network_stopped, memory_order_acquire)) {
+        atomic_store_explicit(&ba_network_stopped, 1, memory_order_release);
+        if (ba_network_tail) ba_network_tail->next = &ba_network_shutdown_command;
+        else ba_network_head = &ba_network_shutdown_command;
+        ba_network_tail = &ba_network_shutdown_command;
+        const int status = uv_async_send(&ba_network_mailbox);
+        if (status) {
+            ba_net_log(uv_strerror(status));
+            abort();
+        }
+    }
+    if (ba_network_is_reactor) {
+        uv_mutex_unlock(&ba_network_mutex);
+        return;
+    }
+    if (ba_network_joining) {
+        while (!ba_network_joined)
+            uv_cond_wait(&ba_network_shutdown_done, &ba_network_mutex);
+        uv_mutex_unlock(&ba_network_mutex);
+        return;
+    }
+    ba_network_joining = 1;
+    uv_mutex_unlock(&ba_network_mutex);
+    const int status = uv_thread_join(&ba_network_thread);
+    if (status) {
+        ba_net_log(uv_strerror(status));
+        abort();
+    }
+    uv_mutex_lock(&ba_network_mutex);
+    ba_network_joined = 1;
+    uv_cond_broadcast(&ba_network_shutdown_done);
+    uv_mutex_unlock(&ba_network_mutex);
 }

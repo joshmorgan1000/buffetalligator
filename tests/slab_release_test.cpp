@@ -14,7 +14,7 @@
 #include <thread>
 
 using buffetalligator::Memory;
-using buffetalligator::Placemat;
+using buffetalligator::BuffetDescriptor;
 using buffetalligator::Slice;
 /** --------------------------------------------------------------------------------------------------------- Require
  * @brief Stops the test on a violated public contract.
@@ -31,7 +31,7 @@ static void require(bool condition, const char* message) {
 int main() {
     constexpr size_t slab = 64u << 20;
     constexpr size_t claim = 16u << 20;
-    const Placemat* placement = Slice::default_placement();
+    const BuffetDescriptor* placement = Slice::default_placement();
     { Slice warm(64); }
     const size_t usage_before = Memory::placement_usage(*placement);
     const size_t freed_before = Memory::total_freed();

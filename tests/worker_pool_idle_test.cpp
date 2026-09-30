@@ -5,6 +5,7 @@
  */
 #include <alligator/kitchen.hpp>
 #include "functional_support.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <barrier>
@@ -85,6 +86,43 @@ void continuations() {
     await(chain.finished);
     require(chain.stages[0].result == 1 && chain.stages[1].result == 2 && chain.stages[2].result == 3,
         "chained completion callbacks returned the wrong results");
+}
+/** --------------------------------------------------------------------------------------------------------- Blocked Batch
+ * @brief Retains a batch gate and completion count while workers wait for their peers.
+ */
+struct BlockedBatch {
+    std::atomic<size_t> entered{0};
+    std::atomic<bool> release{false};
+};
+/** --------------------------------------------------------------------------------------------------------- Hold Batch
+ * @brief Keeps a worker occupied until every requested peer has entered.
+ */
+void hold_batch(void* context) {
+    BlockedBatch& batch = *static_cast<BlockedBatch*>(context);
+    batch.entered.fetch_add(1, std::memory_order_release);
+    batch.release.wait(false, std::memory_order_acquire);
+}
+/** --------------------------------------------------------------------------------------------------------- Blocked Backlog
+ * @brief Requires newly accepted backlog to start workers while existing workers are blocked.
+ */
+void blocked_backlog() {
+    LOG_INFO_STREAM << "Checking worker growth while accepted tasks are blocked";
+    const size_t count = std::min(size_t(8), Kitchen::inst().max_threads());
+    BlockedBatch batch;
+    TaskCountdown finished(static_cast<uint32_t>(count));
+    for (size_t index = 0; index < count; ++index) {
+        Kitchen::inst().submit(hold_batch, &batch, &TaskCountdown::arrive, &finished);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (batch.entered.load(std::memory_order_acquire) != count) {
+        require(std::chrono::steady_clock::now() < deadline,
+            "blocked workers prevented accepted backlog from starting");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    batch.release.store(true, std::memory_order_release);
+    batch.release.notify_all();
+    finished.wait();
+    Kitchen::inst().drain();
 }
 /** --------------------------------------------------------------------------------------------------------- Idle Wakeups
  * @brief Alternates single and bulk submissions after workers have time to park.
@@ -168,6 +206,7 @@ void idle_cpu() {
 int main() {
     LOG_INFO_STREAM << "Checking cold continuations, idle wakeups, and concurrent submissions";
     continuations();
+    blocked_backlog();
     idle_wakeups();
     concurrent_producers();
     LOG_INFO_STREAM << "Measuring idle worker CPU before process teardown";

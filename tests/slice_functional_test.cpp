@@ -3,6 +3,7 @@
  * @brief Exercises typed access, non-owning views, copies, and ownership through public APIs.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <span>
@@ -19,8 +20,8 @@ static void typed_slices() {
     SliceT<uint32_t> empty;
     require(empty.is_null() && empty.length() == 0, "typed default is not empty");
     SliceT<uint32_t> values(size_t(8));
-    require(values.size() == 8 && values.length() == 8, "typed element counts differ");
-    require(values.size_bytes() == 32, "typed byte count is incorrect");
+    require(values.size() == 16 && values.length() == 16, "typed element counts differ");
+    require(values.size_bytes() == 64, "typed byte count is incorrect");
     require(values.root_slice().placement() == Slice::default_placement(),
         "typed placement differs");
     for (size_t index = 0; index < values.size(); ++index) values.data()[index] = index + 10;
@@ -32,12 +33,16 @@ static void typed_slices() {
     require(copy.is_null() && copy.size_bytes() == 0, "typed move retained its source");
     Slice subview = values.slice(sizeof(uint32_t), 2 * sizeof(uint32_t));
     values.free();
-    require(moved.data()[7] == 17 && subview.get_as<uint32_t>() == 11,
+    require(moved.data()[7] == 17 && subview.get_as<uint32_t>() == 10 && subview.size_bytes() == 64,
         "typed shared ownership did not survive free");
     empty = moved;
     copy = std::move(empty);
     require(empty.is_null() && copy.raw() == moved.raw(), "typed assignment lost ownership");
-    require_throws([] { SliceT<uint32_t> invalid{Slice(3)}; }, "partial element accepted");
+    struct ThreeBytes { unsigned char bytes[3]; };
+    bool rejected = false;
+    try { SliceT<ThreeBytes> invalid{Slice(3)}; }
+    catch (const std::exception&) { rejected = true; }
+    require(rejected, "a granule containing a partial element was accepted");
     require_throws([] { SliceT<uint64_t> invalid(SIZE_MAX / sizeof(uint64_t) + 1); },
         "typed element count overflow accepted");
 }
@@ -47,13 +52,17 @@ static void typed_slices() {
 static void typed_views() {
     constexpr std::string_view text = "abcdefghijklmnop";
     SliceT<std::string_view> characters{Slice(text.data(), text.size())};
-    require(characters.get_as() == text, "string view does not cover the payload");
+    require(characters.get_as().size() == 64
+        && characters.get_as().substr(0, text.size()) == text,
+        "string view does not cover the represented payload");
     const auto& constant_characters = characters;
-    require(constant_characters.get_as() == text, "const string view differs");
+    require(constant_characters.get_as().size() == 64
+        && constant_characters.get_as().substr(0, text.size()) == text,
+        "const string view differs");
     const std::array<uint32_t, 4> input{2, 3, 5, 7};
     SliceT<std::span<uint32_t>> numbers{Slice(input.data(), sizeof(input))};
     auto view = numbers.get_as();
-    require(view.size() == 4 && view[3] == 7, "span view does not cover the payload");
+    require(view.size() == 16 && view[3] == 7, "span view does not cover the payload");
     view[1] = 11;
     const auto& constant_numbers = numbers;
     auto constant_view = constant_numbers.get_as();
@@ -77,11 +86,11 @@ static void weak_slices() {
     Slice middle = weak.slice(sizeof(uint32_t), 2 * sizeof(uint32_t));
     Slice suffix = weak.slice(2 * sizeof(uint32_t));
     Slice clamped = weak.slice(sizeof(uint32_t), SIZE_MAX - 1);
-    require(middle.size_bytes() == 8 && middle.data<uint32_t>()[0] == 22 &&
+    require(middle.size_bytes() == 64 && middle.data<uint32_t>()[0] == 22 &&
         middle.data<uint32_t>()[1] == 33, "weak subrange copy has the wrong offset");
-    require(suffix.size_bytes() == 8 && suffix.get_as<uint32_t>() == 33,
+    require(suffix.size_bytes() == 64 && suffix.get_as<uint32_t>() == 33,
         "weak default-length subrange did not copy the suffix");
-    require(clamped.size_bytes() == 12 && clamped.get_as<uint32_t>() == 22,
+    require(clamped.size_bytes() == 64 && clamped.get_as<uint32_t>() == 22,
         "weak length overflow did not clamp to the available bytes");
     input.fill(0);
     require(whole.get_as<uint32_t>() == 12 && middle.get_as<uint32_t>() == 22,

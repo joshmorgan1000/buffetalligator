@@ -4,6 +4,7 @@
  * ownership, positional removal, and adopted storage.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <algorithm>
@@ -89,6 +90,32 @@ void reference_order() {
         while (heap.pop(key, value)) drained.emplace_back(key, value);
         require(std::is_sorted(drained.begin(), drained.end()), "drain was not ascending");
         require(drained.size() == reference.size(), "drain count differs from the reference");
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Positional Removal
+ * @brief Removes every internal position from deterministic heaps and verifies the surviving order.
+ */
+void positional_removal() {
+    LOG_INFO_STREAM << "Checking every heap removal position against an ordered reference";
+    for (size_t capacity : {size_t(1), size_t(2), size_t(7), size_t(19), size_t(64)}) {
+        for (size_t removed_index = 0; removed_index < capacity; ++removed_index) {
+            HeapSlice heap(capacity);
+            std::multiset<uint64_t> reference;
+            for (size_t index = 0; index < capacity; ++index) {
+                const uint64_t word = HeapSlice::pack(
+                    static_cast<uint32_t>((index * 37) % 101), static_cast<uint32_t>(index));
+                heap.push(word);
+                reference.insert(word);
+            }
+            const uint64_t removed = heap.words()[removed_index];
+            require(heap.take(removed_index) == removed,
+                "positional removal returned another word");
+            reference.erase(reference.find(removed));
+            for (uint64_t expected : reference) {
+                require(heap.pop() == expected, "positional removal damaged heap order");
+            }
+            require(heap.empty(), "positional removal left an extra entry");
+        }
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Comparator Order
@@ -195,6 +222,7 @@ void erased_words() {
     require(heap.pop() == HeapSlice::EMPTY && heap.take(0) == HeapSlice::EMPTY,
         "an empty heap yielded a word");
     Slice storage(HeapSlice::HEADER_BYTES + 4 * sizeof(uint64_t));
+    storage.data<uint64_t>()[HeapSlice::CAPACITY_WORD] = 4;
     {
         HeapSlice filler(storage.slice());
         filler.push(HeapSlice::pack(7, 7));
@@ -204,6 +232,18 @@ void erased_words() {
     require(adopted.capacity() == 4 && adopted.size() == 2
         && adopted.pop() == HeapSlice::pack(3, 3),
         "adopted storage lost its heap");
+    HeapSlice odd(3);
+    Slice owned(64, true);
+    owned.get_as<uint64_t>() = 71;
+    odd.push(HeapSlice::pack(7, SliceHandle::detach(std::move(owned))));
+    HeapSliceT<uint32_t, Slice> owned_adopted(odd.storage());
+    require(owned_adopted.capacity() == 3 && owned_adopted.size() == 1,
+        "odd-capacity heap adoption changed its ownership bounds");
+    uint32_t key = 0;
+    Slice adopted_payload;
+    require(owned_adopted.pop(key, adopted_payload) && key == 7
+        && adopted_payload.get_as<uint64_t>() == 71 && owned_adopted.empty(),
+        "odd-capacity heap adoption changed the owned payload");
     require_throws([] { HeapSlice zero(0); }, "a zero capacity was accepted");
     require_throws([] {
         Slice header(HeapSlice::HEADER_BYTES);
@@ -214,6 +254,7 @@ void erased_words() {
 
 int main() {
     reference_order();
+    positional_removal();
     comparator_order();
     key_encodings();
     slice_ownership();

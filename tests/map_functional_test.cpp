@@ -3,6 +3,8 @@
  * @brief Exercises row lookup, transfer, typed cleanup, concurrent appends, and queue integration.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
+#include <alligator/atomics.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <barrier>
@@ -167,7 +169,7 @@ static void shared_ownership() {
             for (size_t round = 0; round < rounds; ++round) {
                 phase.arrive_and_wait();
                 Slice retained = map.get_slice(worker);
-                require(!retained.is_novel(), "a shared novel allocation still reports sole ownership");
+                require(retained.is_novel(), "sharing a dedicated allocation changed its backing kind");
                 phase.arrive_and_wait();
                 phase.arrive_and_wait();
                 require(retained.get_as<uint64_t>() == round * workers + worker,

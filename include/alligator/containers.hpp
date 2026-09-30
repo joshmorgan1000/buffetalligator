@@ -3,11 +3,28 @@
  * @file include/alligator/containers.hpp
  * @brief Container utilities for the Alligator library.
  */
+#include <alligator.hpp>
+#include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
+#include <iomanip>
+#include <iterator>
+#include <memory>
+#include <new>
+#include <ostream>
+#include <span>
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
+#include <openssl/rand.h>
+#include <openssl/sha.h>
 
 namespace buffetalligator {
 class Slice;
@@ -559,6 +576,8 @@ struct SliceHandle {
  */
 class PrioritySlice : public PriorityWords {
 public:
+    /// @brief Header position storing the declared capacity before granule padding.
+    static constexpr size_t CAPACITY_WORD = 7;
     /// @brief Slot words per block the natural-order caches summarize.
     static constexpr size_t BLOCK_WORDS = 32;
     /** ------------------------------------------------------------------------------------------- Header Bytes
@@ -585,8 +604,7 @@ public:
         const BuffetDescriptor* placement = Slice::default_placement()
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
-     * @brief Views existing slot words behind header_bytes(capacity), one per 8 bytes, that
-     * already mark free slots EMPTY, and rebuilds the header and block caches from them.
+     * @brief Reads capacity from CAPACITY_WORD and rebuilds caches over occupied and EMPTY words.
      * @param storage The Slice holding the header, the block caches, and the slot words.
      * @param compare The key order, or nullptr for the natural unsigned word order.
      */
@@ -702,6 +720,8 @@ private:
  */
 class HeapSlice : public PriorityWords {
 public:
+    /// @brief Header position storing the declared capacity before granule padding.
+    static constexpr size_t CAPACITY_WORD = 1;
     /** ------------------------------------------------------------------------------------------- Header Bytes
      * @brief Bytes ahead of the heap positions, the same for every capacity.
      * @return HEADER_BYTES.
@@ -721,7 +741,7 @@ public:
         const BuffetDescriptor* placement = Slice::default_placement()
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
-     * @brief Views an existing heap: a count word in the header and the positions behind it.
+     * @brief Adopts a heap with count in word zero and capacity in CAPACITY_WORD.
      * @param storage The Slice holding the header and the heap positions.
      * @param compare The key order, or nullptr for the natural unsigned word order.
      */
@@ -903,7 +923,18 @@ public:
     PriorityT(const PriorityT&) = delete;
     PriorityT& operator=(const PriorityT&) = delete;
     PriorityT(PriorityT&& other) noexcept = default;
-    PriorityT& operator=(PriorityT&& other) noexcept = default;
+    /** ------------------------------------------------------------------------------------------- Move Assignment
+     * @brief Releases destination payloads before transferring the source storage.
+     * @param other The container whose storage and payloads are transferred.
+     * @return This container.
+     */
+    PriorityT& operator=(PriorityT&& other) noexcept {
+        if (this != &other) {
+            if constexpr (owns_slices) clear();
+            Queue::operator=(std::move(other));
+        }
+        return *this;
+    }
     /** ------------------------------------------------------------------------------------------- Destructor
      * @brief Releases every owned Slice still held.
      */

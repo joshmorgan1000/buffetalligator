@@ -61,7 +61,8 @@ int main() {
     window.data<uint8_t>()[0] = 0x77;
     require(move_assigned.data<uint8_t>()[1024] == 0x77, "a sub-slice does not alias its parent");
     buffetalligator::Slice tail = move_assigned.slice(4000);
-    require(tail.size_bytes() == 96, "an open-ended sub-slice has the wrong size");
+    require(tail.size_bytes() == 128 && tail.raw() == move_assigned.data<uint8_t>() + 3968,
+        "an open-ended sub-slice did not round its bounds outward");
     buffetalligator::Slice whole = move_assigned.slice();
     require(whole.raw() == move_assigned.raw() && whole.size_bytes() == 4096, "a full view differs from its parent");
     require(move_assigned.slice(16, 0).is_null(), "a zero-length sub-slice is not null");
@@ -74,10 +75,17 @@ int main() {
     require(window.data<uint8_t>()[0] == 0x77, "a sub-slice did not keep the slab view alive");
     const char text[] = "buffet alligator";
     buffetalligator::Slice external(text, sizeof(text));
-    require(external.size_bytes() == sizeof(text) && std::memcmp(external.raw(), text, sizeof(text)) == 0,
+    require(external.size_bytes() == 64 && std::memcmp(external.raw(), text, sizeof(text)) == 0,
         "the external copy constructor did not copy the bytes");
-    buffetalligator::Slice from_nothing(nullptr, 64);
-    require(from_nothing.is_null(), "copying from a null pointer produced a claim");
+    bool rejected_null_source = false;
+    try {
+        buffetalligator::Slice from_nothing(nullptr, 64);
+    } catch (const buffetalligator::AlligatorException&) {
+        rejected_null_source = true;
+    }
+    require(rejected_null_source, "copying nonempty bytes from a null pointer was accepted");
+    buffetalligator::Slice empty_copy(nullptr, 0);
+    require(empty_copy.is_null(), "copying zero bytes from a null pointer produced a claim");
     buffetalligator::Slice grown(256);
     std::memset(grown.raw(), 0xAB, 256);
     grown.resize(512);
@@ -91,13 +99,13 @@ int main() {
     require(grown.size_bytes() == 64, "a discarding resize has the wrong size");
     buffetalligator::Slice revived;
     revived.resize(96);
-    require(revived.valid() && revived.size_bytes() == 96, "resize on a null slice did not allocate");
-    buffetalligator::Slice heap(100, buffetalligator::BuffetMenu::get(0));
-    buffetalligator::Slice heap_next(16, buffetalligator::BuffetMenu::get(0));
-    require(heap.placement() == buffetalligator::BuffetMenu::get(0), "an explicit placement was not honored");
+    require(revived.valid() && revived.size_bytes() == 128, "resize on a null slice did not allocate");
+    buffetalligator::Slice heap(100, buffetalligator::BuffetDescriptors::get(0));
+    buffetalligator::Slice heap_next(16, buffetalligator::BuffetDescriptors::get(0));
+    require(heap.placement() == buffetalligator::BuffetDescriptors::get(0), "an explicit placement was not honored");
     require(reinterpret_cast<uintptr_t>(heap_next.raw()) % 16 == 0, "the heap placement ignored its 16 byte alignment");
-    buffetalligator::Slice aligned_odd(100, buffetalligator::BuffetMenu::get(1));
-    buffetalligator::Slice aligned_next(16, buffetalligator::BuffetMenu::get(1));
+    buffetalligator::Slice aligned_odd(100, buffetalligator::BuffetDescriptors::get(0));
+    buffetalligator::Slice aligned_next(16, buffetalligator::BuffetDescriptors::get(0));
     require(reinterpret_cast<uintptr_t>(aligned_next.raw()) % 64 == 0,
         "the aligned heap placement ignored its 64 byte alignment");
     return 0;

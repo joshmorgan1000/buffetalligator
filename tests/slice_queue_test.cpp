@@ -3,6 +3,7 @@
  * @brief Checks public queue ownership, flushes, closure, reuse, and concurrent exact-once delivery.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
 #include <array>
 #include <atomic>

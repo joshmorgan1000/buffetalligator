@@ -1,67 +1,76 @@
 /** --------------------------------------------------------------------------------------------------------- Memory Contract Test
  * @file memory_test.cpp
- * @brief Verifies placement registration, worker preallocation, runway replenishment, chain
- * rollover, Slice lifetime, novel buffers, and tracking.
+ * @brief Verifies descriptor registration, chain rollover, Slice ownership, and tracked allocations.
  */
 #include <alligator.hpp>
+#include <alligator/atomics.hpp>
 #include <memory/tracker.hpp>
-#include <memory/plate.hpp>
-#include <algorithm>
+#include "functional_support.hpp"
+#include <array>
 #include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <stdexcept>
 #include <thread>
 
+using namespace buffetalligator;
+using functional::require;
 namespace {
-void require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 std::atomic<size_t> allocations{0};
 std::atomic<size_t> deallocations{0};
-std::atomic<size_t> startup_thread_allocations{0};
-std::atomic<bool> background_allocation{false};
-std::thread::id startup_thread = std::this_thread::get_id();
+BuffetDescriptor placement{};
 /** --------------------------------------------------------------------------------------------------------- Test Block
- * @brief The test placement's substrate handle: the block and its size.
+ * @brief Holds one registered allocation and its length.
  */
-struct TestBlock {
-    void* memory;  ///< The allocated block.
-    size_t size;   ///< The block size in bytes.
-};
-std::pair<void*, void*> test_allocate(size_t size, void*) {
-    allocations.fetch_add(1, std::memory_order_relaxed);
-    if (std::this_thread::get_id() == startup_thread) {
-        startup_thread_allocations.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        background_allocation.store(true, std::memory_order_relaxed);
-    }
+struct TestBlock { void* memory; size_t size; };
+/** --------------------------------------------------------------------------------------------------------- Allocate
+ * @brief Allocates and records a block through the test descriptor.
+ */
+void* test_allocate(size_t size) {
     void* memory = std::aligned_alloc(64, size);
-    if (memory == nullptr) {
-        throw std::bad_alloc();
-    }
+    if (memory == nullptr) throw std::bad_alloc();
     std::memset(memory, 0, size);
-    return {memory, new TestBlock{memory, size}};
+    TestBlock* block = new TestBlock{memory, size};
+    allocations.fetch_add(1, std::memory_order_relaxed);
+    BuffetDescriptors::record_allocation(placement.type_idx, size, block);
+    return block;
 }
-std::pair<void*, void*> test_deallocate(void* host_ptr, void* substrate_handle) {
-    static_cast<void>(host_ptr);
-    deallocations.fetch_add(1, std::memory_order_relaxed);
-    TestBlock* block = static_cast<TestBlock*>(substrate_handle);
+/** --------------------------------------------------------------------------------------------------------- Deallocate
+ * @brief Releases and records one completed descriptor allocation.
+ */
+void test_deallocate(void* handle) {
+    TestBlock* block = static_cast<TestBlock*>(handle);
+    const size_t bytes = block->size;
     std::free(block->memory);
     delete block;
-    return {nullptr, nullptr};
+    BuffetDescriptors::record_deallocation(placement.type_idx, bytes, handle);
+    deallocations.fetch_add(1, std::memory_order_relaxed);
 }
-void* test_context() {
-    return nullptr;
+/** --------------------------------------------------------------------------------------------------------- Host Pointer
+ * @brief Resolves a byte offset within the descriptor's allocation.
+ */
+void* test_host_ptr(void* handle, size_t offset) {
+    return static_cast<char*>(static_cast<TestBlock*>(handle)->memory) + offset;
 }
+/** --------------------------------------------------------------------------------------------------------- Size
+ * @brief Reports the exact backing allocation length.
+ */
+size_t test_size(void* handle) { return static_cast<TestBlock*>(handle)->size; }
+/** --------------------------------------------------------------------------------------------------------- Device Address
+ * @brief Supplies the address domain used by this CPU descriptor.
+ */
+uint64_t test_device_address(void* handle) {
+    return reinterpret_cast<uint64_t>(static_cast<TestBlock*>(handle)->memory);
+}
+/** --------------------------------------------------------------------------------------------------------- Claim Worker
+ * @brief Checks deterministic payload isolation across concurrent claims.
+ */
 void claim_worker(std::atomic<bool>* failed) {
     try {
         for (size_t claim = 0; claim < 1000; ++claim) {
-            buffetalligator::Slice slice(1024);
-            std::fill_n(slice.data<uint8_t>(), slice.size_bytes(), static_cast<uint8_t>(claim));
-            if (slice.data<uint8_t>()[0] != static_cast<uint8_t>(claim) ||
-                slice.data<uint8_t>()[slice.size_bytes() - 1] != static_cast<uint8_t>(claim)) {
+            Slice slice(1024, &placement);
+            std::memset(slice.raw(), static_cast<unsigned char>(claim), slice.size_bytes());
+            if (slice.data<uint8_t>()[0] != static_cast<uint8_t>(claim)
+                || slice.data<uint8_t>()[1023] != static_cast<uint8_t>(claim)) {
                 failed->store(true, std::memory_order_relaxed);
             }
         }
@@ -69,107 +78,68 @@ void claim_worker(std::atomic<bool>* failed) {
         failed->store(true, std::memory_order_relaxed);
     }
 }
-}
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief The block's host pointer.
+} // namespace
+/** --------------------------------------------------------------------------------------------------------- Main
+ * @brief Exercises registered descriptors through the public Slice and tracking contracts.
  */
-buffetalligator::HostPtr test_host_ptr(void* substrate_handle) {
-    return buffetalligator::HostPtr{static_cast<TestBlock*>(substrate_handle)->memory};
-}
-/** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @brief Host placements address their GPUBuf by the host pointer.
- */
-buffetalligator::GPUBuf test_gpu_buf(void* substrate_handle) {
-    const TestBlock* block = static_cast<TestBlock*>(substrate_handle);
-    return buffetalligator::GPUBuf{reinterpret_cast<uint64_t>(block->memory), static_cast<uint32_t>(block->size), 0};
-}
 int main() {
-    const uint16_t type = buffetalligator::BuffetMenu::register_type(
-        "test_placement",
-        64ull * 1024 * 1024,
-        64,
-        &test_allocate,
-        &test_deallocate,
-        &test_context,
-        &test_host_ptr,
-        nullptr,
-        &test_gpu_buf,
-        true
-    );
-    require(type == buffetalligator::BuffetMenu::count() - 1,
-        "custom placement did not receive the expected stable identifier");
-    require(buffetalligator::BuffetMenu::get("test_placement") ==
-        buffetalligator::BuffetMenu::get(type), "placement name lookup lost its identity");
-    require(buffetalligator::BuffetMenu::get("missing_placement") == nullptr,
-        "missing placement lookup returned a value");
-    buffetalligator::Slice bytes(4096);
-    require(sizeof(bytes) == 4, "Slice is not 4 bytes");
-    require(bytes.placement()->type() == type, "default strategy did not select the custom placement");
-    auto* backing = buffetalligator::Alligator::plate_for(bytes);
-    require(backing != nullptr && backing->substrate_handle != nullptr,
-        "placement handle lookup failed for a live allocation");
-    require(std::all_of(bytes.data<uint8_t>(), bytes.data<uint8_t>() + bytes.size_bytes(),
-        [](uint8_t value) { return value == 0; }), "fresh slice was not zero initialized");
-    buffetalligator::Slice probe(1024);
+    const BuffetDescriptor* initial_default = Slice::default_placement();
+    const uint8_t type = static_cast<uint8_t>(BuffetDescriptors::count());
+    placement = {"test_placement", test_deallocate, test_host_ptr, test_size, test_allocate,
+        type, 64ull * 1024 * 1024, test_device_address};
+    require(BuffetDescriptors::register_descriptor(&placement) == type,
+        "registration changed the descriptor's assigned type");
+    require(BuffetDescriptors::get(type) == &placement,
+        "registered descriptor lookup lost its identity");
+    require(Slice::default_placement() == initial_default,
+        "registration changed the explicitly selected default");
+    Slice bytes(4096, &placement);
+    require(sizeof(bytes) == 4 && bytes.placement() == &placement,
+        "Slice size or explicit placement differs");
+    void* backing = SliceEntry::from_slice(bytes)->token()->buffet();
+    require(backing != nullptr, "live Slice lost its backing handle");
+    const std::array<unsigned char, 4096> zeros{};
+    require(std::memcmp(bytes.raw(), zeros.data(), zeros.size()) == 0,
+        "fresh Slice was not zero initialized");
+    Slice probe(1024, &placement);
     require(static_cast<char*>(probe.raw()) - static_cast<char*>(bytes.raw()) == 4096,
         "the bump cursor did not advance by the exact claim size");
     bytes.data<uint8_t>()[128] = 91;
-    buffetalligator::Slice shared = bytes.slice();
+    Slice shared = bytes.slice();
     bytes.free();
     require(shared.data<uint8_t>()[128] == 91, "shared Slice did not retain the slab");
-    buffetalligator::Slice view = shared.slice(64, 256);
-    require(buffetalligator::Alligator::plate_for(view) == backing,
-        "subview changed its placement handle");
-    require(view.size_bytes() == 256, "sub-slice size is incorrect");
-    require(static_cast<char*>(view.raw()) - static_cast<char*>(shared.raw()) == 64,
-        "sub-slice offset is incorrect");
-    buffetalligator::Slice almost_full(64ull * 1024 * 1024 - 8192);
-    buffetalligator::Slice rollover(16384);
-    require(almost_full.valid(), "large bump-pointer claim failed");
-    require(rollover.valid(), "chain rollover claim failed");
-    std::atomic<bool> concurrent_claim_failed{false};
+    Slice view = shared.slice(64, 256);
+    require(SliceEntry::from_slice(view)->token()->buffet() == backing,
+        "subview changed its backing handle");
+    require(view.size_bytes() == 256 && view.raw() == shared.data<uint8_t>() + 64,
+        "subview changed its byte bounds");
+    Slice almost_full(64ull * 1024 * 1024 - 8192, &placement);
+    Slice rollover(16384, &placement);
+    require(almost_full.valid() && rollover.valid(), "chain rollover failed");
+    std::atomic<bool> failed{false};
     std::array<std::thread, 8> workers;
-    for (std::thread& worker : workers) {
-        worker = std::thread(&claim_worker, &concurrent_claim_failed);
-    }
-    for (std::thread& worker : workers) {
-        worker.join();
-    }
-    require(!concurrent_claim_failed.load(std::memory_order_relaxed),
-        "concurrent claims overlapped or failed");
-    const size_t caller_allocations_before_novel =
-        startup_thread_allocations.load(std::memory_order_relaxed);
-    const size_t deallocations_before_novel = deallocations.load(std::memory_order_relaxed);
+    for (std::thread& worker : workers) worker = std::thread(claim_worker, &failed);
+    for (std::thread& worker : workers) worker.join();
+    require(!failed.load(std::memory_order_relaxed), "concurrent claims overlapped or failed");
+    const size_t freed_before = Memory::placement_freed(placement);
     {
-        buffetalligator::Slice novel(8192, true);
-        require(novel.placement()->type() == type, "novel Slice used the wrong placement");
-        require(startup_thread_allocations.load(std::memory_order_relaxed) ==
-            caller_allocations_before_novel + 1, "novel Slice was not allocated on the calling thread");
-        require(deallocations.load(std::memory_order_relaxed) == deallocations_before_novel,
-            "novel Slice was torn down before the end of its scope");
+        Slice novel(8192, true, &placement);
+        require(novel.placement() == &placement && novel.is_novel(),
+            "novel Slice lost its placement or ownership kind");
+        require(Memory::placement_freed(placement) == freed_before,
+            "novel Slice was freed before its owner");
     }
-    const auto teardown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (deallocations.load(std::memory_order_relaxed) == deallocations_before_novel) {
-        if (std::chrono::steady_clock::now() > teardown_deadline) {
-            require(false, "the worker did not tear down the retired novel slab");
-        }
-        std::this_thread::yield();
-    }
-    buffetalligator::Placemat* aligned_placement = buffetalligator::BuffetMenu::get(1);
-    buffetalligator::Slice aligned(1024, aligned_placement);
-    require(aligned.placement() == aligned_placement, "aligned placement identity failed");
+    require(Memory::placement_freed(placement) == freed_before + 8192,
+        "novel backing was not released exactly once");
+    Slice aligned(1024, initial_default);
     require(reinterpret_cast<uintptr_t>(aligned.raw()) % 64 == 0,
-        "aligned heap Slice is not 64-byte aligned");
-    require(buffetalligator::Memory::total_allocations() >= 64ull * 1024 * 1024,
-        "Memory tracker did not record placement allocations");
-    require(buffetalligator::Memory::placement_usage(
-        *buffetalligator::BuffetMenu::get(type)) >= 64ull * 1024 * 1024,
-        "Memory tracker did not retain per-placement usage");
-    buffetalligator::AtomicRegistry registry;
-    buffetalligator::AtomicContainer* counter = registry.create<uint64_t>("counter", uint64_t(4));
-    require(counter->fetch_add<uint64_t>(3, std::memory_order_relaxed) == 4,
-        "AtomicContainer fetch_add returned the wrong prior value");
-    require(counter->load<uint64_t>(std::memory_order_relaxed) == 7,
-        "AtomicRegistry did not preserve the AtomicContainer value");
-    return 0;
+        "default Slice alignment differs");
+    require(Memory::placement_usage(placement) >= placement.default_size,
+        "tracker lost live chain backing");
+    AtomicRegistry registry;
+    AtomicContainer* counter = registry.create<uint64_t>("counter", uint64_t(4));
+    require(counter->fetch_add<uint64_t>(3, std::memory_order_relaxed) == 4
+        && counter->load<uint64_t>(std::memory_order_relaxed) == 7,
+        "registered atomic arithmetic differs");
+    LOG_INFO_STREAM << "Descriptor allocation and Slice ownership contracts passed";
 }

@@ -6,7 +6,12 @@
 #include <alligator.hpp>
 #include <alligator/kitchen.hpp>
 #include <alligator/easygpu.hpp>
-#include <shaderc/shaderc.hpp>
+#include <alligator/easyvulkan.hpp>
+#include <vulkan/shader_state.hpp>
+#include <memory/tracker.hpp>
+#include <condition_variable>
+#include <mutex>
+#include <exception>
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
@@ -14,33 +19,10 @@
 #include <memory>
 #include <vector>
 
-extern "C" void ba_net_shutdown(void);
-
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- make_transfer_unit
- * @brief Create this thread's TransferUnit from its own pool.
- */
-VulkanContext::TransferUnit VulkanContext::make_transfer_unit() {
-    VulkanContext& context = instance();
-    TransferUnit unit;
-    unit.pool = context.device_.createCommandPool(vk::CommandPoolCreateInfo(
-        vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family_index()));
-    unit.command = context.device_.allocateCommandBuffers(
-        vk::CommandBufferAllocateInfo(unit.pool, vk::CommandBufferLevel::ePrimary, 1))[0];
-    unit.fence = context.device_.createFence({});
-    return unit;
-}
-/** --------------------------------------------------------------------------------------------------------- transfer_unit
- * @brief This thread's transfer unit, created on first use. Handles are reclaimed by
- * vkDestroyDevice at teardown, never individually.
- */
-VulkanContext::TransferUnit& VulkanContext::transfer_unit() {
-    thread_local TransferUnit unit = make_transfer_unit();
-    return unit;
-}
+
 /** --------------------------------------------------------------------------------------------------------- unified_from_memory_properties
- * @brief The one-query UMA test: a memory type carrying both DEVICE_LOCAL and HOST_VISIBLE
- * whose heap is device-local.
+ * @brief Detects shared device-local host access separately from physical device topology.
  * @param properties The queried memory properties.
  * @return True on unified-memory systems.
  */
@@ -95,12 +77,15 @@ uint32_t VulkanContext::try_find_memory_type(
     return UINT32_MAX;
 }
 /** --------------------------------------------------------------------------------------------------------- constructor
- * @brief Create the context and register it as the process GPU backend. Requests only 2
- * host-side workers from the inherited CPUCompute pool (submission/callback plumbing) rather
- * than one per hardware thread - a GPU context does not run compute on the CPU worker pool,
- * so hardware_concurrency() workers would sit idle for the service's entire lifetime.
+ * @brief Probes compatible compute devices and freezes the process Vulkan context.
  */
 VulkanContext::VulkanContext() {
+    shader_runtime_initialize();
+    try {
+    const char* requested = std::getenv("ALLIGATOR_GPU_BACKEND");
+    const std::string_view backend = requested == nullptr ? "auto" : requested;
+    if (backend == "cpu" || backend == "metal" || backend == "cuda") return;
+
 #ifdef __APPLE__
     ::setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
 #endif
@@ -126,11 +111,29 @@ VulkanContext::VulkanContext() {
     instance_info.ppEnabledExtensionNames = instance_extensions.data();
     try {
         instance_ = vk::createInstance(instance_info);
-    } catch (const vk::SystemError&) {
-        return;
+    } catch (const vk::SystemError& error) {
+        if (error.code().value() == int(vk::Result::eErrorIncompatibleDriver)) return;
+        throw;
     }
     // No physical GPU is a normal state: the singleton exists and reports device_present() == false.
     for (const vk::PhysicalDevice& device : instance_.enumeratePhysicalDevices()) {
+        vk::PhysicalDeviceVulkan12Features candidate12{};
+        vk::PhysicalDeviceFeatures2 candidate{};
+        candidate.pNext = &candidate12;
+        device.getFeatures2(&candidate);
+        if (!candidate12.bufferDeviceAddress || !candidate.features.shaderInt64) continue;
+        bool has_compute = false;
+        for (const auto& family : device.getQueueFamilyProperties()) {
+            has_compute |= family.queueCount != 0 && bool(family.queueFlags & vk::QueueFlagBits::eCompute);
+        }
+        const vk::MemoryPropertyFlags host_flags =
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+        const auto memory = device.getMemoryProperties();
+        bool has_host_memory = false;
+        for (uint32_t index = 0; index < memory.memoryTypeCount; ++index) {
+            has_host_memory |= (memory.memoryTypes[index].propertyFlags & host_flags) == host_flags;
+        }
+        if (!has_compute || !has_host_memory) continue;
         const vk::PhysicalDeviceType type = device.getProperties().deviceType;
         if (type == vk::PhysicalDeviceType::eDiscreteGpu) {
             physical_device_ = device;
@@ -159,7 +162,12 @@ VulkanContext::VulkanContext() {
     vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR supported_isq{};
     vk::PhysicalDeviceFeatures2 supported{};
     supported.pNext = &supported12;
-    supported12.pNext = &supported_isq;
+    const auto extensions = physical_device_.enumerateDeviceExtensionProperties();
+    for (const auto& extension : extensions) {
+        if (std::strcmp(extension.extensionName.data(),
+                VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME) == 0)
+            supported12.pNext = &supported_isq;
+    }
     physical_device_.getFeatures2(&supported);
     if (!supported12.bufferDeviceAddress) {
         ALLIGATOR_GPU_THROW("VulkanCompute::init_instance_and_device: device lacks bufferDeviceAddress; compute requires it");
@@ -227,10 +235,14 @@ VulkanContext::VulkanContext() {
     }
     memory_properties_ = physical_device_.getMemoryProperties();
     vk::PhysicalDeviceSubgroupProperties subgroup{};
+    vk::PhysicalDeviceMaintenance3Properties allocation_limits{};
+    subgroup.pNext = &allocation_limits;
     vk::PhysicalDeviceProperties2 props2{};
     props2.pNext = &subgroup;
     physical_device_.getProperties2(&props2);
     const vk::PhysicalDeviceLimits& limits = props2.properties.limits;
+    max_allocation_size_ = allocation_limits.maxMemoryAllocationSize;
+    max_allocation_count_ = limits.maxMemoryAllocationCount;
     device_props_.device_name = props2.properties.deviceName.data();
     device_props_.max_workgroup_count[0] = limits.maxComputeWorkGroupCount[0];
     device_props_.max_workgroup_count[1] = limits.maxComputeWorkGroupCount[1];
@@ -277,7 +289,8 @@ VulkanContext::VulkanContext() {
         }
     }
     device_props_.host_visible_memory_bytes = host_visible_bytes;
-    device_props_.unified_memory = unified_from_memory_properties(memory_properties_);
+    device_props_.unified_memory = props2.properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu
+        && unified_from_memory_properties(memory_properties_);
     // Initialize allocation template
     buffer_usage_ = vk::BufferUsageFlagBits::eStorageBuffer
         | vk::BufferUsageFlagBits::eShaderDeviceAddress
@@ -307,10 +320,18 @@ VulkanContext::VulkanContext() {
     if (buffer_memory_type_index_ == UINT32_MAX) {
         ALLIGATOR_GPU_THROW("VulkanContext: no host-visible memory type for storage buffers");
     }
+    placement_type_indices_.fill(buffer_memory_type_index_);
+    placement_cpu_cached_.fill(bool(memory_properties_.memoryTypes[buffer_memory_type_index_].propertyFlags
+        & vk::MemoryPropertyFlagBits::eHostCached));
     pipeline_cache_ = device_.createPipelineCache({});
     device_present_ = true;
     device_props_.gpu_free_bytes = poll_budget_headroom();
     alive_.store(true, std::memory_order_release);
+} catch (...) {
+    if (device_) device_.destroy();
+    if (instance_) instance_.destroy();
+    throw;
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- poll_budget_headroom
  * @brief Sum the device-local budget headroom (budget - usage per heap) via VK_EXT_memory_budget.
@@ -341,8 +362,7 @@ uint64_t VulkanContext::poll_budget_headroom() const {
  * already be destroyed.
  */
 VulkanContext::~VulkanContext() {
-    // Stop the network reactors before the device their in-flight Slices may live on goes away.
-    ba_net_shutdown();
+    ShaderState::drain();
     alive_.store(false, std::memory_order_release);
     if (!device_) {
         return;
@@ -352,75 +372,47 @@ VulkanContext::~VulkanContext() {
     device_.destroy();
     instance_.destroy();
 }
-/// Kernels acquire their lease during controller startup, before accepting requests.
+/** --------------------------------------------------------------------------------------------------------- Submission Queue
+ * @brief Acquires one queue for the duration of a host submission.
+ */
 uint32_t VulkanContext::submission_queue_index() {
     VulkanContext& context = instance();
-    struct Lease {
-        VulkanContext* owner;
-        uint32_t index;
-        bool exclusive;
-        ~Lease() {
-            if (exclusive && VulkanContext::alive_.load(std::memory_order_acquire))
-                owner->queue_claims_[index].clear(std::memory_order_release);
+    const uint32_t count = uint32_t(context.compute_queues_.size());
+    const uint32_t first = context.next_queue_slot_.fetch_add(1, std::memory_order_relaxed) % count;
+    if (context.internally_synchronized_queues_) return first;
+    for (;;) {
+        const uint64_t epoch = context.queue_epoch_.load(std::memory_order_acquire);
+        for (uint32_t index = 0; index < count; ++index) {
+            const uint32_t slot = (first + index) % count;
+            if (!context.queue_claims_[slot].test_and_set(std::memory_order_acquire)) return slot;
         }
-    };
-    thread_local Lease lease = [&]() -> Lease {
-        const uint32_t count = uint32_t(context.compute_queues_.size());
-        if (context.internally_synchronized_queues_)
-            return {&context, context.next_queue_slot_.fetch_add(1, std::memory_order_relaxed) % count, false};
-        for (uint32_t i = 0; i < count; ++i)
-            if (!context.queue_claims_[i].test_and_set(std::memory_order_acquire)) return {&context, i, true};
-        ALLIGATOR_GPU_THROW("Vulkan: all compute queues have an owner; reduce GPU controller threads");
-    }();
-    return lease.index;
+        context.queue_epoch_.wait(epoch, std::memory_order_acquire);
+    }
 }
-/** --------------------------------------------------------------------------------------------------------- submit_command_buffer
- * @brief Reset the fence and submit to this thread's sticky compute queue, lock-free.
- * @param command_buffer The recorded command buffer.
- * @param fence The submitter's fence, signalled on retirement.
- * @param callback Reserved by the in-flight callback scaffolding; pass nullptr.
- * @param callback_context Reserved; pass nullptr.
+/** --------------------------------------------------------------------------------------------------------- Submit Command Buffer
+ * @brief Submits the command matching one acquired queue's family and releases the queue on every path.
  */
-void VulkanContext::submit_command_buffer(
-    vk::CommandBuffer command_buffer,
-    vk::Fence fence,
-    void (*callback)(void*),
-    void* callback_context
-) {
+void VulkanContext::submit_command_buffer(std::span<const vk::CommandBuffer> commands, vk::Fence fence) {
     VulkanContext& context = instance();
-    context.device_.resetFences(fence);
-    const uint32_t queue_slot = submission_queue_index();
-    vk::SubmitInfo submit_info{};
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &command_buffer;
-    context.compute_queues_[queue_slot].submit(submit_info, fence);
-    if (callback != nullptr) {
-        Kitchen::inst().submit_waiting(&VulkanContext::wait_for_fence,
-            static_cast<VkFence>(fence), callback, callback_context);
+    const uint32_t queue = submission_queue_index();
+    try {
+        context.device_.resetFences(fence);
+        const vk::CommandBuffer command = commands[context.queue_family_slots_[queue]];
+        const vk::SubmitInfo submit({}, {}, command);
+        context.compute_queues_[queue].submit(submit, fence);
+    } catch (...) {
+        if (!context.internally_synchronized_queues_) {
+            context.queue_claims_[queue].clear(std::memory_order_release);
+            context.queue_epoch_.fetch_add(1, std::memory_order_release);
+            context.queue_epoch_.notify_all();
+        }
+        throw;
     }
-}
-/** --------------------------------------------------------------------------------------------------------- wait_for_fence
- * @brief The waiter-pool task behind a submission callback: parks until the fence signals.
- * @param fence The submission's VkFence handle.
- */
-void VulkanContext::wait_for_fence(void* fence) {
-    const vk::Result result = instance().device_.waitForFences(
-        vk::Fence(static_cast<VkFence>(fence)), VK_TRUE, UINT64_MAX);
-    if (result != vk::Result::eSuccess) {
-        ALLIGATOR_GPU_THROW("Vulkan: failed to wait for fence");
+    if (!context.internally_synchronized_queues_) {
+        context.queue_claims_[queue].clear(std::memory_order_release);
+        context.queue_epoch_.fetch_add(1, std::memory_order_release);
+        context.queue_epoch_.notify_all();
     }
-}
-/** --------------------------------------------------------------------------------------------------------- queue_family_index
- * @brief The compute queue family leased by this submitting thread.
- */
-uint32_t VulkanContext::queue_family_index() {
-    return instance().compute_families_[submission_family_slot()];
-}
-/** --------------------------------------------------------------------------------------------------------- submission_family_slot
- * @brief The submitting thread's index into the prepared compute-family command buffers.
- */
-uint32_t VulkanContext::submission_family_slot() {
-    return instance().queue_family_slots_[submission_queue_index()];
 }
 /** --------------------------------------------------------------------------------------------------------- buffer_create_info
  * @brief Shares a buffer across every compute family when the device exposes more than one.
@@ -462,66 +454,10 @@ struct KernelPush {
     uint64_t pool;   ///< The global GPUBufRef table's device address
 };
 static_assert(sizeof(KernelPush) == 16, "KernelPush must mirror the GLSL push block");
-/// @brief Slices one prepared Shader binds per round; longer lists dispatch in rounds.
-constexpr size_t PUBLIC_LIST_CAPACITY = 1024;
-/** --------------------------------------------------------------------------------------------------------- Public GLSL Tail
- * @brief Resolves the parameter list's pool ID and hands workgroup Y its own slice.
- */
-inline constexpr std::string_view PUBLIC_GLSL_TAIL = R"glsl(
-Slice vulkan_list() { return slice_read(vulkan_push.vulkan_table_address); }
-uint vulkan_count() { return slice_size(vulkan_list()) / 4u; }
-Slice vulkan_slice(uint index) { return slice_read(slice_address(vulkan_list()) + uint64_t(index) * 4ul); }
-uint vulkan_index() { return gl_WorkGroupID.y; }
-layout(local_size_x = 16, local_size_y = 4, local_size_z = 1) in;
-)glsl";
-/** --------------------------------------------------------------------------------------------------------- Public Shader Source
- * @brief Assembles the injected Slice ABI, fixed workgroup shape, user function, and entry point.
- * @param body The body of the shader function to be injected into the final source.
- * @return The complete GLSL source code as a string.
- */
-std::string public_shader_source(std::string_view body) {
-    constexpr std::string_view entry =
-        "\nvoid main() { vulkan_main(vulkan_slice(vulkan_index())); }\n";
-    std::string source;
-    source.reserve(13 + VULKAN_GLSL_KERNEL_CORE.size() + PUBLIC_GLSL_TAIL.size()
-        + body.size() + entry.size());
-    source.append("#version 450\n");
-    source.append(VULKAN_GLSL_KERNEL_CORE);
-    source.append(PUBLIC_GLSL_TAIL);
-    source.append(body);
-    source.append(entry);
-    return source;
-}
+
 } // namespace
-/** --------------------------------------------------------------------------------------------------------- Compile Vulkan GLSL
- * @brief Compiles GLSL source code into Vulkan SPIR-V binary format.
- * @param source GLSL source code as a string view.
- * @param float16 Whether to enable 16-bit floating point support.
- * @param name Diagnostic name for error reporting.
- * @return A vector of 32-bit words representing the compiled SPIR-V binary.
- */
-std::vector<uint32_t> compile_vulkan_glsl(
-    std::string_view source,
-    bool float16,
-    std::string_view name
-) {
-    shaderc::Compiler compiler;
-    shaderc::CompileOptions options;
-    options.SetOptimizationLevel(shaderc_optimization_level_performance);
-    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-    if (float16) options.AddMacroDefinition("VULKAN_FLOAT16", "1");
-    const std::string diagnostic_name(name);
-    const shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
-        source.data(), source.size(), shaderc_compute_shader, diagnostic_name.c_str(), options);
-    if (result.GetCompilationStatus() != shaderc_compilation_status_success) {
-        ALLIGATOR_GPU_THROW("Vulkan shader compile failed [" + diagnostic_name + "]: "
-            + result.GetErrorMessage());
-    }
-    return std::vector<uint32_t>(result.cbegin(), result.cend());
-}
 /** --------------------------------------------------------------------------------------------------------- VulkanBuffer Constructor
- * @brief Create, allocate (DEVICE_LOCAL|HOST_VISIBLE preferred, else HOST_VISIBLE), bind, map,
- * zero, and query the device address.
+ * @brief Allocates coherent device-visible storage through the probed placement.
  * @param size_bytes Buffer size in bytes.
  */
 VulkanBuffer::VulkanBuffer(size_t size_bytes)
@@ -533,557 +469,337 @@ VulkanBuffer::VulkanBuffer(size_t size_bytes)
  */
 VulkanBuffer::VulkanBuffer(size_t size_bytes, uint32_t memory_type_index)
 : size_(size_bytes) {
-    if (!VulkanContext::device_present()) {
-        host_ = std::malloc(size_bytes);
-        std::memset(host_, 0, size_bytes);
-        address_ = 0;
-        return;
+    if (size_bytes == 0) return;
+    if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("VulkanBuffer requires a compatible device");
+    VulkanContext& context = VulkanContext::instance();
+    const vk::MemoryPropertyFlags required =
+        vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent;
+    if (memory_type_index >= context.memory_properties_.memoryTypeCount
+        || (context.memory_properties_.memoryTypes[memory_type_index].propertyFlags & required) != required)
+        ALLIGATOR_GPU_THROW("VulkanBuffer requires a host-visible coherent memory type");
+    const uint32_t heap = context.memory_properties_.memoryTypes[memory_type_index].heapIndex;
+    if (size_bytes > context.max_allocation_size_
+        || size_bytes > context.memory_properties_.memoryHeaps[heap].size)
+        ALLIGATOR_GPU_THROW("VulkanBuffer exceeds the device allocation-size limit");
+    try {
+        buffer_ = context.device_.createBuffer(
+            context.shared_buffer_info(size_bytes, context.buffer_usage_));
+        const vk::MemoryRequirements requirements = context.device_.getBufferMemoryRequirements(buffer_);
+        if (!(requirements.memoryTypeBits & (1u << memory_type_index)))
+            ALLIGATOR_GPU_THROW("VulkanBuffer memory type is incompatible with the requested buffer");
+        if (requirements.size > context.max_allocation_size_
+            || requirements.size > context.memory_properties_.memoryHeaps[heap].size)
+            ALLIGATOR_GPU_THROW("VulkanBuffer allocation requirements exceed the device limit");
+        if (context.device_props_.supports_memory_budget) {
+            vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget;
+            vk::PhysicalDeviceMemoryProperties2 memory_properties;
+            memory_properties.pNext = &budget;
+            context.physical_device_.getMemoryProperties2(&memory_properties);
+            const uint64_t headroom = budget.heapBudget[heap] > budget.heapUsage[heap]
+                ? budget.heapBudget[heap] - budget.heapUsage[heap] : 0;
+            if (requirements.size > headroom)
+                ALLIGATOR_GPU_THROW("VulkanBuffer allocation exceeds the current heap budget");
+        }
+        vk::MemoryAllocateInfo allocate_info(requirements.size, memory_type_index);
+        allocate_info.pNext = &context.allocate_flags_;
+        if (context.allocation_count_.fetch_add(1, std::memory_order_acq_rel)
+            >= context.max_allocation_count_) {
+            context.allocation_count_.fetch_sub(1, std::memory_order_release);
+            ALLIGATOR_GPU_THROW("VulkanBuffer exceeds the device allocation-count limit");
+        }
+        try {
+            memory_ = context.device_.allocateMemory(allocate_info);
+        } catch (...) {
+            context.allocation_count_.fetch_sub(1, std::memory_order_release);
+            throw;
+        }
+        context.device_.bindBufferMemory(buffer_, memory_, 0);
+        host_ = context.device_.mapMemory(memory_, 0, VK_WHOLE_SIZE);
+        address_ = context.device_.getBufferAddress(vk::BufferDeviceAddressInfo(buffer_));
+        std::memset(host_, 0, size_);
+    } catch (...) {
+        release();
+        throw;
     }
-    buffer_ = VulkanContext::instance().device_.createBuffer(
-        VulkanContext::buffer_create_info(size_bytes, VulkanContext::instance().buffer_usage_));
-    const vk::MemoryRequirements requirements = VulkanContext::instance().device_.getBufferMemoryRequirements(buffer_);
-    vk::MemoryAllocateInfo allocate_info(requirements.size, memory_type_index);
-    allocate_info.pNext = &VulkanContext::instance().allocate_flags_;
-    memory_ = VulkanContext::instance().device_.allocateMemory(allocate_info);
-    VulkanContext::instance().device_.bindBufferMemory(buffer_, memory_, 0);
-    host_ = VulkanContext::instance().device_.mapMemory(memory_, 0, VK_WHOLE_SIZE);
-    address_ = VulkanContext::instance().device_.getBufferAddress(vk::BufferDeviceAddressInfo(buffer_));
-    std::memset(host_, 0, size_);
 }
 /** --------------------------------------------------------------------------------------------------------- VulkanBuffer Release
- * @brief Unmap and free through the owning context, unless that context has already been torn down.
+ * @brief Releases completed or partially constructed Vulkan storage through its owning context.
  */
 void VulkanBuffer::release() {
-    if (!memory_) {
-        std::free(host_);
-        return;
+    if (buffer_ || memory_) {
+        VulkanContext& context = VulkanContext::instance();
+        const vk::Device device = context.device_;
+        if (host_) device.unmapMemory(memory_);
+        if (buffer_) device.destroyBuffer(buffer_);
+        if (memory_) {
+            device.freeMemory(memory_);
+            context.allocation_count_.fetch_sub(1, std::memory_order_release);
+        }
     }
-    if (!VulkanContext::alive_.load(std::memory_order_acquire)) {
-        return;
-    }
-    VulkanContext::instance().device_.unmapMemory(memory_);
-    VulkanContext::instance().device_.destroyBuffer(buffer_);
-    VulkanContext::instance().device_.freeMemory(memory_);
+    buffer_ = nullptr;
+    memory_ = nullptr;
+    host_ = nullptr;
+    address_ = 0;
+    size_ = 0;
 }
-/** --------------------------------------------------------------------------------------------------------- GPU::exists
- * @brief Checks if a Vulkan compute device is present.
- * @return True if a Vulkan compute device is available, false otherwise.
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+static std::atomic<bool> shader_test_fail_preparation{false};
+static std::atomic<bool> shader_test_fail_submission{false};
+static std::atomic<bool> shader_test_hold_submission{false};
+static std::atomic<uint32_t> shader_test_live_slots{0};
+#endif
+/** --------------------------------------------------------------------------------------------------------- Shader State Resources
+ * @brief Shares immutable pipelines while preparing independent mapped submission slots.
  */
-bool GPU::exists() {
-    return VulkanContext::device_present();
-}
-/** --------------------------------------------------------------------------------------------------------- GPU::unified_memory
- * @brief Checks if the Vulkan compute device uses unified memory.
- * @return True if the device has unified memory, false otherwise.
- */
-bool GPU::unified_memory() {
-    return VulkanContext::device_present() && VulkanContext::device_unified();
-}
-/** --------------------------------------------------------------------------------------------------------- GPU::device_name
- * @brief Retrieves the name of the Vulkan compute device.
- * @return The device name as a string.
- */
-std::string GPU::device_name() {
-    return VulkanKernel::device_name();
-}
-/** --------------------------------------------------------------------------------------------------------- GPU::compile_glsl
- * @brief Compiles GLSL source code into a Vulkan SPIR-V binary.
- * @param body The body of the shader function to be injected into the final source.
- * @return A Slice containing the compiled SPIR-V words.
- */
-Slice GPU::compile_glsl(std::string_view body) {
-    if (!VulkanContext::device_present()) {
-        ALLIGATOR_GPU_THROW("GPU::compile_glsl: no Vulkan compute device is present.");
-    }
-    if (!VulkanContext::device_properties().supports_int64) {
-        ALLIGATOR_GPU_THROW("GPU::compile_glsl: the prelude addresses memory with uint64_t, "
-            "but the device lacks shaderInt64.");
-    }
-    const std::string assembled = kernel_shader_source(body);
-    std::vector<uint32_t> spirv;
-    try {
-        spirv = compile_vulkan_glsl(
-            assembled,
-            VulkanContext::device_properties().supports_float16,
-            "vulkan_gpu_compile_glsl");
-    } catch (const std::exception& error) {
-        ALLIGATOR_GPU_THROW(std::string("GPU::compile_glsl: ") + error.what());
-    }
-    Slice words(4 * spirv.size());
-    std::memcpy(words.raw(), spirv.data(), words.size_bytes());
-    return words;
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState
- * @class ShaderState
- * @brief Owns one pipeline, persistent parameter block, immutable command buffer, and fence.
- */
-struct ShaderState::Impl {
-    enum class Format { Slices, Jobs, References };
+struct VulkanShaderResources {
+    using Format = ShaderFormat;
     Format format;
     std::vector<uint32_t> words;
     std::string name;
     size_t limit;
-    uint32_t reference_workgroups_x = 1;
     vk::Pipeline pipeline{};
     std::vector<std::vector<uint32_t>> stage_words;
     std::vector<KernelGpuStage> stages;
     std::vector<vk::Pipeline> stage_pipelines;
     uint32_t resources = 0;
-
     vk::PipelineLayout layout{};
     vk::ShaderModule module{};
-    vk::Buffer buffer{};
-    vk::DeviceMemory memory{};
-    uint8_t* mapped = nullptr;
-    uint64_t address = 0;
-    Slice parameters;
-    std::vector<vk::CommandPool> command_pools;
-    std::vector<vk::CommandBuffer> commands;
-    vk::Fence fence{};
-
-    Impl(std::vector<uint32_t> code, std::string_view label, Format fmt,
-         size_t capacity, const Slice* refs = nullptr)
-        : format(fmt), words(std::move(code)), name(label), limit(capacity) {
+    /** ------------------------------------------------------------------------------------------- Submission Slot
+     * @brief Owns every mutable resource referenced by one admitted dispatch.
+     */
+    struct Slot {
+        std::unique_ptr<VulkanBuffer> storage;
+        uint8_t* mapped = nullptr;
+        Slice parameters;
+        std::vector<vk::CommandPool> command_pools;
+        std::vector<vk::CommandBuffer> commands;
+        vk::Fence fence{};
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+        Slot() { shader_test_live_slots.fetch_add(1, std::memory_order_relaxed); }
+#endif
+        /** ----------------------------------------------------------------------------- Destructor
+         * @brief Releases a retired slot's Vulkan resources.
+         */
+        ~Slot() {
+            const auto device = VulkanContext::device();
+            for (const auto pool : command_pools) device.destroyCommandPool(pool);
+            if (fence) device.destroyFence(fence);
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+            shader_test_live_slots.fetch_sub(1, std::memory_order_relaxed);
+#endif
+        }
+        /** ----------------------------------------------------------------------------- Submit
+         * @brief Submits prepared commands and waits for host-visible retirement on a waiter thread.
+         */
+        void submit(uint32_t width, uint32_t height, uint32_t depth) {
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+            shader_test_hold_submission.wait(true, std::memory_order_acquire);
+            if (shader_test_fail_submission.exchange(false, std::memory_order_acq_rel))
+                ALLIGATOR_GPU_THROW("Injected Shader submission failure");
+#endif
+            *reinterpret_cast<vk::DispatchIndirectCommand*>(mapped + 16) =
+                vk::DispatchIndirectCommand(width, height, depth);
+            VulkanContext::submit_command_buffer(commands, fence);
+        }
+        void wait() {
+            for (;;) {
+                const auto result = VulkanContext::device().waitForFences(fence, VK_TRUE, 1000000000ull);
+                if (result == vk::Result::eSuccess) return;
+                if (result != vk::Result::eTimeout)
+                    ALLIGATOR_GPU_THROW("Shader fence wait: " + vk::to_string(result));
+                LOG_INFO_STREAM << "Waiting for the GPU dispatch to retire";
+            }
+        }
+    };
+    std::vector<std::unique_ptr<Slot>> slots;
+    Slice references;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Prepares one immutable program and all device-queue submission slots.
+     */
+    VulkanShaderResources(std::vector<uint32_t> code, std::string_view label, Format selected,
+        size_t capacity, const Slice* refs = nullptr)
+        : format(selected), words(std::move(code)), name(label), limit(capacity) {
+        if (refs) references = refs->slice();
         try { prepare(refs); } catch (...) { release(); throw; }
     }
-    Impl(std::vector<std::vector<uint32_t>> code, std::span<const KernelGpuStage> sequence,
-         std::string_view label, const Slice& refs, uint32_t resource_ref)
+    /** ------------------------------------------------------------------------------------------- Staged Constructor
+     * @brief Prepares a reference program's immutable pipeline sequence and slots.
+     */
+    VulkanShaderResources(std::vector<std::vector<uint32_t>> code, std::span<const KernelGpuStage> sequence,
+        std::string_view label, const Slice& refs, uint32_t resource_ref)
         : format(Format::References), words(code.front()), name(label), limit(refs.size<uint32_t>()),
-          stage_words(std::move(code)), stages(sequence.begin(), sequence.end()), resources(resource_ref) {
+          stage_words(std::move(code)), stages(sequence.begin(), sequence.end()), resources(resource_ref),
+          references(refs.slice()) {
         try { prepare(&refs); } catch (...) { release(); throw; }
     }
-    ~Impl() { release(); }
-
+    ~VulkanShaderResources() { release(); }
+    /** ------------------------------------------------------------------------------------------- Release
+     * @brief Destroys retired slots before their shared pipelines and layout.
+     */
     void release() {
+        slots.clear();
         const auto device = VulkanContext::device();
-        for (const auto pool : command_pools) device.destroyCommandPool(pool);
-        if (fence) device.destroyFence(fence);
         if (pipeline) device.destroyPipeline(pipeline);
         for (auto entry : stage_pipelines) device.destroyPipeline(entry);
         if (layout) device.destroyPipelineLayout(layout);
         if (module) device.destroyShaderModule(module);
-        if (mapped) device.unmapMemory(memory);
-        if (buffer) device.destroyBuffer(buffer);
-        if (memory) device.freeMemory(memory);
     }
+    /** ------------------------------------------------------------------------------------------- Prepare
+     * @brief Compiles immutable pipelines and records queue-family-compatible command buffers.
+     */
     void prepare(const Slice* refs) {
         const auto device = VulkanContext::device();
-        const auto& props = VulkanContext::device_properties();
-        if (props.max_workgroup_size[0] < 16 || props.max_workgroup_size[1] < 4
-            || props.max_workgroup_invocations < 64)
-            ALLIGATOR_GPU_THROW("Kernel: device cannot execute the (16,4,1) local shape");
-        limit = std::min(limit, size_t(props.max_workgroup_count[format == Format::Slices ? 1 : 2]));
-        module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
+        const auto& properties = VulkanContext::device_properties();
+        if (properties.max_workgroup_size[0] < 16 || properties.max_workgroup_size[1] < 4
+            || properties.max_workgroup_invocations < 64)
+            ALLIGATOR_GPU_THROW("Shader: device cannot execute the (16,4,1) local shape");
+        limit = std::min(limit, size_t(properties.max_workgroup_count[format == Format::Slices ? 1 : 2]));
         const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(KernelPush));
         layout = device.createPipelineLayout(vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1, &range));
-        const vk::PipelineShaderStageCreateInfo stage({}, vk::ShaderStageFlagBits::eCompute, module, "main");
-        const auto created = device.createComputePipeline(VulkanContext::pipeline_cache(),
-            vk::ComputePipelineCreateInfo({}, stage, layout));
-        if (created.result != vk::Result::eSuccess) ALLIGATOR_GPU_THROW("Kernel pipeline: " + vk::to_string(created.result));
-        pipeline = created.value;
-        device.destroyShaderModule(module); module = nullptr;
-        for (size_t index = 1; index < stage_words.size(); ++index) {
-            const auto& code = stage_words[index];
-            module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, code.size() * 4, code.data()));
-            const vk::PipelineShaderStageCreateInfo pass({}, vk::ShaderStageFlagBits::eCompute, module, "main");
+        stage_pipelines.reserve(stage_words.empty() ? 0 : stage_words.size() - 1);
+        {
+            std::lock_guard cache_lock(VulkanContext::instance().pipeline_mutex_);
+            module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
+            const vk::PipelineShaderStageCreateInfo stage({}, vk::ShaderStageFlagBits::eCompute, module, "main");
             const auto built = device.createComputePipeline(VulkanContext::pipeline_cache(),
-                vk::ComputePipelineCreateInfo({}, pass, layout));
-            if (built.result != vk::Result::eSuccess) ALLIGATOR_GPU_THROW("Kernel stage pipeline: " + vk::to_string(built.result));
-            stage_pipelines.push_back(built.value);
-            device.destroyShaderModule(module); module = nullptr;
+                vk::ComputePipelineCreateInfo({}, stage, layout));
+            if (built.result != vk::Result::eSuccess)
+                ALLIGATOR_GPU_THROW("Shader pipeline: " + vk::to_string(built.result));
+            pipeline = built.value;
+            device.destroyShaderModule(module);
+            module = nullptr;
+            for (size_t index = 1; index < stage_words.size(); ++index) {
+                const auto& code = stage_words[index];
+                module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, code.size() * 4, code.data()));
+                const vk::PipelineShaderStageCreateInfo pass({}, vk::ShaderStageFlagBits::eCompute, module, "main");
+                const auto created = device.createComputePipeline(VulkanContext::pipeline_cache(),
+                    vk::ComputePipelineCreateInfo({}, pass, layout));
+                if (created.result != vk::Result::eSuccess)
+                    ALLIGATOR_GPU_THROW("Shader stage pipeline: " + vk::to_string(created.result));
+                stage_pipelines.push_back(created.value);
+                device.destroyShaderModule(module);
+                module = nullptr;
+            }
         }
-        const size_t bytes = 32 + stages.size() * 16;
-
-        buffer = device.createBuffer(VulkanContext::buffer_create_info(bytes,
-            vk::BufferUsageFlagBits::eShaderDeviceAddress | vk::BufferUsageFlagBits::eStorageBuffer
-            | vk::BufferUsageFlagBits::eIndirectBuffer));
-        const auto requirements = device.getBufferMemoryRequirements(buffer);
-        const uint32_t type = VulkanContext::buffer_memory_type_index();
-        if (!(requirements.memoryTypeBits & (1u << type))) ALLIGATOR_GPU_THROW("Kernel: incompatible coherent memory type");
-        vk::MemoryAllocateInfo allocation(requirements.size, type);
-        allocation.pNext = &VulkanContext::allocate_flags();
-        memory = device.allocateMemory(allocation);
-        device.bindBufferMemory(buffer, memory, 0);
-        mapped = static_cast<uint8_t*>(device.mapMemory(memory, 0, VK_WHOLE_SIZE));
-        std::memset(mapped, 0, bytes);
-        address = device.getBufferAddress(vk::BufferDeviceAddressInfo(buffer));
-        if (format == Format::References) {
-            *reinterpret_cast<uint64_t*>(mapped) = VulkanKernel::device_address(*refs);
-            reinterpret_cast<uint32_t*>(mapped)[2] = uint32_t(refs->size<uint32_t>() - 1);
-            reinterpret_cast<uint32_t*>(mapped)[7] = resources;
-        } else {
-            parameters = Slice(limit * (format == Format::Jobs ? 32 : sizeof(Slice)),
-                VulkanContext::buffer_placement());
-            *reinterpret_cast<uint32_t*>(mapped) = parameters.pool_index();
-        }
-        command_pools.reserve(VulkanContext::compute_families().size());
-        commands.reserve(VulkanContext::compute_families().size());
-        fence = device.createFence({});
-        for (const uint32_t family : VulkanContext::compute_families()) {
-            const auto command_pool = device.createCommandPool(vk::CommandPoolCreateInfo({}, family));
-            command_pools.push_back(command_pool);
-            const auto command = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
-                command_pool, vk::CommandBufferLevel::ePrimary, 1))[0];
-            commands.push_back(command);
-            const KernelPush push{address, VulkanKernel::gpu_pool_address()};
-            static_cast<void>(command.begin(vk::CommandBufferBeginInfo{}));
-            command.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
-            command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
-            if (stages.empty()) {
-                command.dispatchIndirect(buffer, 16);
+        slots.reserve(VulkanContext::queue_count());
+        for (uint32_t slot_index = 0; slot_index < VulkanContext::queue_count(); ++slot_index) {
+            auto slot = std::make_unique<Slot>();
+            const size_t bytes = 32 + stages.size() * 16;
+            slot->storage = std::make_unique<VulkanBuffer>(bytes);
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+            if (shader_test_fail_preparation.exchange(false, std::memory_order_acq_rel))
+                ALLIGATOR_GPU_THROW("Injected Shader preparation failure");
+#endif
+            slot->mapped = static_cast<uint8_t*>(slot->storage->host());
+            if (format == Format::References) {
+                *reinterpret_cast<uint64_t*>(slot->mapped) = VulkanKernel::device_address(*refs);
+                reinterpret_cast<uint32_t*>(slot->mapped)[2] = uint32_t(refs->size<uint32_t>() - 1);
+                reinterpret_cast<uint32_t*>(slot->mapped)[7] = resources;
             } else {
-                for (size_t index = 0; index < stages.size(); ++index) {
-                    command.bindPipeline(vk::PipelineBindPoint::eCompute,
-                        index == 0 ? pipeline : stage_pipelines[index - 1]);
-                    command.dispatchIndirect(buffer, 32 + index * 16);
-                    const vk::MemoryBarrier dependency(vk::AccessFlagBits::eShaderWrite,
-                        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
-                        | vk::AccessFlagBits::eIndirectCommandRead);
-                    command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
-                        vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
-                        {}, 1, &dependency, 0, nullptr, 0, nullptr);
+                slot->parameters = Slice(limit * (format == Format::Jobs ? 32 : sizeof(Slice)),
+                    VulkanContext::buffer_placement());
+                *reinterpret_cast<uint32_t*>(slot->mapped) = slot->parameters.id();
+            }
+            slot->fence = device.createFence({});
+            slot->command_pools.reserve(VulkanContext::compute_families().size());
+            slot->commands.reserve(VulkanContext::compute_families().size());
+            for (const uint32_t family : VulkanContext::compute_families()) {
+                const auto pool = device.createCommandPool(vk::CommandPoolCreateInfo({}, family));
+                slot->command_pools.push_back(pool);
+                const auto command = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
+                    pool, vk::CommandBufferLevel::ePrimary, 1))[0];
+                slot->commands.push_back(command);
+                const KernelPush push{slot->storage->address(), VulkanKernel::gpu_pool_address()};
+                static_cast<void>(command.begin(vk::CommandBufferBeginInfo{}));
+                const vk::MemoryBarrier publication(vk::AccessFlagBits::eHostWrite,
+                    vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
+                    | vk::AccessFlagBits::eIndirectCommandRead);
+                command.pipelineBarrier(vk::PipelineStageFlagBits::eHost,
+                    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
+                    {}, 1, &publication, 0, nullptr, 0, nullptr);
+                command.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
+                command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
+                if (stages.empty()) {
+                    command.dispatchIndirect(slot->storage->buffer_, 16);
+                } else {
+                    for (size_t index = 0; index < stages.size(); ++index) {
+                        command.bindPipeline(vk::PipelineBindPoint::eCompute,
+                            index == 0 ? pipeline : stage_pipelines[index - 1]);
+                        command.dispatchIndirect(slot->storage->buffer_, 32 + index * 16);
+                        const vk::MemoryBarrier dependency(vk::AccessFlagBits::eShaderWrite,
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
+                            | vk::AccessFlagBits::eIndirectCommandRead);
+                        command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                            vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
+                            {}, 1, &dependency, 0, nullptr, 0, nullptr);
+                    }
                 }
+                const vk::MemoryBarrier readback(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead);
+                command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                    vk::PipelineStageFlagBits::eHost, {}, 1, &readback, 0, nullptr, 0, nullptr);
+                command.end();
             }
-
-            // Coherent allocation removes flush/invalidate, not the device-to-host dependency.
-            const vk::MemoryBarrier readback(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead);
-            command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost,
-                {}, 1, &readback, 0, nullptr, 0, nullptr);
-            command.end();
+            slots.push_back(std::move(slot));
         }
-    }
-    void submit(uint32_t x, uint32_t y, uint32_t z) {
-        *reinterpret_cast<vk::DispatchIndirectCommand*>(mapped + 16) = vk::DispatchIndirectCommand(x, y, z);
-        VulkanContext::submit_command_buffer(
-            commands[VulkanContext::submission_family_slot()], fence, nullptr, nullptr);
-        const auto result = VulkanContext::device().waitForFences(fence, VK_TRUE, UINT64_MAX);
-        if (result != vk::Result::eSuccess) ALLIGATOR_GPU_THROW("Kernel fence wait: " + vk::to_string(result));
     }
 };
-namespace {
-void require_kernel_device() {
-    if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("Kernel: no Vulkan compute device");
-    if (!VulkanContext::device_properties().supports_int64) ALLIGATOR_GPU_THROW("Kernel: shaderInt64 is required");
-}
-/** --------------------------------------------------------------------------------------------------------- reference_shader_source
- * @brief Generates the reference shader source code.
- * @param body The body of the shader.
- * @return The complete GLSL source code for the reference shader.
+/** --------------------------------------------------------------------------------------------------------- Vulkan Prepared Operations
+ * @brief Exposes native submission and retirement through concrete private backend functions.
  */
-std::string reference_shader_source(std::string_view body) {
-    std::string source("#version 450\n");
-    source.append(VULKAN_GLSL_KERNEL_CORE);
-    source.append(R"glsl(
-layout(local_size_x = 16, local_size_y = 4, local_size_z = 1) in;
-uint vulkan_index() { return gl_WorkGroupID.z; }
-Slice vulkan_resources() { return gpu_slice(U32Array(vulkan_push.vulkan_table_address).v[7]); }
-uint vulkan_request() {
-    uint64_t table = vulkan_push.vulkan_table_address;
-    uint mask = U32Array(table).v[2];
-    uint first = U32Array(table).v[3];
-    return U32Array(U64Array(table).v[0]).v[(first + vulkan_index()) & mask];
-}
-)glsl");
-    source.append(body);
-    source.append(R"glsl(
-void main() {
-    Slice invocation = gpu_slice(vulkan_request());
-    vulkan_main(gpu_slice(slice_load_u32(invocation, 0u)), gpu_slice(slice_load_u32(invocation, 1u)));
-}
-)glsl");
-    return source;
-}
-} // namespace
-/** --------------------------------------------------------------------------------------------------------- ShaderState::ShaderState
- * @brief Constructs a shader state from a single kernel GPU stage.
- * @param source The GLSL source code of the shader.
- * @param name The name of the shader.
- * @param references The reference slice, if any.
- * @param workgroups_x The number of workgroups in the X dimension.
- */
-ShaderState::ShaderState(
-    std::string_view source,
-    std::string_view name,
-    const Slice* references,
-    uint32_t workgroups_x
-) {
-    require_kernel_device();
-    if (!workgroups_x || workgroups_x > VulkanContext::device_properties().max_workgroup_count[0])
-        ALLIGATOR_GPU_THROW("Kernel: workgroups_x is outside the device limit");
-    auto words = compile_vulkan_glsl(
-        references ? reference_shader_source(source) : public_shader_source(source),
-        VulkanContext::device_properties().supports_float16,
-        name
-    );
-    impl_ = std::make_unique<Impl>(std::move(words), name,
-        references ? Impl::Format::References : Impl::Format::Slices,
-        references ? references->size<uint32_t>() : PUBLIC_LIST_CAPACITY, references);
-    impl_->reference_workgroups_x = workgroups_x;
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState::ShaderState
- * @brief Constructs a shader state from multiple kernel GPU stages.
- * @param stages The array of kernel GPU stages.
- * @param name The name of the shader.
- * @param references The reference slice.
- * @param resources The number of resources.
- */
-ShaderState::ShaderState(
-    std::span<const KernelGpuStage> stages,
-    std::string_view name,
-    const Slice& references,
-    uint32_t resources
-) {
-    require_kernel_device();
-    const auto& props = VulkanContext::device_properties();
-    std::vector<std::vector<uint32_t>> code;
-    for (const auto& stage : stages) {
-        if (!stage.workgroups_x || stage.workgroups_x > props.max_workgroup_count[0]
-            || stage.workgroups_y > props.max_workgroup_count[1])
-            ALLIGATOR_GPU_THROW("Kernel stage dispatch exceeds the device shape");
-        code.push_back(compile_vulkan_glsl(reference_shader_source(stage.glsl), props.supports_float16, name));
+struct VulkanPreparedOps {
+    static void destroy(ShaderProgram& program) noexcept {
+        delete static_cast<VulkanShaderResources*>(program.native);
     }
-    impl_ = std::make_unique<Impl>(std::move(code), stages, name, references, resources);
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState::ShaderState
- * @brief Constructs a shader state from precompiled SPIR-V words.
- * @param words The array of SPIR-V words.
- * @param count The number of words in the array.
- * @param name The name of the shader.
- * @param max_jobs The maximum number of jobs the shader can handle.
- */
-ShaderState::ShaderState(const uint32_t* words, size_t count, std::string_view name, size_t max_jobs) {
-    require_kernel_device();
-    impl_ = std::make_unique<Impl>(std::vector<uint32_t>(words, words + count), name, Impl::Format::Jobs, max_jobs);
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState::~ShaderState
- * @brief Destructor for the shader state.
- */
-ShaderState::~ShaderState() = default;
-/** --------------------------------------------------------------------------------------------------------- ShaderState::~ShaderState
- * @brief Destructor for the shader state.
- */
-const std::vector<uint32_t>& ShaderState::spirv() const { return impl_->words; }
-/** --------------------------------------------------------------------------------------------------------- ShaderState::name
- * @brief Returns the name of the shader state.
- * @return The name.
- */
-const std::string& ShaderState::name() const { return impl_->name; }
-/** --------------------------------------------------------------------------------------------------------- ShaderState::capacity
- * @brief Returns the capacity of the shader state.
- * @return The capacity.
- */
-size_t ShaderState::capacity() const { return impl_->limit; }
-/** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch
- * @brief Dispatches the given number of workgroups for the shader.
- * @param streams The array of input slices.
- * @param count The number of input slices.
- * @param workgroups The number of workgroups to dispatch.
- */
-void ShaderState::dispatch(const Slice* streams, size_t count, uint32_t workgroups) const {
-    workgroups = std::min(workgroups, VulkanContext::device_properties().max_workgroup_count[0]);
-    for (size_t first = 0; first < count; first += impl_->limit) {
-        const size_t n = std::min(impl_->limit, count - first);
-        auto* entries = impl_->parameters.data<uint32_t>();
-        for (size_t i = 0; i < n; ++i) {
-            entries[i] = streams[first + i].pool_index();
-        }
-        Alligator::gpubuf_for(impl_->parameters)->size = uint32_t(n * sizeof(Slice));
-        impl_->submit(workgroups, uint32_t(n), 1);
+    static void submit(ShaderProgram&, ShaderSlot& slot, uint32_t width, uint32_t height, uint32_t depth) {
+        static_cast<VulkanShaderResources::Slot*>(slot.native)->submit(width, height, depth);
     }
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState::write_job
- * @brief Writes a job to the shader's command buffer at the specified slot.
- * @param slot The slot index to write the job to.
- * @param input The input slice for the job.
- * @param host_handle The host memory handle associated with the job.
- */
-void ShaderState::write_job(size_t slot, const Slice& input, const void* host_handle) {
-    uint8_t* record = impl_->parameters.data<uint8_t>() + slot * 32;
-    *reinterpret_cast<uint32_t*>(record) = input.pool_index();
-    std::memcpy(record + 16, host_handle, 16);
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch
- * @brief Dispatches the given number of jobs for the shader.
- * @param jobs The number of jobs to dispatch.
- */
-void ShaderState::dispatch(size_t jobs) {
-    Alligator::gpubuf_for(impl_->parameters)->size = uint32_t(jobs * 32);
-    impl_->submit(1, 1, uint32_t(jobs));
-}
-/** --------------------------------------------------------------------------------------------------------- ShaderState::dispatch_references
- * @brief Dispatches reference work for the shader, updating the indirect command buffer.
- * @param first The first reference index.
- * @param count The number of references to dispatch.
- */
-void ShaderState::dispatch_references(uint32_t first, uint32_t count) {
-    reinterpret_cast<uint32_t*>(impl_->mapped)[3] = first;
-    for (size_t index = 0; index < impl_->stages.size(); ++index) {
-        const auto& stage = impl_->stages[index];
-        *reinterpret_cast<vk::DispatchIndirectCommand*>(impl_->mapped + 32 + index * 16) =
-            vk::DispatchIndirectCommand(stage.workgroups_x, stage.workgroups_y, stage.per_request ? count : 1);
+    static void wait(ShaderProgram&, ShaderSlot& slot) {
+        static_cast<VulkanShaderResources::Slot*>(slot.native)->wait();
     }
-    impl_->submit(impl_->reference_workgroups_x, 1, count);
-}
-/** --------------------------------------------------------------------------------------------------------- Shader::Shader
- * @brief Constructs a Shader by compiling the given GLSL source and preparing the Vulkan resources.
- * @param source GLSL defining the public Shader function `void vulkan_main(Slice slice)`.
- * @param name Diagnostic name reported by shader compilation errors.
- */
-Shader::Shader(std::string_view source, std::string_view name) {
-    try {
-        state_ = std::make_unique<ShaderState>(source, name);
-    } catch (const vk::SystemError& error) {
-        ALLIGATOR_GPU_THROW(std::string("Vulkan Shader setup failed: ") + error.what());
-    }
-}
-/** --------------------------------------------------------------------------------------------------------- Shader move */
-Shader::Shader(Shader&& other) noexcept = default;
-Shader& Shader::operator=(Shader&& other) noexcept = default;
-/** --------------------------------------------------------------------------------------------------------- Shader::~Shader */
-Shader::~Shader() = default;
-/** --------------------------------------------------------------------------------------------------------- Shader::operator() */
-std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
-    const Slice* slices,
-    size_t count,
-    void (*callback)(Slice slice),
-    uint32_t workgroups
-) const {
-    if (!state_) ALLIGATOR_GPU_THROW("Vulkan Shader: moved-from Shader cannot dispatch");
-    // Public Shader remains synchronous; Kernel owns asynchronous scheduling and completion.
-    state_->dispatch(slices, count, workgroups);
-    if (callback != nullptr) {
-        for (size_t i = 0; i < count; ++i) callback(slices[i].slice());
-    }
-    std::shared_ptr<moodycamel::LightweightSemaphore> done =
-        std::make_shared<moodycamel::LightweightSemaphore>();
-    done->signal();
-    return done;
-}
-/** --------------------------------------------------------------------------------------------------------- Shader::operator() (one) */
-std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
-    const Slice& slice,
-    void (*callback)(Slice slice),
-    uint32_t workgroups
-) const {
-    return (*this)(&slice, 1, callback, workgroups);
-}
-/** --------------------------------------------------------------------------------------------------------- GPU::run (Shader)
- * @brief Runs a prepared Shader over a list of slices, one workgroup column each.
- */
-void GPU::run(const Shader& program, Slice* streams, size_t stream_count) {
-    program(streams, stream_count);
-}
-namespace {
-/** --------------------------------------------------------------------------------------------------------- Encoded Program Header
- * @struct EncodedProgramHeader
- * @brief The 32-byte encoded-program header: magic, version, stream/pass shape, then the SPIR-V
- * words (padded to 8 bytes) and the diagnostic name (NUL-terminated, padded to 8) follow it.
- */
-struct EncodedProgramHeader {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t stream_count;
-    uint32_t workgroups_hint;
-    uint32_t pass_count;
-    uint32_t register_seed_count;
-    uint32_t constant_count;
-    uint32_t reserved;
 };
-static_assert(sizeof(EncodedProgramHeader) == 32, "EncodedProgramHeader must be 32 bytes.");
-constexpr uint32_t ENCODED_PROGRAM_MAGIC =
-    uint32_t('N') | (uint32_t('B') << 8) | (uint32_t('G') << 16) | (uint32_t('P') << 24);
-constexpr uint32_t ENCODED_PROGRAM_VERSION = 1u;
-/** --------------------------------------------------------------------------------------------------------- shader_state_of
- * @brief Extracts the ShaderState* out of a Shader's single-pointer ABI (gpu.hpp's own static_assert).
+/** --------------------------------------------------------------------------------------------------------- Vulkan Prepare
+ * @brief Builds immutable Vulkan pipelines and queue-compatible native submission slots.
  */
-ShaderState* shader_state_of(const Shader& shader) {
-    static_assert(sizeof(Shader) == sizeof(ShaderState*),
-        "Shader must stay exactly one pointer for this extraction to be valid.");
-    ShaderState* state;
-    std::memcpy(&state, &shader, sizeof(ShaderState*));
-    return state;
-}
-} // namespace
-/** --------------------------------------------------------------------------------------------------------- GPU::encode */
-Slice GPU::encode(const Shader& program) {
-    const ShaderState* state = shader_state_of(program);
-    if (state == nullptr) ALLIGATOR_GPU_THROW("GPU::encode: moved-from Shader cannot be encoded.");
-    const std::vector<uint32_t>& spirv = state->spirv();
-    const std::string& name = state->name();
-    const size_t spirv_bytes = spirv.size() * sizeof(uint32_t);
-    const size_t spirv_padded = (spirv_bytes + 7u) & ~size_t{7};
-    const size_t name_bytes = name.size() + 1;
-    const size_t name_padded = (name_bytes + 7u) & ~size_t{7};
-    Slice encoded(sizeof(EncodedProgramHeader) + spirv_padded + name_padded);
-    uint8_t* base = encoded.data<uint8_t>();
-    /// stream_count 0: the list's own descriptor carries N at dispatch time.
-    EncodedProgramHeader header{ENCODED_PROGRAM_MAGIC, ENCODED_PROGRAM_VERSION, 0u, 1u, 1u, 0u, 0u, 0u};
-    std::memcpy(base, &header, sizeof(header));
-    std::memcpy(base + sizeof(header), spirv.data(), spirv_bytes);
-    std::memcpy(base + sizeof(header) + spirv_padded, name.c_str(), name_bytes);
-    return encoded;
-}
-/** --------------------------------------------------------------------------------------------------------- GPU::decode */
-Shader GPU::decode(const Slice&) {
-    ALLIGATOR_GPU_THROW("GPU::decode: blocked on a locked-header gap (report G0-5) — Shader has no "
-        "accessible way to construct from a prepared ShaderState; needs friend struct GPU "
-        "or a private Shader(std::unique_ptr<ShaderState>) constructor in gpu.hpp.");
-}
-namespace vulkan {
-namespace {
-/** --------------------------------------------------------------------------------------------------------- JobTableSlot
- * @struct JobTableSlot
- * @brief One cached job-table engine, keyed by its compiled program's stable host address (Law 3:
- * prepared once on first sight, looked up lock-free on every later GPU::run call).
- */
-struct JobTableSlot {
-    std::atomic<const void*> key{nullptr};
-    std::atomic<ShaderState*> state{nullptr};
-};
-constexpr size_t JOB_TABLE_REGISTRY_SLOTS = 16;
-constexpr size_t JOB_TABLE_ROUND_CAPACITY = 1024;
-/** --------------------------------------------------------------------------------------------------------- job_table_engine_for
- * @brief Looks up, or on first sight prepares, the megakernel engine behind one compile_glsl program.
- * @param program A Slice returned by GPU::compile_glsl, expected to outlive every call using it.
- */
-ShaderState& job_table_engine_for(const Slice& program) {
-    static JobTableSlot registry[JOB_TABLE_REGISTRY_SLOTS];
-    const void* key = program.raw();
-    for (JobTableSlot& slot : registry) {
-        const void* seen = slot.key.load(std::memory_order_acquire);
-        if (seen == nullptr) {
-            const void* expected = nullptr;
-            if (slot.key.compare_exchange_strong(expected, key, std::memory_order_acq_rel)) {
-                slot.state.store(
-                    new ShaderState(program.data<uint32_t>(), program.size<uint32_t>(),
-                        "vulkan_gpu_run_job_table", JOB_TABLE_ROUND_CAPACITY),
-                    std::memory_order_release);
-            } else if (expected != key) {
-                continue;
-            }
-        } else if (seen != key) {
-            continue;
+std::unique_ptr<ShaderProgram> vulkan_prepare(const ShaderPrepareInfo& info) {
+    if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("No compatible Vulkan compute device");
+    const auto& properties = VulkanContext::device_properties();
+    std::unique_ptr<VulkanShaderResources> native;
+    if (!info.stages.empty()) {
+        std::vector<std::vector<uint32_t>> code;
+        code.reserve(info.stages.size());
+        for (const auto& stage : info.stages) {
+            if (!stage.workgroups_x || stage.workgroups_x > properties.max_workgroup_count[0]
+                || !stage.workgroups_y || stage.workgroups_y > properties.max_workgroup_count[1])
+                ALLIGATOR_GPU_THROW("Kernel stage dispatch exceeds the device shape");
+            ShaderPrepareInfo pass = info;
+            pass.source.glsl = stage.glsl;
+            code.push_back(shader_compile_glsl(shader_glsl_source(pass), properties.supports_float16, info.name));
         }
-        ShaderState* state = slot.state.load(std::memory_order_acquire);
-        while (state == nullptr) state = slot.state.load(std::memory_order_acquire);
-        return *state;
+        native = std::make_unique<VulkanShaderResources>(std::move(code), info.stages,
+            info.name, *info.references, info.resources);
+    } else {
+        auto words = info.words.empty()
+            ? shader_compile_glsl(shader_glsl_source(info), properties.supports_float16, info.name)
+            : std::vector<uint32_t>(info.words.begin(), info.words.end());
+        native = std::make_unique<VulkanShaderResources>(std::move(words), info.name,
+            info.format, info.capacity, info.references);
     }
-    ALLIGATOR_GPU_THROW("GPU::run: job-table program registry is full (raise JOB_TABLE_REGISTRY_SLOTS)");
-}
-} // namespace
-} // namespace vulkan
-/** --------------------------------------------------------------------------------------------------------- GPU::run (job table)
- * @brief Runs a compile_glsl program with one stream per job, in rounds of the engine's table capacity.
- */
-void GPU::run(const Slice& program, Slice* streams, size_t stream_count) {
-    auto& engine = vulkan::job_table_engine_for(program);
-    const uint64_t host_handle[2] = {0, 0};
-    for (size_t start = 0; start < stream_count; start += engine.capacity()) {
-        const size_t round = std::min(engine.capacity(), stream_count - start);
-        for (size_t i = 0; i < round; ++i) {
-            engine.write_job(i, streams[start + i], host_handle);
-        }
-        engine.dispatch(round);
+    auto program = std::make_unique<ShaderProgram>();
+    program->capacity = native->limit;
+    program->max_workgroups_x = properties.max_workgroup_count[0];
+    program->spirv = std::move(native->words);
+    program->slots.reserve(native->slots.size());
+    for (const auto& owned : native->slots) {
+        auto slot = std::make_unique<ShaderSlot>();
+        slot->parameters = std::move(owned->parameters);
+        slot->mapped = owned->mapped;
+        slot->native = owned.get();
+        program->slots.push_back(std::move(slot));
     }
+    static const ShaderBackendOps operations{
+        &VulkanPreparedOps::destroy, &VulkanPreparedOps::submit, &VulkanPreparedOps::wait};
+    program->ops = &operations;
+    program->native = native.release();
+    return program;
 }
 } // namespace buffetalligator

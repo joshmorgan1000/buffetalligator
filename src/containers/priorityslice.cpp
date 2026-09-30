@@ -226,6 +226,7 @@ PrioritySlice::PrioritySlice(
     header_[THRESHOLD] = EMPTY;
     header_[FREE_SLOTS] = capacity_;
     header_[FREE_HINT] = 0;
+    header_[CAPACITY_WORD] = capacity_;
     for (size_t entry = 0; entry <= RING_MASK; ++entry) header_[FREE_RING + entry] = 0;
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - Adopt
@@ -241,8 +242,11 @@ PrioritySlice::PrioritySlice(Slice storage, Compare compare)
     if (bytes < header_bytes(1) + sizeof(uint64_t)) {
         ALLIGATOR_THROW("PrioritySlice: storage must hold the header and at least one slot word");
     }
-    capacity_ = (bytes - HEADER_BYTES) / sizeof(uint64_t);
-    while (header_bytes(capacity_) + capacity_ * sizeof(uint64_t) > bytes) --capacity_;
+    capacity_ = header_[CAPACITY_WORD];
+    if (capacity_ == 0 || capacity_ > (bytes - HEADER_BYTES) / sizeof(uint64_t)
+        || header_bytes(capacity_) + capacity_ * sizeof(uint64_t) > bytes) {
+        ALLIGATOR_THROW("PrioritySlice: stored capacity exceeds its represented storage");
+    }
     blocks_ = (capacity_ + BLOCK - 1) / BLOCK;
     max_cache_ = header_ + HEADER_WORDS;
     min_cache_ = max_cache_ + cache_words(capacity_);
@@ -771,4 +775,237 @@ size_t PrioritySlice::size() const noexcept {
     }
     return count;
 }
+/** --------------------------------------------------------------------------------------------------------- Heap Constructor
+ * @brief Allocates the min-max heap's count header and packed positions.
+ */
+HeapSlice::HeapSlice(
+    size_t capacity, Compare compare, bool novel_buffer, const BuffetDescriptor* placement
+) : capacity_(capacity), compare_(compare) {
+    if (capacity == 0 || capacity > (SIZE_MAX - HEADER_BYTES) / sizeof(uint64_t)) {
+        ALLIGATOR_THROW("HeapSlice: capacity must fit at least one packed position");
+    }
+    storage_ = Slice(HEADER_BYTES + capacity * sizeof(uint64_t), novel_buffer, placement);
+    header_ = storage_.data<uint64_t>();
+    words_ = header_ + HEADER_BYTES / sizeof(uint64_t);
+    *header_ = 0;
+    header_[CAPACITY_WORD] = capacity_;
+    std::fill_n(words_, capacity_, EMPTY);
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Adopt
+ * @brief Adopts the represented positions after a validated count header.
+ */
+HeapSlice::HeapSlice(Slice storage, Compare compare)
+: storage_(std::move(storage)), compare_(compare) {
+    if (storage_.size_bytes() < HEADER_BYTES + sizeof(uint64_t)) {
+        ALLIGATOR_THROW("HeapSlice: storage must hold its header and at least one position");
+    }
+    header_ = storage_.data<uint64_t>();
+    words_ = header_ + HEADER_BYTES / sizeof(uint64_t);
+    capacity_ = header_[CAPACITY_WORD];
+    if (capacity_ == 0
+        || capacity_ > (storage_.size_bytes() - HEADER_BYTES) / sizeof(uint64_t)
+        || *header_ > capacity_) {
+        ALLIGATOR_THROW("HeapSlice: stored count or capacity exceeds its positions");
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Move Constructor
+ * @brief Transfers heap backing while leaving the source empty.
+ */
+HeapSlice::HeapSlice(HeapSlice&& other) noexcept
+: storage_(std::move(other.storage_)), header_(std::exchange(other.header_, nullptr)),
+  words_(std::exchange(other.words_, nullptr)), capacity_(std::exchange(other.capacity_, 0)),
+  compare_(other.compare_) {}
+/** --------------------------------------------------------------------------------------------------------- Heap Move Assignment
+ * @brief Replaces heap backing with the source's positions.
+ */
+HeapSlice& HeapSlice::operator=(HeapSlice&& other) noexcept {
+    if (this != &other) {
+        storage_ = std::move(other.storage_);
+        header_ = std::exchange(other.header_, nullptr);
+        words_ = std::exchange(other.words_, nullptr);
+        capacity_ = std::exchange(other.capacity_, 0);
+        compare_ = other.compare_;
+    }
+    return *this;
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Push
+ * @brief Inserts through alternating min-max ancestors and evicts a full heap's worst entry.
+ */
+uint64_t HeapSlice::push(uint64_t word) noexcept {
+    uint64_t displaced = EMPTY;
+    if (*header_ == capacity_) {
+        size_t worst_index = 0;
+        if (capacity_ > 1) {
+            worst_index = 1;
+            if (capacity_ > 2) {
+                const uint32_t left_key = key_of(words_[1]);
+                const uint32_t right_key = key_of(words_[2]);
+                if (compare_ ? compare_(&left_key, &right_key) < 0 : words_[1] < words_[2]) {
+                    worst_index = 2;
+                }
+            }
+        }
+        const uint32_t incoming_key = key_of(word);
+        const uint32_t worst_key = key_of(words_[worst_index]);
+        if (compare_ ? compare_(&incoming_key, &worst_key) >= 0
+                     : word >= words_[worst_index]) return word;
+        displaced = take(worst_index);
+    }
+    size_t position = (*header_)++;
+    words_[position] = word;
+    if (position == 0) return displaced;
+    bool minimum_level = ((std::bit_width(position + 1) - 1) & 1u) == 0;
+    const size_t parent = (position - 1) / 2;
+    uint32_t word_key = key_of(word);
+    uint32_t parent_key = key_of(words_[parent]);
+    const int order = compare_ ? compare_(&word_key, &parent_key)
+        : (word > words_[parent]) - (word < words_[parent]);
+    if ((minimum_level && order > 0) || (!minimum_level && order < 0)) {
+        std::swap(words_[position], words_[parent]);
+        position = parent;
+        minimum_level = !minimum_level;
+    }
+    while (position >= 3) {
+        const size_t ancestor = (position - 3) / 4;
+        word_key = key_of(words_[position]);
+        const uint32_t ancestor_key = key_of(words_[ancestor]);
+        const int ancestor_order = compare_ ? compare_(&word_key, &ancestor_key)
+            : (words_[position] > words_[ancestor]) - (words_[position] < words_[ancestor]);
+        if (minimum_level ? ancestor_order >= 0 : ancestor_order <= 0) break;
+        std::swap(words_[position], words_[ancestor]);
+        position = ancestor;
+    }
+    return displaced;
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Pop
+ * @brief Removes the min-max heap's best packed entry.
+ */
+uint64_t HeapSlice::pop() noexcept { return take(0); }
+/** --------------------------------------------------------------------------------------------------------- Heap Take
+ * @brief Repairs alternating ancestors and descendants after removing one heap position.
+ */
+uint64_t HeapSlice::take(size_t index) noexcept {
+    if (index >= size()) return EMPTY;
+    const uint64_t removed = words_[index];
+    const size_t count = --(*header_);
+    const uint64_t replacement = words_[count];
+    words_[count] = EMPTY;
+    if (index == count) return removed;
+    words_[index] = replacement;
+    const bool minimum_level = ((std::bit_width(index + 1) - 1) & 1u) == 0;
+    size_t position = index;
+    bool ascending_minimum = minimum_level;
+    if (position != 0) {
+        const size_t parent = (position - 1) / 2;
+        const uint32_t word_key = key_of(words_[position]);
+        const uint32_t parent_key = key_of(words_[parent]);
+        const int order = compare_ ? compare_(&word_key, &parent_key)
+            : (words_[position] > words_[parent]) - (words_[position] < words_[parent]);
+        if ((ascending_minimum && order > 0) || (!ascending_minimum && order < 0)) {
+            std::swap(words_[position], words_[parent]);
+            position = parent;
+            ascending_minimum = !ascending_minimum;
+        }
+        while (position >= 3) {
+            const size_t ancestor = (position - 3) / 4;
+            const uint32_t candidate_key = key_of(words_[position]);
+            const uint32_t ancestor_key = key_of(words_[ancestor]);
+            const int ancestor_order = compare_ ? compare_(&candidate_key, &ancestor_key)
+                : (words_[position] > words_[ancestor]) - (words_[position] < words_[ancestor]);
+            if (ascending_minimum ? ancestor_order >= 0 : ancestor_order <= 0) break;
+            std::swap(words_[position], words_[ancestor]);
+            position = ancestor;
+        }
+    }
+    position = index;
+    while (position < count / 2) {
+        const size_t first_child = 2 * position + 1;
+        const size_t child_count = std::min(size_t(2), count - first_child);
+        const size_t first_grandchild = 4 * position + 3;
+        const size_t grandchild_count = first_grandchild < count
+            ? std::min(size_t(4), count - first_grandchild) : 0;
+        size_t selected = first_child;
+        if (compare_ == nullptr) {
+            uint64_t extreme = 0;
+            uint64_t runner_up = 0;
+            selected += minimum_level
+                ? SIMDMisc::min_index(words_ + first_child, child_count, extreme)
+                : SIMDMisc::max_index(words_ + first_child, child_count, extreme, runner_up);
+            if (grandchild_count != 0) {
+                uint64_t descendant_extreme = 0;
+                const size_t descendant = first_grandchild + (minimum_level
+                    ? SIMDMisc::min_index(words_ + first_grandchild,
+                        grandchild_count, descendant_extreme)
+                    : SIMDMisc::max_index(words_ + first_grandchild,
+                        grandchild_count, descendant_extreme, runner_up));
+                if (minimum_level ? descendant_extreme < extreme : descendant_extreme > extreme) {
+                    selected = descendant;
+                }
+            }
+        } else {
+            for (size_t candidate = 1; candidate < child_count + grandchild_count; ++candidate) {
+                const size_t descendant = candidate < child_count ? first_child + candidate
+                    : first_grandchild + candidate - child_count;
+                const uint32_t selected_key = key_of(words_[selected]);
+                const uint32_t descendant_key = key_of(words_[descendant]);
+                const int order = compare_(&descendant_key, &selected_key);
+                if (minimum_level ? order < 0 : order > 0) selected = descendant;
+            }
+        }
+        const uint32_t selected_key = key_of(words_[selected]);
+        const uint32_t position_key = key_of(words_[position]);
+        const int order = compare_ ? compare_(&selected_key, &position_key)
+            : (words_[selected] > words_[position]) - (words_[selected] < words_[position]);
+        if (minimum_level ? order >= 0 : order <= 0) break;
+        std::swap(words_[selected], words_[position]);
+        if (selected < first_grandchild) break;
+        const size_t parent = (selected - 1) / 2;
+        const uint32_t moved_key = key_of(words_[selected]);
+        const uint32_t parent_key = key_of(words_[parent]);
+        const int parent_order = compare_ ? compare_(&moved_key, &parent_key)
+            : (words_[selected] > words_[parent]) - (words_[selected] < words_[parent]);
+        if (minimum_level ? parent_order > 0 : parent_order < 0) {
+            std::swap(words_[selected], words_[parent]);
+        }
+        position = selected;
+    }
+    return removed;
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Best
+ * @brief Reads the first position when the heap contains entries.
+ */
+uint64_t HeapSlice::best() const noexcept { return size() == 0 ? EMPTY : words_[0]; }
+/** --------------------------------------------------------------------------------------------------------- Heap Worst
+ * @brief Reads the largest root child only when the heap has no free positions.
+ */
+uint64_t HeapSlice::worst() const noexcept {
+    if (capacity_ == 0 || size() != capacity_) return EMPTY;
+    if (capacity_ == 1) return words_[0];
+    if (capacity_ == 2) return words_[1];
+    const uint32_t left_key = key_of(words_[1]);
+    const uint32_t right_key = key_of(words_[2]);
+    return (compare_ ? compare_(&left_key, &right_key) < 0 : words_[1] < words_[2])
+        ? words_[2] : words_[1];
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Accepts
+ * @brief Checks the full heap's worst entry against a proposed packed word.
+ */
+bool HeapSlice::accepts(uint64_t word) const noexcept {
+    if (size() < capacity_) return true;
+    if (capacity_ == 0) return false;
+    const uint64_t last = worst();
+    const uint32_t candidate_key = key_of(word);
+    const uint32_t last_key = key_of(last);
+    return compare_ ? compare_(&candidate_key, &last_key) < 0 : word < last;
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Clear
+ * @brief Resets the count of this single-owner heap.
+ */
+void HeapSlice::clear() noexcept {
+    if (capacity_ != 0) *header_ = 0;
+}
+/** --------------------------------------------------------------------------------------------------------- Heap Size
+ * @brief Reports the count or zero for a moved-from heap.
+ */
+size_t HeapSlice::size() const noexcept { return capacity_ == 0 ? 0 : *header_; }
 } // namespace buffetalligator

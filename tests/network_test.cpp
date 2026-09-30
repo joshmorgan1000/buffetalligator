@@ -3,6 +3,8 @@
  * @brief Verifies public Slice channels across processes and rejects malformed or forged private frames.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -49,43 +51,51 @@ struct TestBlock {
 /** --------------------------------------------------------------------------------------------------------- Allocate Test Placement
  * @brief Supplies genuine registered storage whose type differs between the two processes.
  */
-std::pair<void*, void*> allocate(size_t bytes, void*) {
+void* allocate(size_t bytes) {
     void* pointer = nullptr;
-    if (posix_memalign(&pointer, 64, bytes)) return {nullptr, nullptr};
+    if (posix_memalign(&pointer, 64, bytes)) throw std::bad_alloc();
     std::memset(pointer, 0, bytes);
-    return {pointer, new TestBlock{pointer, bytes}};
+    return new TestBlock{pointer, bytes};
 }
 /** --------------------------------------------------------------------------------------------------------- Release Test Placement
  * @brief Releases the placement's allocation through its actual callback.
  */
-std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
-    static_cast<void>(host_ptr);
+void deallocate(void* substrate_handle) {
     TestBlock* block = static_cast<TestBlock*>(substrate_handle);
     std::free(block->memory);
     delete block;
-    return {nullptr, nullptr};
 }
-/** --------------------------------------------------------------------------------------------------------- Test Context
- * @brief Supplies the registered placement's empty context.
+/** --------------------------------------------------------------------------------------------------------- Test Size
+ * @brief Reports the registered backing allocation's byte length.
  */
-void* test_context() { return nullptr; }
+size_t test_size(void* handle) { return static_cast<TestBlock*>(handle)->size; }
 /** --------------------------------------------------------------------------------------------------------- Host Pointer
  * @brief The block's host pointer.
  */
-HostPtr test_host_ptr(void* substrate_handle) { return HostPtr{static_cast<TestBlock*>(substrate_handle)->memory}; }
-/** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @brief Host placements address their GPUBuf by the host pointer.
- */
-GPUBuf test_gpu_buf(void* substrate_handle) {
-    const TestBlock* block = static_cast<TestBlock*>(substrate_handle);
-    return GPUBuf{reinterpret_cast<uint64_t>(block->memory), static_cast<uint32_t>(block->size), 0};
+void* test_host_ptr(void* handle, size_t offset) {
+    return static_cast<char*>(static_cast<TestBlock*>(handle)->memory) + offset;
 }
+/** --------------------------------------------------------------------------------------------------------- Device Address
+ * @brief Reports this CPU descriptor's address domain.
+ */
+uint64_t test_device_address(void* substrate_handle) {
+    const TestBlock* block = static_cast<TestBlock*>(substrate_handle);
+    return reinterpret_cast<uint64_t>(block->memory);
+}
+const BuffetDescriptor* network_placement = nullptr;
 /** --------------------------------------------------------------------------------------------------------- Register
  * @brief Registers one named placement for cross-process identifier tests.
  */
 void register_placement(const char* name) {
-    BuffetMenu::register_type(name, 16u * 1024u * 1024u, 64, &allocate, &deallocate,
-                              &test_context, &test_host_ptr, nullptr, &test_gpu_buf);
+    static_cast<void>(Slice::default_placement());
+    static std::array<BuffetDescriptor, 2> descriptors;
+    static size_t registered = 0;
+    BuffetDescriptor& descriptor = descriptors[registered++];
+    descriptor = {name, deallocate, test_host_ptr, test_size, allocate,
+        static_cast<uint8_t>(BuffetDescriptors::count()), 16u * 1024u * 1024u,
+        test_device_address};
+    BuffetDescriptors::register_descriptor(&descriptor);
+    if (std::strcmp(name, "NetworkTest") == 0) network_placement = &descriptor;
 }
 /** --------------------------------------------------------------------------------------------------------- Response
  * @brief Retains callback results for validation by the test thread.
@@ -182,9 +192,10 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
     const bool datagram = (static_cast<unsigned>(selected) & 127) == 1;
     const size_t sizes[] = {1, 8193, datagram ? 48001u : 2097155u};
     for (size_t bytes : sizes) {
-        Slice backing(bytes + 13, true, BuffetMenu::get("NetworkTest"));
+        Slice backing(bytes + 13, true, network_placement);
         Slice view = backing.slice(7, bytes);
-        for (size_t index = 0; index < bytes; ++index)
+        const size_t represented_bytes = view.size_bytes();
+        for (size_t index = 0; index < represented_bytes; ++index)
             view.data<unsigned char>()[index] = index % 251;
         backing.free();
         const auto sole_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -198,13 +209,13 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
             result = std::move(results.back());
             results.pop_back();
         }
-        require(result && result.size_bytes() == bytes, "response length changed");
+        require(result && result.size_bytes() == represented_bytes, "response length changed");
         require(result.is_novel(), "novel backing was lost");
-        require(std::strcmp(result.placement()->name(), "NetworkTest") == 0,
+        require(std::strcmp(result.placement()->type_name, "NetworkTest") == 0,
                 "placement was not preserved by name");
-        for (size_t index = 0; index < bytes; ++index) {
+        for (size_t index = 0; index < represented_bytes; ++index) {
             unsigned expected = index % 251;
-            if (index + 1 == bytes) expected ^= 0xA5;
+            if (index + 1 == represented_bytes) expected ^= 0xA5;
             require(result.data<unsigned char>()[index] == expected,
                     "payload changed across the wire");
         }
@@ -347,7 +358,7 @@ int main(int count, char** arguments) {
                 (void)read(std::stoi(arguments[5]), &command, 1);
             }
             SliceChannel::close(port, protocol);
-            BuffetMenu::shutdown();
+            ba_net_shutdown();
             return 0;
         }
         register_placement("NetworkTest");
@@ -355,19 +366,19 @@ int main(int count, char** arguments) {
             protocol = static_cast<Protocol>(std::stoi(arguments[2]));
             port = static_cast<uint16_t>(std::stoi(arguments[3]));
             exercise_peer(arguments[4], arguments[4], port, protocol);
-            BuffetMenu::shutdown();
+            ba_net_shutdown();
             std::puts("Remote network contracts passed");
             return 0;
         }
         SliceT<uint64_t> typed(size_t{19});
-        require(typed.size_bytes() == sizeof(uint64_t) * 19,
+        require(typed.size_bytes() == 192,
                 "SliceT count constructor allocated wrong size");
         wire_validation();
         for (Protocol selected : {Protocol::TCP, Protocol::UDP, Protocol::EncryptedTCP,
                                   Protocol::EncryptedUDP, Protocol::RDMA, Protocol::EncryptedRDMA})
             round_trips(arguments[0], selected);
         failures();
-        BuffetMenu::shutdown();
+        ba_net_shutdown();
         std::puts("Network contracts passed");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Network contracts failed: %s\n", error.what());

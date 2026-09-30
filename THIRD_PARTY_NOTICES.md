@@ -77,6 +77,7 @@ The build pins the following upstream projects, links or installs them with the 
 | [Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader) | v1.4.350 | Apache-2.0 or MIT | shared runtime, Linux |
 | [MoltenVK](https://github.com/KhronosGroup/MoltenVK) | v1.4.1 | Apache-2.0 with bundled third-party notices | shared runtime, macOS |
 | [shaderc](https://github.com/google/shaderc) | v2026.2 | Apache-2.0 | `libshaderc_combined` linked statically and privately |
+| [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) | MoltenVK pin `adec7acbf41a988713cdb85f93f26c8ca5ea863e` | Apache-2.0 with upstream notices | core and MSL compiler archive, native Metal builds |
 
 `libshaderc_combined` bundles the following, whose notices are installed under `share/licenses/alligator/shaderc`:
 

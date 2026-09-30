@@ -3,6 +3,8 @@
  * @file easyvulkan.hpp
  * @brief Provides helper functions and abstractions for working with Vulkan in the Alligator framework.
  */
+#include <span>
+#include <mutex>
 #include <logging.hpp>
 #include <alligator.hpp>
 #include <vulkan/vulkan.hpp>
@@ -22,18 +24,6 @@ public:
     using threadsafe_logger::Exception::what;
 };
 #define ALLIGATOR_VULKAN_THROW(msg) throw VulkanException(msg)
-/** --------------------------------------------------------------------------------------------------------- Compile Vulkan GLSL
- * @brief Compiles a complete Vulkan 1.2 compute shader into optimized SPIR-V.
- * @param source Complete GLSL source.
- * @param float16 Whether to define ALLIGATOR_FLOAT16 for the source.
- * @param name Diagnostic shader name.
- * @return Optimized SPIR-V words.
- */
-std::vector<uint32_t> compile_vulkan_glsl(
-    std::string_view source,
-    bool float16,
-    std::string_view name
-);
 /** --------------------------------------------------------------------------------------------------------- DeviceProperties
  * @struct DeviceProperties
  * @brief Queried physical-device limits relevant to dispatch sizing and batch planning.
@@ -77,6 +67,7 @@ private:
     void release();
     friend class VulkanContext;
     friend struct VulkanStaticMethods;
+    friend struct VulkanShaderResources;
 public:
     VulkanBuffer() = default;
     /** ------------------------------------------------------------------------------------------- Allocating Constructor
@@ -122,7 +113,11 @@ public:
     static size_t size_of_impl(void* ptr) { return static_cast<VulkanBuffer*>(ptr)->size_; }
     static size_t size_of(void* ptr) { return size_of_impl(ptr); }
     static size_t (*size_of())(void*) { return size_of_impl; }
-    static void* factory(size_t size) { return new VulkanBuffer((size + 63) & ~size_t{63}); }
+    static void* factory(size_t size) {
+        if (size > (uint64_t{UINT32_MAX} << 6))
+            ALLIGATOR_VULKAN_THROW("VulkanBuffer exceeds the 64-byte-granule size limit");
+        return new VulkanBuffer((size + 63) & ~size_t{63});
+    }
     static size_t default_size() { return 64 * 1024 * 1024; }
     static size_t type_idx() { return 1; }
     static const char* type_name() { return "VulkanBuffer"; }
@@ -148,7 +143,7 @@ public:
 static_assert(IsABuffetType<VulkanBuffer>, "VulkanBuffer must satisfy IsABuffetType");
 /** --------------------------------------------------------------------------------------------------------- PlacementIndex
  * @enum PlacementIndex
- * @brief The memory-type ladder rungs `VulkanContext` resolves, one per Placemat below.
+ * @brief The memory-type ladder rungs resolved by the Vulkan context.
  */
 enum class PlacementIndex : uint8_t {
     HOST = 0, HOST_VISIBLE = 1, HOST_CACHEABLE = 2, DEVICE = 3, UNIFIED = 4, BASIC_HEAP = 5, UNSPECIFIED = 6, COUNT = 7
@@ -166,11 +161,16 @@ private:
     std::vector<uint32_t> compute_families_;     ///< Unique compute-capable family indices.
     std::vector<uint32_t> queue_family_slots_;   ///< Compute-family slot for each queue.
     std::unique_ptr<std::atomic_flag[]> queue_claims_; ///< Exclusive thread leases when driver synchronization is absent.
+    std::atomic<uint64_t> queue_epoch_{0};
+    std::mutex pipeline_mutex_;
     inline static std::atomic<uint32_t> next_queue_slot_{0};  ///< Hands each producer thread a sticky queue slot.
     bool internally_synchronized_queues_ = false;  ///< Probed VK_KHR_internally_synchronized_queues feature.
     vk::PhysicalDeviceMemoryProperties memory_properties_{};  ///< Queried once at init.
     vk::PipelineCache pipeline_cache_{};         ///< Driver pipeline cache (in-process).
     DeviceProperties device_props_{};            ///< Queried device limits and features.
+    vk::DeviceSize max_allocation_size_ = 0;     ///< Probed maximum single device allocation.
+    uint32_t max_allocation_count_ = 0;          ///< Probed maximum live device allocation count.
+    std::atomic<uint32_t> allocation_count_{0};  ///< Reserved and live library device allocations.
     /// @brief Usage flags every VulkanBuffer slab is created with.
     vk::BufferUsageFlags buffer_usage_{};
     /// @brief Allocation-flags chain (device address) shared by every slab allocation.
@@ -181,26 +181,6 @@ private:
     std::array<uint32_t, static_cast<size_t>(PlacementIndex::COUNT)> placement_type_indices_{};
     /// @brief Whether each Placement's memory type is HOST_CACHED (CPU reads at RAM speed).
     std::array<bool, static_cast<size_t>(PlacementIndex::COUNT)> placement_cpu_cached_{};
-    /** ------------------------------------------------------------------------------------------- TransferUnit
-     * @struct TransferUnit
-     * @brief Per-thread one-shot transfer unit for slab-to-slab copies (egress staging).
-     * Command pools stay externally synchronized with no opt-out, so each producer thread
-     * owns its own pool, command buffer, and fence.
-     */
-    struct TransferUnit {
-        vk::CommandPool pool{};       ///< This thread's command pool.
-        vk::CommandBuffer command{};  ///< This thread's one-shot recording buffer.
-        vk::Fence fence{};            ///< Signalled when this thread's copy retires.
-    };
-    /** ------------------------------------------------------------------------------------------- make_transfer_unit
-     * @brief Create this thread's TransferUnit from its own pool.
-     */
-    static TransferUnit make_transfer_unit();
-    /** ------------------------------------------------------------------------------------------- transfer_unit
-     * @brief This thread's transfer unit, created on first use. Handles are reclaimed by
-     * vkDestroyDevice at teardown, never individually.
-     */
-    static TransferUnit& transfer_unit();
     /// @brief True if the device is UMA (unified memory architecture) and supports
     /// host-visible device-local buffers.
     bool portability_available_ = false;
@@ -252,7 +232,7 @@ private:
     friend class VulkanPipeline;
     friend class Arena;
     friend class VulkanKernel;
-    friend class ShaderState;
+    friend struct VulkanShaderResources;
 public:
     /** ------------------------------------------------------------------------------------------- Singleton instance
      * @brief The singleton VulkanCompute instance.
@@ -277,27 +257,14 @@ public:
      * @brief The shared driver pipeline cache for one-time kernel preparation.
      */
     static vk::PipelineCache pipeline_cache() { return instance().pipeline_cache_; }
-    /// Reserve a queue for this thread's lifetime. Never wrap onto an unsynchronized queue.
-    /// Kernels acquire their lease during controller startup, before accepting requests.
+    /** ------------------------------------------------------------------------------------------- Submission Queue
+     * @brief Claims one queue until the matching submission releases its ownership.
+     */
     static uint32_t submission_queue_index();
-    /** ------------------------------------------------------------------------------------------- submit_command_buffer
-     * @brief Reset the fence and submit to this thread's sticky compute queue, lock-free.
-     * @param command_buffer The recorded command buffer.
-     * @param fence The submitter's fence, signalled on retirement.
-     * @param callback Reserved by the in-flight callback scaffolding; pass nullptr.
-     * @param callback_context Reserved; pass nullptr.
+    /** ------------------------------------------------------------------------------------------- Submit Command Buffer
+     * @brief Selects the command for an acquired queue family and submits with exclusive host ownership.
      */
-    static void submit_command_buffer(
-        vk::CommandBuffer command_buffer,
-        vk::Fence fence,
-        void (*callback)(void*),
-        void* callback_context
-    );
-    /** ------------------------------------------------------------------------------------------- wait_for_fence
-     * @brief The waiter-pool task behind a submission callback: parks until the fence signals.
-     * @param fence The submission's VkFence handle.
-     */
-    static void wait_for_fence(void* fence);
+    static void submit_command_buffer(std::span<const vk::CommandBuffer> commands, vk::Fence fence);
     /** ------------------------------------------------------------------------------------------- buffer_memory_type_index
      * @brief The resolved host-coherent storage-buffer memory type for the job-table engine.
      */
@@ -306,14 +273,6 @@ public:
      * @brief The device-address allocation flags chain, by reference for pNext wiring.
      */
     static const vk::MemoryAllocateFlagsInfo& allocate_flags() { return instance().allocate_flags_; }
-    /** ------------------------------------------------------------------------------------------- queue_family_index
-     * @brief The compute queue family leased by this submitting thread.
-     */
-    static uint32_t queue_family_index();
-    /** ------------------------------------------------------------------------------------------- submission_family_slot
-     * @brief The submitting thread's index into the prepared compute-family command buffers.
-     */
-    static uint32_t submission_family_slot();
     /** ------------------------------------------------------------------------------------------- compute_families
      * @brief Unique compute-capable family indices prepared on the logical device.
      */
@@ -444,102 +403,6 @@ public:
      * @return The table's device address.
      */
     static uint64_t gpu_pool_address();
-    /** ------------------------------------------------------------------------------------------- table_placement
-     * @brief The placement the shared GPUBuf table lives on: the coherent zero-copy rung with a
-     * device, plain heap without one.
-     * @return The placement.
-     */
-    static const ::buffetalligator::BuffetDescriptor* table_placement();
-};
-/** --------------------------------------------------------------------------------------------------------- ShaderState
- * @brief Shared prepared dispatch state for Shader and Kernel reference rings.
- */
-/** --------------------------------------------------------------------------------------------------------- GPU Stage
- * @struct KernelGpuStage
- * @brief One dispatch in a Kernel's prepared GPU command sequence.
- */
-struct KernelGpuStage {
-    std::string_view glsl;      ///< The stage's GLSL source.
-    uint32_t workgroups_x = 1;  ///< Workgroups along X.
-    uint32_t workgroups_y = 1;  ///< Workgroups along Y.
-    bool per_request = true;    ///< Whether the stage dispatches once per request.
-};
-/** --------------------------------------------------------------------------------------------------------- ShaderState
- * @class ShaderState
- * @brief Shared prepared resources for Shader, legacy jobs, and Kernel reference rings.
- * One controller owns an instance; dispatches on the same instance must not overlap.
- */
-class ShaderState {
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-public:
-    /** ------------------------------------------------------------------------------------------- Constructor - Source
-     * @brief Compiles GLSL and prepares every Vulkan resource used by subsequent dispatches.
-     * @param source GLSL defining `void alligator_main(Slice slice)`.
-     * @param name Diagnostic name reported by shader compilation errors.
-     * @param references Optional reference list the shader indexes.
-     * @param workgroups_x Workgroups along X for reference dispatches.
-     */
-    ShaderState(std::string_view source, std::string_view name,
-        const Slice* references = nullptr, uint32_t workgroups_x = 1);
-    /** ------------------------------------------------------------------------------------------- Constructor - Words
-     * @brief Prepares dispatch state from already-compiled SPIR-V words.
-     * @param words The SPIR-V words.
-     * @param count The word count.
-     * @param name Diagnostic name.
-     * @param max_jobs The job-table capacity.
-     */
-    ShaderState(const uint32_t* words, size_t count, std::string_view name, size_t max_jobs);
-    /** ------------------------------------------------------------------------------------------- Constructor - Stages
-     * @brief Compiles and chains one dispatch per stage for Kernel command sequences.
-     * @param stages The stage descriptors.
-     * @param name Diagnostic name.
-     * @param references The reference list the stages index.
-     * @param resources The resource count published to the stages.
-     */
-    ShaderState(std::span<const KernelGpuStage> stages, std::string_view name,
-        const Slice& references, uint32_t resources);
-    ~ShaderState();
-    /** ------------------------------------------------------------------------------------------- SPIR-V
-     * @brief The compiled SPIR-V words.
-     * @return The words.
-     */
-    const std::vector<uint32_t>& spirv() const;
-    /** ------------------------------------------------------------------------------------------- Name
-     * @brief The diagnostic name.
-     * @return The name.
-     */
-    const std::string& name() const;
-    /** ------------------------------------------------------------------------------------------- Capacity
-     * @brief The job-table capacity.
-     * @return The capacity.
-     */
-    size_t capacity() const;
-    /** ------------------------------------------------------------------------------------------- Dispatch
-     * @brief Binds one slice per workgroup column and dispatches.
-     * @param streams The slices to bind.
-     * @param count The stream count.
-     * @param workgroups The workgroup count.
-     */
-    void dispatch(const Slice* streams, size_t count, uint32_t workgroups) const;
-    /** ------------------------------------------------------------------------------------------- Write Job
-     * @brief Publishes one job-table slot.
-     * @param slot The slot index.
-     * @param input The job's input slice.
-     * @param host_handle The host handle mirrored to the device.
-     */
-    void write_job(size_t slot, const Slice& input, const void* host_handle);
-    /** ------------------------------------------------------------------------------------------- Dispatch Jobs
-     * @brief Dispatches the megakernel over the job table.
-     * @param jobs The number of published jobs.
-     */
-    void dispatch(size_t jobs);
-    /** ------------------------------------------------------------------------------------------- Dispatch References
-     * @brief Dispatches the reference ring over a range.
-     * @param first The first reference index.
-     * @param count The reference count.
-     */
-    void dispatch_references(uint32_t first, uint32_t count);
 };
 /** --------------------------------------------------------------------------------------------------------- Vulkan GLSL Kernel Prelude
  * @brief GLSL prelude and host-side mirrors for Buffet Alligator's persistent megakernel dispatch.
@@ -577,17 +440,17 @@ layout(push_constant) uniform AlligatorPush {
 } vulkan_push;
 // ------------------------------------------------------------------------------------------------- Slice (4-byte pool ID)
 struct Slice {
-    uint32_t id;  ///< Index into the shared GPUBufRef table
+    uint32_t id;  ///< Encoded placement, region, and region-local slot
 };
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SliceRef {
     uint32_t id;
 };
 // ------------------------------------------------------------------------------------------------- GPUBufRef pool (16-byte entries)
-// The CPU and GPU read the same mapped GPUBuf records at the same pool indices.
+// The region directory locates the mapped GPUBuf records shared by CPU and GPU.
 struct GPUBufRef {
     uint64_t address;      ///< The backing slab's device address
-    uint32_t size;         ///< The slice's size in bytes
-    uint32_t offset;       ///< The slice's byte offset within its slab
+    uint32_t size;         ///< The rounded slice length in 64-byte granules
+    uint32_t offset;       ///< The slab-relative offset in 64-byte granules
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer GPUBufRefArray {
     GPUBufRef refs[];
@@ -602,17 +465,21 @@ layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array 
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
 // ------------------------------------------------------------------------------------------------- Slice basics
+uint64_t slice_table(Slice s) {
+    return U64Array(vulkan_push.vulkan_pool_address).v[(s.id >> 3u) & 63u];
+}
+GPUBufRef slice_ref(Slice s) { return GPUBufRefArray(slice_table(s)).refs[s.id >> 9u]; }
 uint64_t slice_address(Slice s) {
-    GPUBufRef ref = GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[s.id];
-    return ref.address + uint64_t(ref.offset);
+    GPUBufRef ref = slice_ref(s);
+    return ref.address + (uint64_t(ref.offset) << 6);
 }
 bool slice_is_null(Slice s) { return s.id == 0xFFFFFFFFu; }
-uint slice_size(Slice s) {
-    return GPUBufRefArray(vulkan_push.vulkan_pool_address).refs[s.id].size;
+uint64_t slice_size(Slice s) {
+    return uint64_t(slice_ref(s).size) << 6;
 }
 Slice slice_read(uint64_t address) { return Slice(SliceRef(address).id); }
 uint64_t gpu_slice_address(uint32_t index) { return slice_address(gpu_slice(index)); }
-uint gpu_slice_size(uint32_t index) { return slice_size(gpu_slice(index)); }
+uint64_t gpu_slice_size(uint32_t index) { return slice_size(gpu_slice(index)); }
 // ------------------------------------------------------------------------------------------------- Word-native loads
 uint  slice_load_u32(Slice s, uint index) { return U32Array(slice_address(s)).v[index]; }
 int   slice_load_i32(Slice s, uint index) { return I32Array(slice_address(s)).v[index]; }

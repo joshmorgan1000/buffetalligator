@@ -10,157 +10,141 @@
 #include <cstring>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
- * guaranteed to be zero-initialized.
- * @param size The size of the slice in bytes.
+/** --------------------------------------------------------------------------------------------------------- Heap Buffer
+ * @brief Allocates one zeroed buffer with checked 64-byte alignment.
+ */
+AlignedHeapBuffer::AlignedHeapBuffer(size_t size) {
+    if (size > SIZE_MAX - 63) ALLIGATOR_THROW("Heap buffer size overflows 64-byte alignment");
+    size_ = (size + 63) & ~size_t{63};
+    if (size_ == 0) return;
+    buffer_ = std::aligned_alloc(64, size_);
+    if (!buffer_) throw std::bad_alloc();
+    std::memset(buffer_, 0, size_);
+}
+/** --------------------------------------------------------------------------------------------------------- Shared Buffet
+ * @brief Allocates a representable shared heap buffer with one counted owner.
+ */
+SharedBuffet::SharedBuffet(size_t size) {
+    if (size > (uint64_t{UINT32_MAX} << 6)) {
+        ALLIGATOR_THROW("SharedBuffet exceeds the 64-byte-granule size limit");
+    }
+    if (size == 0) return;
+    const BuffetDescriptor* placement =
+        BuffetDescriptors::descriptor_for(static_cast<AlignedHeapBuffer*>(nullptr));
+    const size_t bytes = (size + 63) & ~size_t{63};
+    void* buffer = placement->factory(bytes);
+    try {
+        token_ = new std::tuple<void*, const BuffetDescriptor*, std::atomic<uint32_t>, uint32_t>(
+            buffer, placement, 1, static_cast<uint32_t>(bytes >> 6));
+    } catch (...) {
+        placement->deleter(buffer);
+        throw;
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Shared Buffet Release
+ * @brief Releases this reference and frees the backing buffer after its last owner.
+ */
+void SharedBuffet::free() {
+    auto* released = std::exchange(token_, nullptr);
+    if (released && std::get<2>(*released).fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::get<1>(*released)->deleter(std::get<0>(*released));
+        delete released;
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Default Placement
+ * @brief Resolves the payload placement before the first Slice claim.
+ */
+const BuffetDescriptor* Slice::default_placement() {
+    return BuffetDescriptors::default_placement();
+}
+/** --------------------------------------------------------------------------------------------------------- Fresh Claim
+ * @brief Claims a range rounded up to 64-byte granules from the selected placement.
  */
 Slice::Slice(size_t size, const BuffetDescriptor* placement) {
-    SliceEntry* entry = ChainBuffet::chain(placement)->claim(size);
+    *this = ChainBuffet::chain(placement, size);
 }
-/** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
- * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with
- * the option to specify whether the slice should be part of a larger slab or a novel buffer.
- * The slice is guaranteed to be zero-initialized.
- * @param size The size of the slice in bytes.
- * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
- * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
- * reduce fragmentation in the arena.
+/** --------------------------------------------------------------------------------------------------------- Dedicated Claim
+ * @brief Claims 64-byte granules with optional dedicated backing ownership.
  */
 Slice::Slice(size_t size, bool novel_buffer, const BuffetDescriptor* placement) {
-    *this = placement->current_plate()->claim(size, novel_buffer);
+    *this = ChainBuffet::chain(placement, size, novel_buffer);
 }
-/** --------------------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
- * @brief Copies data from an external memory location into a new slice of memory in the
- * buffet alligator. This can be used to deep-copy a slice, or load data from an external
- * source into the buffet alligator's memory management system.
- * @param copy_from Pointer to the external memory to copy from.
- * @param size The size of the data to copy in bytes.
- * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
- * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
- * reduce fragmentation in the arena. Default is false.
+/** --------------------------------------------------------------------------------------------------------- External Copy
+ * @brief Copies an external byte range into a new owned Slice.
  */
 Slice::Slice(
     const void* copy_from,
     size_t size,
     bool novel_buffer,
-    const Placemat* placement
+    const BuffetDescriptor* placement
 ) {
-    if (copy_from == nullptr || size == 0) {
-        return;
-    }
-    *this = placement->current_plate()->claim(size, novel_buffer);
-    std::memcpy(Alligator::inst().host_ptr(id_)->ptr, copy_from, size);
+    if (size == 0) return;
+    if (copy_from == nullptr) ALLIGATOR_THROW("Copying a nonempty Slice requires source memory");
+    *this = ChainBuffet::chain(placement, size, novel_buffer);
+    std::memcpy(raw(), copy_from, size);
 }
-/** --------------------------------------------------------------------------------------------------------- Copy/move semantics
- * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
- * much like `std::shared_ptr` in that they share the same reference counter and underlying
- * memory. Move semantics transfer ownership without reference-counting traffic.
+/** --------------------------------------------------------------------------------------------------------- Copy Constructor
+ * @brief Publishes a fresh identifier retaining the source byte view and backing allocation.
  */
 Slice::Slice(const Slice& other) {
-    if (other.id_ == 0xFFFFFFFFu || Alligator::inst().plate(other.id_) == nullptr) {
-        id_ = 0xFFFFFFFFu;
-        return;
-    }
-    id_ = Alligator::inst().next_id();
-    (*Alligator::inst().gpubuf(id_)) = (*Alligator::inst().gpubuf(other.id_));
-    (*Alligator::inst().host_ptr(id_)) = (*Alligator::inst().host_ptr(other.id_));
-    Alligator::inst().plate(id_) = Alligator::inst().plate(other.id_);
-    Alligator::inst().plate(id_)->ref_count.fetch_add(1, std::memory_order_relaxed);
+    if (other.is_null()) return;
+    Alligator& arena = Alligator::inst();
+    id_ = arena.next_id(other.placement());
+    arena.entry(*this).set(arena.entry(other).token(), static_cast<uint8_t>((id_ >> 3) & 63));
+    *arena.gpubuf(*this) = *arena.gpubuf(other);
 }
-/** --------------------------------------------------------------------------------------------------------- Copy assignment operator
- * @brief Assigns the contents of one `Slice` to another, sharing the same underlying memory
- * and reference counter.
- * @param other The `Slice` to assign from.
- * @return A reference to the assigned `Slice`.
+/** --------------------------------------------------------------------------------------------------------- Copy Assignment
+ * @brief Replaces this view only after the source's retained view has been published.
  */
 Slice& Slice::operator=(const Slice& other) {
     if (this != &other) {
-        free();
-        Slice other_copy(other);
-        *this = std::move(other_copy);
+        Slice retained(other);
+        *this = std::move(retained);
     }
     return *this;
 }
-/** --------------------------------------------------------------------------------------------------------- Move constructor
- * @brief Moves the contents of one `Slice` to another, transferring ownership of the
- * underlying memory.
- * @param other The `Slice` to move from.
+/** --------------------------------------------------------------------------------------------------------- Move Constructor
+ * @brief Transfers the identifier and leaves the source null.
  */
-Slice::Slice(Slice&& other) noexcept {
-    id_ = other.id_;
-    other.id_ = 0xFFFFFFFFu;
-}
-/** --------------------------------------------------------------------------------------------------------- Move assignment operator
- * @brief Moves the contents of one `Slice` to another, transferring ownership of the
- * underlying memory.
- * @param other The `Slice` to move from.
- * @return A reference to the assigned `Slice`.
+Slice::Slice(Slice&& other) noexcept : id_(std::exchange(other.id_, UINT32_MAX)) {}
+/** --------------------------------------------------------------------------------------------------------- Move Assignment
+ * @brief Releases the destination and transfers the source identifier.
  */
 Slice& Slice::operator=(Slice&& other) noexcept {
     if (this != &other) {
         free();
-        id_ = other.id_;
-        other.id_ = 0xFFFFFFFFu;
+        id_ = std::exchange(other.id_, UINT32_MAX);
     }
     return *this;
 }
 /** --------------------------------------------------------------------------------------------------------- Placement
- * @brief Returns the memory placement type of the slice.
- * @return The `Placement` enum value representing the slice's memory placement.
+ * @brief Returns the descriptor encoded in a live Slice identifier.
  */
-const Placemat* Slice::placement() const {
-    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
-        return nullptr;
-    }
-    return Alligator::inst().plate(id_)->placemat;
+const BuffetDescriptor* Slice::placement() const {
+    return is_null() ? nullptr : BuffetDescriptors::get(id_ & 7);
 }
-/** --------------------------------------------------------------------------------------------------------- Create new view
- * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new view shares
- * the same underlying memory and reference counter as the original slice. Using the default parameters will
- * create a new view that is essentially identical to the original slice - a shared view that increments the
- * reference counter and will keep the underlying memory alive until all views are destroyed.
- * @param offset The offset in bytes from the start of the original slice to the start of the new view.
- * @param length The length in bytes of the new view.
- * @return A new `Slice` object that is a view of the original slice.
+/** --------------------------------------------------------------------------------------------------------- Byte View
+ * @brief Retains the 64-byte granules covering a requested range without moving its payload.
  */
 Slice Slice::slice(size_t offset, size_t length) const {
-    if (length == 0) {
-        return Slice();
-    }
-    if (offset == 0 && length == SIZE_MAX) {
-        return Slice(*this);
-    }
-    if (is_null()) {
-        return Slice();
-    }
-    const size_t current_size = size_bytes();
-    if (offset >= current_size) {
-        ALLIGATOR_THROW("Slice::slice: offset exceeds slice size");
-    }
-    const size_t view_size = current_size - offset;
-    if (length == SIZE_MAX) {
-        length = view_size;
-    } else if (length > view_size) {
-        ALLIGATOR_THROW("Slice::slice: length exceeds slice size");
-    }
+    if (is_null() || length == 0) return Slice();
+    const size_t bytes = size_bytes();
+    if (offset > bytes) ALLIGATOR_THROW("Slice view offset exceeds its parent");
+    const size_t available = bytes - offset;
+    if (length == SIZE_MAX) length = available;
+    if (length > available) ALLIGATOR_THROW("Slice view length exceeds its parent");
+    if (length == 0) return Slice();
+    const size_t first = offset >> 6;
+    const size_t end = (offset + length + 63) >> 6;
     Slice view(*this);
-    HostPtr* host = Alligator::inst().host_ptr(view.id_);
-    host->ptr = static_cast<uint8_t*>(host->ptr) + offset;
-    GPUBuf* gpu = Alligator::inst().gpubuf(view.id_);
-    gpu->size = length;
-    gpu->offset += offset;
+    Alligator& arena = Alligator::inst();
+    GPUBuf& record = *arena.gpubuf(view);
+    record.offset += static_cast<uint32_t>(first);
+    record.size = static_cast<uint32_t>(end - first);
     return view;
 }
 /** --------------------------------------------------------------------------------------------------------- Resize
- * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in the slice will
- * be preserved up to the minimum of the old and new sizes. If `preserve_data` is false, the existing data
- * will be discarded and the slice will be reallocated. This can be called on a freed or null slice, in
- * which case it will behave like a normal constructor and allocate a new slice of the specified size.
- * @param new_size The new size of the slice in bytes.
- * @param preserve_data Whether to preserve existing data in the slice. Default is true.
- * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null. Default is false.
- * @param placement The memory placement strategy to use. Default is `default_placement()`.
+ * @brief Resizes to whole 64-byte granules and preserves existing data when requested.
  */
 void Slice::resize(
     size_t new_size,
@@ -168,137 +152,153 @@ void Slice::resize(
     bool novel_buffer,
     const BuffetDescriptor* placement
 ) {
-    if (is_null()) {
-        *this = Slice(new_size, novel_buffer, placement);
+    if (new_size == 0) {
+        free();
         return;
     }
-    if (new_size == size_bytes()) {
-        return;
+    if (new_size > (uint64_t{UINT32_MAX} << 6)) {
+        ALLIGATOR_THROW("Slice resize exceeds the 64-byte-granule size limit");
     }
-    if (new_size < size_bytes() && preserve_data) {
-        Slice shrunk = slice(0, new_size);
-        *this = std::move(shrunk);
-        return;
-    }
-    if (preserve_data) {
-        // Whole-block, sole-handle slices on resizable placements grow in place through the
-        // substrate (realloc expands without copying whenever the allocator can).
-        Plate* plate = Alligator::inst().plate(id_);
-        const GPUBuf* whole = Alligator::inst().gpubuf(id_);
-        if (is_novel() && plate->placemat->resizer_ != nullptr
-            && whole->offset == 0 && whole->size == plate->size
-        ) [[likely]] {
-            const size_t old_size = size_bytes();
-            auto [new_host, new_substrate] =
-                plate->placemat->resizer_(Alligator::inst().host_ptr(id_)->ptr, plate->substrate_handle, new_size);
-            if (new_host != nullptr) {
-                // realloc leaves the growth uninitialized; the zero-init contract covers it.
-                std::memset(static_cast<uint8_t*>(new_host) + old_size, 0, new_size - old_size);
-                plate->substrate_handle = new_substrate;
-                Memory::record_allocation(*plate->placemat, new_size - old_size);
-                plate->size = new_size;
-                Alligator::inst().host_ptr(id_)->ptr = new_host;
-                GPUBuf* gpu = Alligator::inst().gpubuf(id_);
-                gpu->address = reinterpret_cast<uint64_t>(new_host);
-                gpu->size = new_size;
-                const SliceId base_id(plate->slice_id.load(std::memory_order_acquire));
-                *Alligator::inst().host_ptr(base_id) = HostPtr{new_host};
-                *Alligator::inst().gpubuf(base_id) = *gpu;
-                return;
-            }
+    const size_t rounded_size = (new_size + 63) & ~size_t{63};
+    const size_t previous = size_bytes();
+    if (preserve_data && !novel_buffer && placement == this->placement()) {
+        if (rounded_size == previous) return;
+        if (rounded_size < previous) {
+            *this = slice(0, rounded_size);
+            return;
         }
     }
-    Slice grown(new_size, novel_buffer, placement);
-    if (preserve_data && !is_null() && !grown.is_null()) {
-        std::memcpy(grown.raw(), raw(), std::min(size_bytes(), new_size));
+    Slice resized(new_size, novel_buffer, placement);
+    if (preserve_data && previous != 0) {
+        std::memcpy(resized.raw(), raw(), std::min(previous, rounded_size));
     }
-    *this = std::move(grown);
+    *this = std::move(resized);
 }
 /** --------------------------------------------------------------------------------------------------------- Novel Backing
- * @brief Reports whether this slice owns or views a dedicated novel buffer.
- * @return True when the backing allocation is a novel buffer.
+ * @brief Reports whether this view retains a dedicated backing allocation.
  */
 bool Slice::is_novel() const noexcept {
-    if (id_ == 0xFFFFFFFFu) {
-        return false;
-    }
-    const Plate* plate = Alligator::inst().plate(id_);
-    return plate != nullptr && plate->ref_count.load(std::memory_order_acquire) == 1;
+    return !is_null() && Alligator::inst().entry(*this).token()->is_novel();
 }
 /** --------------------------------------------------------------------------------------------------------- Adopt
- * @brief Adopts the contents of another slice, freeing the current slice if necessary.
- * @param other The slice to adopt.
+ * @brief Transfers the passed view into this handle.
  */
-void Slice::adopt(Slice other) {
-    if (this == &other) {
-        return;
-    }
-    free();
-    id_ = other.id_;
-    other.id_ = 0xFFFFFFFFu;
-}
+void Slice::adopt(Slice other) { *this = std::move(other); }
 /** --------------------------------------------------------------------------------------------------------- Free
- * @brief Frees the underlying memory of the slice. This is called automatically when the
- * slice is destroyed, but can be called manually to free the memory early. After calling this
- * method, the slice will be null.
+ * @brief Releases one owned identifier and leaves this handle null.
  */
 void Slice::free() {
-    if (id_ == 0xFFFFFFFFu) {
-        return;
-    }
-    Alligator::inst().destroy(id_);
-    id_ = 0xFFFFFFFFu;
+    if (!is_null()) Alligator::inst().destroy(*this);
 }
 /** --------------------------------------------------------------------------------------------------------- Is Null
- * @brief Checks if the slice is null (i.e., has no underlying memory).
- * @return True if the slice is null, false otherwise.
+ * @brief Tests the null identifier without accessing arena metadata.
  */
-bool Slice::is_null() const {
-    return id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr;
-}
-/** --------------------------------------------------------------------------------------------------------- Is Valid
- * @brief Checks if the slice is valid (i.e., has underlying memory).
- * @return True if the slice is valid, false otherwise.
+bool Slice::is_null() const { return id_ == UINT32_MAX; }
+/** --------------------------------------------------------------------------------------------------------- Valid
+ * @brief Reports whether this handle owns an identifier.
  */
-bool Slice::valid() const {
-    return !is_null();
-}
-/** --------------------------------------------------------------------------------------------------------- Conversion to bool
- * @brief Allows the slice to be used in boolean contexts.
- * @return True if the slice is valid, false if it is null.
+bool Slice::valid() const { return !is_null(); }
+/** --------------------------------------------------------------------------------------------------------- Boolean Conversion
+ * @brief Reports whether this handle owns an identifier.
  */
-Slice::operator bool() const {
-    return !is_null();
-}
+Slice::operator bool() const { return !is_null(); }
 /** --------------------------------------------------------------------------------------------------------- Raw
- * @brief Returns a raw pointer to the underlying memory of the slice.
- * @return A pointer to the raw memory, or nullptr if the slice is invalid.
+ * @brief Resolves a live view's exact first host byte.
  */
-void* Slice::raw() {
-    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
-        return nullptr;
-    }
-    return Alligator::inst().host_ptr(id_)->ptr;
-}
-/** --------------------------------------------------------------------------------------------------------- Raw (const)
- * @brief Returns a raw pointer to the underlying memory of the slice.
- * @return A pointer to the raw memory, or nullptr if the slice is invalid.
+void* Slice::raw() { return is_null() ? nullptr : Alligator::inst().entry(*this).host_ptr(); }
+/** --------------------------------------------------------------------------------------------------------- Raw Constant
+ * @brief Resolves a live view's exact first host byte for constant access.
  */
 const void* Slice::raw() const {
-    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
-        return nullptr;
-    }
-    return Alligator::inst().host_ptr(id_)->ptr;
+    return is_null() ? nullptr : std::as_const(Alligator::inst()).entry(*this).host_ptr();
 }
-/** --------------------------------------------------------------------------------------------------------- Size in bytes
- * @brief Returns the size of the slice in bytes.
- * @return The size of the slice in bytes.
+/** --------------------------------------------------------------------------------------------------------- Byte Length
+ * @brief Returns the represented granule length in bytes.
  */
 size_t Slice::size_bytes() const {
-    if (id_ == 0xFFFFFFFFu || Alligator::inst().plate(id_) == nullptr) {
-        return 0;
-    }
-    return Alligator::inst().gpubuf(id_)->size;
+    return is_null() ? 0 : Alligator::inst().entry(*this).size();
+}
+/** --------------------------------------------------------------------------------------------------------- Entry Token
+ * @brief Resolves the aligned, constructed token in an occupied entry.
+ */
+ChainBuffet::ChainBuffetToken* SliceEntry::token() {
+    return std::launder(reinterpret_cast<ChainBuffet::ChainBuffetToken*>(data));
+}
+/** --------------------------------------------------------------------------------------------------------- Constant Entry Token
+ * @brief Resolves the aligned, constructed token for constant access.
+ */
+const ChainBuffet::ChainBuffetToken* SliceEntry::token() const {
+    return std::launder(reinterpret_cast<const ChainBuffet::ChainBuffetToken*>(data));
+}
+/** --------------------------------------------------------------------------------------------------------- Set Entry Token
+ * @brief Constructs exactly one counted backing reference in a reserved entry.
+ */
+void SliceEntry::set_token(const ChainBuffet::ChainBuffetToken* retained) {
+    std::construct_at(reinterpret_cast<ChainBuffet::ChainBuffetToken*>(data), *retained);
+}
+/** --------------------------------------------------------------------------------------------------------- Entry Region
+ * @brief Returns the region containing this entry.
+ */
+uint8_t SliceEntry::region() const { return region_id_; }
+/** --------------------------------------------------------------------------------------------------------- Set Entry Region
+ * @brief Records the entry's destination region.
+ */
+void SliceEntry::set_region(uint8_t index) { region_id_ = index; }
+/** --------------------------------------------------------------------------------------------------------- Publish Entry
+ * @brief Constructs a backing reference and initializes one identifier owner.
+ */
+void SliceEntry::set(const ChainBuffet::ChainBuffetToken* retained, uint8_t index) {
+    set_token(retained);
+    set_region(index);
+    owners.store(1, std::memory_order_relaxed);
+}
+/** --------------------------------------------------------------------------------------------------------- Clear Entry
+ * @brief Ends the token's lifetime after the identifier's last owner retires.
+ */
+void SliceEntry::clear() { std::destroy_at(token()); }
+/** --------------------------------------------------------------------------------------------------------- Entry Size
+ * @brief Widens the stored granule length before converting it to bytes.
+ */
+size_t SliceEntry::size() const {
+    const Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
+    const size_t index = this - source.slots.data();
+    return uint64_t(source.gpu_slots[index].size) << 6;
+}
+/** --------------------------------------------------------------------------------------------------------- Entry Offset
+ * @brief Widens the stored granule offset before converting it to bytes.
+ */
+size_t SliceEntry::offset() const {
+    const Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
+    const size_t index = this - source.slots.data();
+    return uint64_t(source.gpu_slots[index].offset) << 6;
+}
+/** --------------------------------------------------------------------------------------------------------- Entry Host Pointer
+ * @brief Resolves this entry's exact byte offset through its retained backing.
+ */
+void* SliceEntry::host_ptr() { return token()->raw(offset()); }
+/** --------------------------------------------------------------------------------------------------------- Constant Entry Host Pointer
+ * @brief Resolves this entry's exact byte offset for constant access.
+ */
+const void* SliceEntry::host_ptr() const { return token()->raw(offset()); }
+/** --------------------------------------------------------------------------------------------------------- Entry GPU Record
+ * @brief Returns the granule record sharing this entry's region and slot.
+ */
+GPUBuf* SliceEntry::gpu_buf() {
+    Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
+    return &source.gpu_slots[this - source.slots.data()];
+}
+/** --------------------------------------------------------------------------------------------------------- Constant Entry GPU Record
+ * @brief Returns the granule record for constant access.
+ */
+const GPUBuf* SliceEntry::gpu_buf() const {
+    const Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
+    return &source.gpu_slots[this - source.slots.data()];
+}
+/** --------------------------------------------------------------------------------------------------------- Entry From Slice
+ * @brief Resolves an entry belonging to a live Slice.
+ */
+SliceEntry* SliceEntry::from_slice(const Slice& slice) {
+    return &Alligator::inst().entry(slice);
 }
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice Details
  * @struct PotentialSlice::Details
@@ -556,37 +556,5 @@ void PotentialSlice::adopt(Slice slice) {
             }
         }
     }
-}
-/** --------------------------------------------------------------------------------------------------------- Record Slab Allocation
- * @brief Reports one completed slab allocation to the memory tracker.
- * @param plate The plate that now owns the slab.
- */
-void Placemat::record_slab_allocation(const Plate* plate) {
-    const size_t bytes = plate->size != 0 ? plate->size : plate->bump.load(std::memory_order_acquire);
-    Memory::record_allocation(*plate->placemat, bytes);
-    Memory::record_code_location(*plate->placemat, bytes, plate);
-}
-/** --------------------------------------------------------------------------------------------------------- Record Slab Release
- * @brief Reports one completed slab release to the memory tracker and frees a novel plate's base slot.
- * @param plate The plate whose slab was just returned.
- */
-void Placemat::record_slab_release(const Plate* plate) {
-    const size_t bytes = plate->size != 0 ? plate->size : plate->bump.load(std::memory_order_acquire);
-    Memory::record_deallocation(*plate->placemat, bytes);
-    Memory::forget_code_location(plate);
-    const SliceId slice_id(plate->slice_id.load(std::memory_order_acquire));
-    if (slice_id == static_cast<SliceId>(0xFFFFFFFFu)) return;  // Exhaustion already destroyed the base slot.
-    Alligator& alligator = Alligator::inst();
-    alligator.plate(slice_id) = nullptr;
-    *alligator.gpubuf(slice_id) = GPUBuf{};
-    *alligator.host_ptr(slice_id) = HostPtr{};
-    alligator.occupancy_->test_and_clear(slice_id);  // Cleared last so the slot is not reissued early.
-}
-/** --------------------------------------------------------------------------------------------------------- Call Free Later
- * @brief Hands a plate's reference drop to the allocator thread.
- * @param plate The plate to free.
- */
-void Placemat::call_free_later(Plate* plate) {
-    Kitchen::inst().submit([](Plate* later) { later->free(); }, plate);
 }
 } // namespace buffetalligator

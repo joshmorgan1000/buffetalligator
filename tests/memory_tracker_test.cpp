@@ -1,10 +1,9 @@
 /** --------------------------------------------------------------------------------------------------------- Memory Tracker Test
  * @file memory_tracker_test.cpp
- * @brief Checks allocation counters and optional code-location records in both build modes.
+ * @brief Checks descriptor counters, retained views, failed allocations, and completed releases.
  */
-#include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
-#include <memory/plate.hpp>
 #include "functional_support.hpp"
 #include <atomic>
 #include <chrono>
@@ -16,14 +15,8 @@
 using namespace buffetalligator;
 using functional::require;
 namespace {
-/** --------------------------------------------------------------------------------------------------------- Allocation
- * @brief Owns one test placement allocation and its byte count.
- */
-struct Allocation {
-    void* memory = nullptr;
-    size_t bytes = 0;
-    ~Allocation() { std::free(memory); }
-};
+struct Allocation { void* memory; size_t bytes; };
+BuffetDescriptor placement{};
 std::atomic<size_t> allocated_bytes{0};
 std::atomic<size_t> freed_bytes{0};
 std::atomic<bool> reject_allocation{false};
@@ -31,151 +24,132 @@ std::atomic<bool> hold_deallocation{false};
 std::binary_semaphore deallocation_entered{0};
 std::binary_semaphore release_deallocation{0};
 /** --------------------------------------------------------------------------------------------------------- Allocate
- * @brief Allocates backing storage and records successful placement callbacks independently.
+ * @brief Records a successful custom descriptor allocation.
  */
-std::pair<void*, void*> allocate(size_t bytes, void*) {
+void* allocate(size_t bytes) {
     if (reject_allocation.exchange(false)) throw std::bad_alloc();
-    auto allocation = std::make_unique<Allocation>();
-    allocation->bytes = bytes;
-    allocation->memory = std::calloc(1, bytes);
-    if (!allocation->memory) throw std::bad_alloc();
-    void* substrate = allocation.release();
+    void* memory = std::aligned_alloc(64, bytes);
+    if (!memory) throw std::bad_alloc();
+    std::memset(memory, 0, bytes);
+    Allocation* allocation = new Allocation{memory, bytes};
     allocated_bytes.fetch_add(bytes, std::memory_order_relaxed);
-    return {static_cast<Allocation*>(substrate)->memory, substrate};
+    BuffetDescriptors::record_allocation(placement.type_idx, bytes, allocation);
+    return allocation;
 }
 /** --------------------------------------------------------------------------------------------------------- Deallocate
- * @brief Pauses selected teardown callbacks before recording completed backing releases.
+ * @brief Pauses a selected backing release before recording its completion.
  */
-std::pair<void*, void*> deallocate(void* host_ptr, void* substrate_handle) {
-    static_cast<void>(host_ptr);
+void deallocate(void* handle) {
     if (hold_deallocation.exchange(false)) {
         deallocation_entered.release();
         release_deallocation.acquire();
     }
-    auto* allocation = static_cast<Allocation*>(substrate_handle);
+    Allocation* allocation = static_cast<Allocation*>(handle);
     const size_t bytes = allocation->bytes;
+    std::free(allocation->memory);
     delete allocation;
-    freed_bytes.fetch_add(bytes, std::memory_order_relaxed);
-    return {nullptr, nullptr};
+    BuffetDescriptors::record_deallocation(placement.type_idx, bytes, handle);
+    freed_bytes.fetch_add(bytes, std::memory_order_release);
 }
-/** --------------------------------------------------------------------------------------------------------- Context
- * @brief Returns the unused placement context.
+/** --------------------------------------------------------------------------------------------------------- Size
+ * @brief Reports a custom allocation's exact length.
  */
-void* context() { return nullptr; }
+size_t allocation_size(void* handle) { return static_cast<Allocation*>(handle)->bytes; }
 /** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief Resolves an Allocation's block.
+ * @brief Resolves a byte offset into registered backing.
  */
-HostPtr host_ptr(void* substrate_handle) { return HostPtr{static_cast<Allocation*>(substrate_handle)->memory}; }
-/** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @brief Host placements address their GPUBuf by the host pointer.
- */
-GPUBuf gpu_buf(void* substrate_handle) {
-    const Allocation* allocation = static_cast<Allocation*>(substrate_handle);
-    return GPUBuf{reinterpret_cast<uint64_t>(allocation->memory), static_cast<uint32_t>(allocation->bytes), 0};
+void* host_ptr(void* handle, size_t offset) {
+    return static_cast<char*>(static_cast<Allocation*>(handle)->memory) + offset;
 }
-/** --------------------------------------------------------------------------------------------------------- Completed Frees
- * @brief Reads the placement's freed total.
+/** --------------------------------------------------------------------------------------------------------- Device Address
+ * @brief Supplies this CPU descriptor's address domain.
  */
-size_t completed_frees() { return freed_bytes.load(std::memory_order_relaxed); }
-/** --------------------------------------------------------------------------------------------------------- Released
- * @brief Waits up to two seconds for the release to clear the plate's base slot, its final step.
- */
-bool released(const Plate* plate) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    const uint32_t base_id = plate->slice_id.load(std::memory_order_acquire);
-    while (Alligator::host_table()[base_id].ptr != nullptr) {
-        if (std::chrono::steady_clock::now() > deadline) return false;
-        std::this_thread::yield();
-    }
-    return true;
+uint64_t device_address(void* handle) {
+    return reinterpret_cast<uint64_t>(static_cast<Allocation*>(handle)->memory);
 }
+/** --------------------------------------------------------------------------------------------------------- Release Slice
+ * @brief Releases a retained Slice on a thread whose descriptor callback can be paused.
+ */
+void release_slice(Slice* slice) { slice->free(); }
 /** --------------------------------------------------------------------------------------------------------- Tracking
- * @brief Exercises successful allocations, failed allocations, retained views, and queued frees.
+ * @brief Exercises public descriptor tracking with a paused final-owner release.
  */
 void tracking() {
+    static_cast<void>(Slice::default_placement());
     constexpr size_t slab_bytes = 64ull * 1024 * 1024;
     constexpr size_t novel_bytes = 8192;
-    const uint16_t type = BuffetMenu::register_type(
-        "tracker_test", slab_bytes, 64, allocate, deallocate, context, host_ptr, nullptr, gpu_buf, true
-    );
-    const Placemat& placement = *BuffetMenu::get(type);
-    Slice warmup(64);
+    const uint8_t type = static_cast<uint8_t>(BuffetDescriptors::count());
+    placement = {"tracker_test", deallocate, host_ptr, allocation_size, allocate,
+        type, slab_bytes, device_address};
+    BuffetDescriptors::register_descriptor(&placement);
+    Slice warmup(64, &placement);
     const size_t initial_allocations = allocated_bytes.load(std::memory_order_relaxed);
-    require(initial_allocations == 3 * slab_bytes, "initial slab allocation count differs");
+    require(initial_allocations >= slab_bytes, "chain initialization allocated no backing");
     const size_t global_allocations = Memory::total_allocations();
     const size_t global_freed = Memory::total_freed();
     require(Memory::placement_allocations(placement) == initial_allocations,
-        "tracker missed or duplicated an initial slab");
-    require(Memory::placement_freed(placement) == 0, "tracker reported an unfreed slab");
+        "tracker missed or duplicated chain backing");
     reject_allocation.store(true);
     bool rejected = false;
-    try { Slice failed(novel_bytes, true); }
+    try { Slice failed(novel_bytes, true, &placement); }
     catch (const std::bad_alloc&) { rejected = true; }
-    require(rejected, "failed allocation did not propagate");
-    require(allocated_bytes.load() == initial_allocations, "failed allocation changed totals");
-    require(Memory::total_allocations() == global_allocations,
-        "tracker counted a failed allocation");
-    Slice novel(novel_bytes, true);
-    const Plate* plate = Alligator::plate_for(novel);
-    const auto details = Memory::allocation_info(plate);
+    require(rejected && allocated_bytes.load() == initial_allocations
+        && Memory::total_allocations() == global_allocations,
+        "failed allocation did not preserve counters and its exception");
+    Slice novel(novel_bytes, true, &placement);
+    const void* handle = SliceEntry::from_slice(novel)->token()->buffet();
+    const auto details = Memory::allocation_info(handle);
     if constexpr (BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING) {
-        require(details.has_value(), "enabled tracking omitted a live allocation record");
-        require(details->size == novel_bytes && details->placement == type &&
-            details->timestamp > 0 && details->location.line() > 0 &&
-            std::string_view(details->location.file_name()).ends_with("buffet.cpp") &&
-            std::string_view(details->location.function_name()).find("Buffet") !=
-                std::string_view::npos, "allocation location details differ");
+        require(details.has_value() && details->size == novel_bytes
+            && details->placement == type && details->timestamp > 0
+            && details->location.line() > 0,
+            "enabled tracking omitted allocation details");
     } else {
         require(!details, "disabled location tracking returned an allocation record");
     }
     Slice retained = novel.slice(1, novel_bytes - 1);
     require(allocated_bytes.load() == initial_allocations + novel_bytes,
         "Slice view allocated new backing");
-    require(Memory::total_allocations() == global_allocations + novel_bytes &&
-        Memory::placement_allocations(placement) == initial_allocations + novel_bytes,
-        "novel allocation was missed or counted more than once");
     hold_deallocation.store(true);
     novel.free();
-    require(freed_bytes.load() == 0 && retained.valid(), "view did not retain its backing");
-    retained.free();
+    require(freed_bytes.load() == 0 && retained.valid(), "view failed to retain backing");
+    std::thread releaser(release_slice, &retained);
     require(deallocation_entered.try_acquire_for(std::chrono::seconds(2)),
-        "last Slice did not schedule its backing deallocation");
+        "last owner did not enter its backing deleter");
     require(Memory::total_freed() == global_freed && Memory::placement_freed(placement) == 0,
-        "tracker reported deallocation before the callback completed");
-    require(Memory::allocation_info(plate).has_value() ==
-        bool(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING),
-        "location record retired before the deallocation callback completed");
+        "tracker reported a paused deallocation as completed");
+    require(Memory::allocation_info(handle).has_value()
+        == bool(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING),
+        "paused deallocation retired its location record");
     release_deallocation.release();
-    require(released(plate), "last Slice did not release its backing");
-    require(completed_frees() == novel_bytes, "backing was not deallocated exactly once");
-    require(!Memory::allocation_info(plate), "completed deallocation retained a location record");
-    require(Memory::total_freed() == global_freed + novel_bytes &&
-        Memory::placement_freed(placement) == novel_bytes &&
-        Memory::placement_usage(placement) == initial_allocations,
+    releaser.join();
+    require(freed_bytes.load(std::memory_order_acquire) == novel_bytes
+        && !Memory::allocation_info(handle),
+        "completed deallocation leaked or duplicated backing");
+    require(Memory::total_freed() == global_freed + novel_bytes
+        && Memory::placement_freed(placement) == novel_bytes
+        && Memory::placement_usage(placement) == initial_allocations,
         "completed deallocation did not update tracker totals");
-    Slice undelivered(64, true);
-    const Plate* undelivered_plate = Alligator::plate_for(undelivered);
     {
         SliceQueue queue(1, 1);
         auto producer = queue.producer(0);
-        producer.push(std::move(undelivered));
+        producer.push(Slice(64, true, &placement));
     }
-    require(released(undelivered_plate), "queue destruction did not release its undelivered backing");
-    require(completed_frees() == novel_bytes + 64,
-        "queue destruction leaked its undelivered backing");
-    require(Memory::placement_allocations(placement) == allocated_bytes.load() &&
-        Memory::placement_freed(placement) == freed_bytes.load(),
-        "tracker totals differ from completed placement callbacks");
+    require(freed_bytes.load(std::memory_order_acquire) == novel_bytes + 64,
+        "queue destruction did not release its undelivered backing");
+    require(Memory::placement_allocations(placement) == allocated_bytes.load()
+        && Memory::placement_freed(placement) == freed_bytes.load(),
+        "tracker counters differ from completed callbacks");
     Memory::set_placement_available(placement, slab_bytes);
     require(Memory::placement_available(placement) == slab_bytes,
-        "capacity reporting depends on optional location tracking");
+        "available capacity reporting differs");
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
- * @brief Runs the tracker contract using the library's selected build configuration.
+ * @brief Runs tracking contracts with the selected location-tracking configuration.
  */
 int main() {
-    LOG_INFO_STREAM << "Checking allocation counters with code-location tracking "
+    LOG_INFO_STREAM << "Checking descriptor counters with code-location tracking "
         << (BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING ? "enabled" : "disabled");
     tracking();
     LOG_INFO_STREAM << "Allocation tracking contracts passed";

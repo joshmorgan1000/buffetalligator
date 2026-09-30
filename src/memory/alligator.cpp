@@ -5,10 +5,13 @@
  */
 #include <alligator.hpp>
 #include <alligator/kitchen.hpp>
+#include <gpu/runtime.hpp>
+#include <vulkan/shader_state.hpp>
 #include <loggingutils.hpp>
 #include <memory/tracker.hpp>
 #include <containers/bitplane.hpp>
 #include <new>
+extern "C" void ba_net_shutdown(void);
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Next ID
@@ -23,12 +26,20 @@ uint32_t Alligator::next_id(const BuffetDescriptor* placement) {
         while (r == nullptr || r == reinterpret_cast<Region*>(-1)) {
             Region* expected = nullptr;
             if (regions[last].compare_exchange_weak(expected, reinterpret_cast<Region*>(-1), std::memory_order_acq_rel)) {
-                region_backing[last] = std::make_unique<SliceRegion>();
-                r = region_backing[last].get()->host_ptr;
+                try {
+                    region_backing[last] = std::make_unique<SliceRegion>(metadata_placement_, last);
+                } catch (...) {
+                    regions[last].store(nullptr, std::memory_order_release);
+                    regions[last].notify_all();
+                    throw;
+                }
+                r = region_backing[last]->host_ptr;
+                directory_[last] = region_backing[last]->device_address;
                 regions[last].store(r, std::memory_order_release);
+                regions[last].notify_all();
                 break;
             }
-            std::this_thread::yield();
+            regions[last].wait(reinterpret_cast<Region*>(-1), std::memory_order_acquire);
             r = regions[last].load(std::memory_order_acquire);
         }
         SliceEntry* entry = r->claim(skip_at_most.load(std::memory_order_acquire));
@@ -97,26 +108,43 @@ void Alligator::destroy(Slice& slice) {
     const uint32_t slice_id = slice.id() >> 3;
     const uint32_t slot_id = slice_id >> 6;
     Region* r = regions[slice_id & 0x3f].load(std::memory_order_acquire);
-    r->slots[slot_id].clear();
-    r->gpu_slots[slot_id].clear();
-    r->release(&r->slots[slot_id]);
+    if (r->slots[slot_id].owners.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        r->slots[slot_id].clear();
+        r->gpu_slots[slot_id].clear();
+        r->release(&r->slots[slot_id]);
+    }
     slice.id_ = 0xFFFFFFFFu;
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor
  * @brief Constructs an Alligator instance.
  */
 Alligator::Alligator() {
-    region_backing[0] = std::make_unique<SliceRegion>();
-    regions[0].store(region_backing[0].get()->host_ptr, std::memory_order_release);
+    metadata_placement_ = gpu_device().placement;
+    directory_backing_ = metadata_placement_->factory(64 * sizeof(uint64_t));
+    try {
+        directory_ = static_cast<uint64_t*>(metadata_placement_->host_ptr(directory_backing_, 0));
+        directory_address_ = metadata_placement_->device_address(directory_backing_);
+        region_backing[0] = std::make_unique<SliceRegion>(metadata_placement_, 0);
+    } catch (...) {
+        metadata_placement_->deleter(directory_backing_);
+        throw;
+    }
+    directory_[0] = region_backing[0]->device_address;
+    regions[0].store(region_backing[0]->host_ptr, std::memory_order_release);
 }
 /** --------------------------------------------------------------------------------------------------------- Destructor
- * @brief Destructs the Alligator instance.
+ * @brief Drains accepted work before releasing allocator roots and Slice metadata.
  */
 Alligator::~Alligator() {
+    ba_net_shutdown();
+    Kitchen::inst().drain();
+    ShaderState::drain();
+    ChainBuffet::release_chains();
     for (size_t i = 0; i < regions.size(); ++i) {
         region_backing[i].reset();
         regions[i].store(nullptr, std::memory_order_release);
     }
+    metadata_placement_->deleter(directory_backing_);
 }
 /** ------------------------------------------------------------------------------------------- Instance
  * @brief Returns the singleton instance of the Alligator.
@@ -127,7 +155,7 @@ Alligator& Alligator::inst() {
     return instance;
 }
 /** ------------------------------------------------------------------------------------------- GPU Table
- * @brief The shared GPUBuf table's host mapping, the same bytes shaders read at gpu_table_address().
+ * @brief Returns one region's host mapping of the records reached through the GPU directory.
  * @param region_id The region ID of the GPU table.
  * @return The table base.
  */
@@ -142,20 +170,34 @@ const GPUBuf* Alligator::gpu_table(uint8_t region_id) {
 GPUBuf* Alligator::gpubuf_for(const Slice& slice) {
     return inst().gpubuf(slice);
 }
+/** --------------------------------------------------------------------------------------------------------- GPU Directory
+ * @brief Returns the device address of the arena's stable region directory.
+ */
+uint64_t Alligator::gpu_directory_address() { return inst().directory_address_; }
 /** --------------------------------------------------------------------------------------------------------- SliceRegion Constructor
  * @brief Constructs a SliceRegion with the given BuffetDescriptor.
  * @param desc The BuffetDescriptor to use for allocation.
  */
-Alligator::SliceRegion::SliceRegion(const BuffetDescriptor* desc) : descriptor(desc) {
+Alligator::SliceRegion::SliceRegion(const BuffetDescriptor* desc, uint8_t index) : descriptor(desc) {
     handle = descriptor->factory(sizeof(Region));
-    device_address = descriptor->device_address(handle);
-    host_ptr = static_cast<Region*>(descriptor->host_ptr(handle, 0));
+    try {
+#if defined(BUFFETALLIGATOR_TEST_REGION_CONSTRUCTION)
+        BUFFETALLIGATOR_TEST_REGION_CONSTRUCTION(index);
+#endif
+        device_address = descriptor->device_address(handle);
+        host_ptr = std::construct_at(static_cast<Region*>(descriptor->host_ptr(handle, 0)));
+        host_ptr->region = index;
+    } catch (...) {
+        descriptor->deleter(handle);
+        throw;
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- SliceRegion Destructor
  * @brief Destructs the SliceRegion, releasing its resources.
  */
 Alligator::SliceRegion::~SliceRegion() {
     if (handle) {
+        std::destroy_at(host_ptr);
         descriptor->deleter(handle);
         handle = nullptr;
         device_address = 0;

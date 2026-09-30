@@ -3,6 +3,7 @@
  * @brief Correctness-gated comparison of full-contract map contenders with a fixed-capacity control.
  */
 #include <logging.hpp>
+#include <alligator/containers.hpp>
 #include <loggingutils.hpp>
 #include <alligator.hpp>
 #include <simd.hpp>

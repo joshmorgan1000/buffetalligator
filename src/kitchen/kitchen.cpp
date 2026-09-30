@@ -5,20 +5,137 @@
 #include <alligator/kitchen.hpp>
 #include <logging.hpp>
 #include <loggingutils.hpp>
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <new>
 
 namespace buffetalligator {
+/** --------------------------------------------------------------------------------------------------------- TaskCountdown Constructor
+ * @brief Arms the countdown for a number of tasks.
+ * @param count The number of arrivals that release the waiter.
+ */
+TaskCountdown::TaskCountdown(uint32_t count) : pending(count), notified(count == 0) {}
+/** --------------------------------------------------------------------------------------------------------- TaskCountdown Arrive
+ * @brief The `done` hook: counts one task down and wakes the waiter on the last one.
+ * @param countdown The TaskCountdown passed as `done_context`.
+ */
+void TaskCountdown::arrive(void* countdown) {
+    TaskCountdown* self = static_cast<TaskCountdown*>(countdown);
+    if (self->pending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        self->pending.notify_all();
+        self->notified.store(true, std::memory_order_release);
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- TaskCountdown Wait
+ * @brief Parks until every armed task has arrived; each task's writes are visible afterwards.
+ */
+void TaskCountdown::wait() {
+    uint32_t remaining = pending.load(std::memory_order_acquire);
+    while (remaining != 0) {
+        pending.wait(remaining, std::memory_order_acquire);
+        remaining = pending.load(std::memory_order_acquire);
+    }
+    while (!notified.load(std::memory_order_acquire)) std::this_thread::yield();
+}
+/** --------------------------------------------------------------------------------------------------------- TaskCountdown Rearm
+ * @brief Resets a drained countdown for another round.
+ * @param count The number of arrivals that release the next wait.
+ */
+void TaskCountdown::rearm(uint32_t count) {
+    notified.store(count == 0, std::memory_order_relaxed);
+    pending.store(count, std::memory_order_release);
+}
+/** --------------------------------------------------------------------------------------------------------- Submit
+ * @brief Queues one task on the worker pool.
+ * @param task The task record, copied into the queue.
+ */
+void Kitchen::submit(const Task& task) {
+    moodycamel::ProducerToken& token = worker_token();
+    outstanding_tasks_.fetch_add(1, std::memory_order_relaxed);
+    if (!task_queue_.enqueue(token, task)) {
+        outstanding_tasks_.fetch_sub(1, std::memory_order_release);
+        throw std::bad_alloc();
+    }
+    maybe_wakeup();
+}
+/** --------------------------------------------------------------------------------------------------------- Submit (fields)
+ * @brief Queues `run(context)` on the worker pool, then `done(done_context)` when set.
+ * @param run The work.
+ * @param context Handed to run.
+ * @param done Completion callback, or nullptr.
+ * @param done_context Handed to done.
+ */
+void Kitchen::submit(
+    void (*run)(void* context),
+    void* context,
+    void (*done)(void* done_context),
+    void* done_context
+) {
+    submit(Task{run, context, done, done_context});
+}
+/** --------------------------------------------------------------------------------------------------------- Submit Bulk
+ * @brief Queues a batch on the worker pool with one enqueue and one wakeup signal.
+ * @param tasks The task records, copied into the queue.
+ * @param count How many tasks to queue.
+ */
+void Kitchen::submit_bulk(const Task* tasks, size_t count) {
+    moodycamel::ProducerToken& token = worker_token();
+    outstanding_tasks_.fetch_add(count, std::memory_order_relaxed);
+    if (!task_queue_.enqueue_bulk(token, tasks, count)) {
+        outstanding_tasks_.fetch_sub(count, std::memory_order_release);
+        throw std::bad_alloc();
+    }
+    maybe_wakeup();
+}
+/** --------------------------------------------------------------------------------------------------------- Submit Waiting
+ * @brief Queues one task on the waiter pool.
+ * @param task The task record, copied into the queue.
+ */
+void Kitchen::submit_waiting(const Task& task) {
+    moodycamel::ProducerToken& token = waiter_token();
+    outstanding_tasks_.fetch_add(1, std::memory_order_relaxed);
+    if (!waiting_task_queue_.enqueue(token, task)) {
+        outstanding_tasks_.fetch_sub(1, std::memory_order_release);
+        throw std::bad_alloc();
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Submit Waiting (fields)
+ * @brief Queues `run(context)` on the waiter pool, then `done(done_context)` when set.
+ * @param run The work.
+ * @param context Handed to run.
+ * @param done Completion callback, or nullptr.
+ * @param done_context Handed to done.
+ */
+void Kitchen::submit_waiting(
+    void (*run)(void* context),
+    void* context,
+    void (*done)(void* done_context),
+    void* done_context
+) {
+    submit_waiting(Task{run, context, done, done_context});
+}
 /** --------------------------------------------------------------------------------------------------------- Maybe Wakeup
  * @brief Wakes up the Kitchen if necessary.
  */
 void Kitchen::maybe_wakeup() {
-    if (active_workers_.load(std::memory_order_acquire) == 0) {
-        thread_change_queue_.enqueue(ThreadChangeReq{
-            std::make_unique<size_t>(0),
-            nullptr
-        });
+    const size_t active = active_workers_.load(std::memory_order_acquire);
+    if (active >= max_thread_count_.load(std::memory_order_relaxed)
+        || outstanding_tasks_.load(std::memory_order_acquire) <= active) return;
+    bool expected = false;
+    if (!growth_requested_.compare_exchange_strong(expected, true,
+        std::memory_order_acq_rel, std::memory_order_relaxed)) return;
+    try {
+        if (thread_change_queue_.enqueue(ThreadChangeReq{
+            std::make_unique<size_t>(active), nullptr
+        })) return;
+    } catch (const std::exception& error) {
+        LOG_ERROR_STREAM << "Kitchen worker growth failed after accepting work: " << error.what();
+        std::terminate();
     }
+    LOG_ERROR_STREAM << "Kitchen could not queue worker growth for accepted tasks";
+    std::terminate();
 }
 /** ------------------------------------------------------------------------------------------- Worker Thread
  * @struct WorkerThread
@@ -46,33 +163,47 @@ struct Kitchen::WorkerThread {
             if (!pool.task_queue_.try_dequeue(consumer, task)) {
                 pool.task_queue_.wait_dequeue(consumer, task);
                 backlog_dequeues = 0;
-            } else if ((backlog_dequeues++ & 63u) == 0) {
-                // Non-parking dequeue means backlog; size_approx is O(producers), so check only every 64th.
+            }
+            if ((backlog_dequeues++ & 63u) == 0) {
+                // Poll backlog on wakeup and every 64th dequeue because size_approx visits producers.
                 const size_t current_tasks = pool.task_queue_.size_approx();
                 const size_t active_threads = pool.active_workers_.load(std::memory_order_acquire);
                 if (current_tasks >= active_threads
                     && active_threads < pool.max_thread_count_.load(std::memory_order_acquire)
                 ) {
-                    pool.thread_change_queue_.enqueue({
-                        std::make_unique<size_t>(active_threads),
-                        nullptr
-                    });
+                    pool.maybe_wakeup();
                 }
             }
             if (task.run == nullptr || pool.stop_signal_.load(std::memory_order_acquire)
                 || stop.load(std::memory_order_acquire)) {
                 break;
             }
-            task.run(task.context);
-            if (task.done != nullptr) {
-                task.done(task.done_context);
+            try {
+                task.run(task.context);
+            } catch (const std::exception& error) {
+                LOG_ERROR_STREAM << "Kitchen task failed: " << error.what();
+            } catch (...) {
+                LOG_ERROR_STREAM << "Kitchen task failed with a nonstandard exception";
             }
+            if (task.done != nullptr) {
+                try {
+                    task.done(task.done_context);
+                } catch (const std::exception& error) {
+                    LOG_ERROR_STREAM << "Kitchen completion failed: " << error.what();
+                } catch (...) {
+                    LOG_ERROR_STREAM << "Kitchen completion failed with a nonstandard exception";
+                }
+            }
+            pool.outstanding_tasks_.fetch_sub(1, std::memory_order_release);
         }
         pool.active_workers_.fetch_sub(1, std::memory_order_release);
-        pool.thread_change_queue_.enqueue({
+        if (!pool.thread_change_queue_.enqueue({
             nullptr,
             std::make_unique<int>(id)
-        });
+        })) {
+            LOG_ERROR_STREAM << "Kitchen could not queue a completed worker's release";
+            std::terminate();
+        }
     }
     /** ----------------------------------------------------------------------------- Start
      * @brief Starts the thread; called only after the worker is published in its slot.
@@ -132,11 +263,15 @@ struct Kitchen::ThreadChanger {
                 continue;
             }
             if (request.current_active) {
+                pool.growth_requested_.store(false, std::memory_order_release);
                 if (*request.current_active !=
                         pool.active_workers_.load(std::memory_order_acquire)
                 ) {
+                    pool.maybe_wakeup();
                     continue;
                 }
+                if (pool.active_workers_.load(std::memory_order_relaxed)
+                    >= pool.max_thread_count_.load(std::memory_order_acquire)) continue;
                 pool.active_workers_.fetch_add(1, std::memory_order_acq_rel);
                 int new_id = rand();
                 while (pool.worker_threads_.find(new_id)
@@ -148,6 +283,7 @@ struct Kitchen::ThreadChanger {
                 WorkerThread* worker_ptr = new_worker.get();
                 pool.worker_threads_[new_id] = std::move(new_worker);
                 worker_ptr->start();
+                pool.maybe_wakeup();
                 continue;
             }
         }
@@ -165,7 +301,10 @@ struct Kitchen::ThreadChanger {
     ThreadChanger(Kitchen* kitchen_) : kitchen(kitchen_) {}
     ~ThreadChanger() {
         stop.store(true, std::memory_order_release);
-        kitchen->thread_change_queue_.enqueue(ThreadChangeReq{});
+        if (!kitchen->thread_change_queue_.enqueue(ThreadChangeReq{})) {
+            LOG_ERROR_STREAM << "Kitchen could not wake the thread manager for shutdown";
+            std::terminate();
+        }
         if (thread_.joinable()) {
             thread_.join();
         }
@@ -199,10 +338,23 @@ struct Kitchen::WaitingThread {
                 || stop.load(std::memory_order_acquire)) {
                 break;
             }
-            task.run(task.context);
-            if (task.done != nullptr) {
-                task.done(task.done_context);
+            try {
+                task.run(task.context);
+            } catch (const std::exception& error) {
+                LOG_ERROR_STREAM << "Kitchen waiting task failed: " << error.what();
+            } catch (...) {
+                LOG_ERROR_STREAM << "Kitchen waiting task failed with a nonstandard exception";
             }
+            if (task.done != nullptr) {
+                try {
+                    task.done(task.done_context);
+                } catch (const std::exception& error) {
+                    LOG_ERROR_STREAM << "Kitchen waiting completion failed: " << error.what();
+                } catch (...) {
+                    LOG_ERROR_STREAM << "Kitchen waiting completion failed with a nonstandard exception";
+                }
+            }
+            pool.outstanding_tasks_.fetch_sub(1, std::memory_order_release);
         }
     }
     /** ----------------------------------------------------------------------------- Start
@@ -246,13 +398,18 @@ moodycamel::ProducerToken& Kitchen::waiter_token() {
     return token;
 }
 /** --------------------------------------------------------------------------------------------------------- Kitchen Constructor
- * @brief Starts the waiter pool and the thread changer; workers spawn on the first submission.
+ * @brief Starts the waiter pool, initial worker, and thread changer at the probed thread limit.
  */
 Kitchen::Kitchen() {
-    for (size_t i = 0; i < std::thread::hardware_concurrency(); ++i) {
+    const size_t hardware_threads = std::max(1u, std::thread::hardware_concurrency());
+    max_thread_count_.store(hardware_threads, std::memory_order_relaxed);
+    for (size_t i = 0; i < hardware_threads; ++i) {
         waiting_threads_.emplace_back(std::make_unique<WaitingThread>(this));
         waiting_threads_.back()->start();
     }
+    worker_threads_.emplace(0, std::make_unique<WorkerThread>(this, 0));
+    active_workers_.store(1, std::memory_order_relaxed);
+    worker_threads_.at(0)->start();
     thread_changer_ = std::make_unique<ThreadChanger>(this);
     thread_changer_->start();
 }
@@ -286,17 +443,39 @@ KitchenInitializer::~KitchenInitializer() {
 Kitchen& Kitchen::inst() {
     return *std::launder(reinterpret_cast<Kitchen*>(kitchen_storage));
 }
+/** --------------------------------------------------------------------------------------------------------- Drain
+ * @brief Waits until accepted tasks and their callbacks have returned.
+ */
+void Kitchen::drain() {
+    auto report_at = std::chrono::steady_clock::now();
+    while (outstanding_tasks_.load(std::memory_order_acquire) != 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= report_at) {
+            LOG_INFO_STREAM << "Kitchen: completing "
+                << outstanding_tasks_.load(std::memory_order_relaxed) << " queued tasks";
+            report_at = now + std::chrono::seconds(1);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
 /** --------------------------------------------------------------------------------------------------------- Destructor
- * @brief Stops pool growth, wakes every parked thread, and joins without draining queued tasks.
+ * @brief Completes accepted work before stopping pool growth and joining every worker.
  */
 Kitchen::~Kitchen() {
+    drain();
     stop_signal_.store(true, std::memory_order_release);
     thread_changer_.reset();
     for (size_t index = 0; index < worker_threads_.size(); ++index) {
-        task_queue_.enqueue(Task{});
+        if (!task_queue_.enqueue(Task{})) {
+            LOG_ERROR_STREAM << "Kitchen could not wake a worker for shutdown";
+            std::terminate();
+        }
     }
     for (size_t index = 0; index < waiting_threads_.size(); ++index) {
-        waiting_task_queue_.enqueue(Task{});
+        if (!waiting_task_queue_.enqueue(Task{})) {
+            LOG_ERROR_STREAM << "Kitchen could not wake a waiting worker for shutdown";
+            std::terminate();
+        }
     }
     worker_threads_.clear();
     waiting_threads_.clear();

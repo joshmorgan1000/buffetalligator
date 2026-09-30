@@ -4,6 +4,7 @@
  * on destruction, reset, merge, move, and reset with a pinned lookup.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
 #include <atomic>
 #include <chrono>

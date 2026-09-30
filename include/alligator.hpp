@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <concepts>
 #include <future>
@@ -42,12 +43,14 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <semaphore>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <typeinfo>
 #include <unordered_map>
@@ -58,10 +61,6 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <unordered_set>
-#ifdef _WIN32
-#define VK_USE_PLATFORM_WIN32_KHR
-#endif
-#include <vulkan/vulkan.hpp>
 #include <moodycamel/concurrentqueue.h>
 #include <moodycamel/blockingconcurrentqueue.h>
 
@@ -144,7 +143,12 @@ public:
     template<IsABuffetType T>
     static void* tracked_factory(size_t size) {
         void* buffet = T::factory(size);
-        record_allocation(T::type_idx(), T::size_of(buffet), buffet);
+        try {
+            record_allocation(T::type_idx(), T::size_of(buffet), buffet);
+        } catch (...) {
+            T::deleter()(buffet);
+            throw;
+        }
         return buffet;
     }
     /** --------------------------------------------------------------------------------------------------------- tracked_deleter
@@ -186,9 +190,7 @@ public:
     operator bool() const { return buffer_ != nullptr; }
     bool operator==(std::nullptr_t) const { return buffer_ == nullptr; }
     bool operator!=(std::nullptr_t) const { return buffer_ != nullptr; }
-    AlignedHeapBuffer(size_t size = 0) : size_(((size + 63) & ~63)) {
-        if (size_ == 0) return; buffer_ = aligned_alloc(64, size_); std::memset(buffer_, 0, size_);
-    }
+    explicit AlignedHeapBuffer(size_t size = 0);
     AlignedHeapBuffer(const AlignedHeapBuffer&) = delete;
     AlignedHeapBuffer& operator=(const AlignedHeapBuffer&) = delete;
     AlignedHeapBuffer(AlignedHeapBuffer&& other) noexcept
@@ -213,9 +215,7 @@ public:
     static size_t default_size() { return 64 * 1024 * 1024; }
     static size_t type_idx() { return 0; }
     static const char* type_name() { return "AlignedHeapBuffer"; }
-    static uint64_t device_address(void* ptr) {
-        return reinterpret_cast<uint64_t>(reinterpret_cast<AlignedHeapBuffer*>(ptr)->raw());
-    }
+    static uint64_t device_address(void*) { return 0; }
     size_t size() const { return size_; }
     void* raw() { return buffer_; }
     const void* raw() const { return buffer_; }
@@ -236,30 +236,28 @@ private:
     uint32_t& sizex64() const { static uint32_t zero = 0; return token_ ? std::get<3>(*token_) : zero; }
     std::atomic<uint32_t>& refs() { return std::get<2>(*token_); }
     void new_ref() { if (token_) refs().fetch_add(1, std::memory_order_acq_rel); }
-    void free() {
-        if (token_ && refs().fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            descriptor()->deleter(buf());
-            delete token_; token_ = nullptr;
-        }
-    }
+    void free();
 public:
     SharedBuffet() = default;
+    explicit SharedBuffet(size_t size);
     template<IsABuffetType T = AlignedHeapBuffer>
-    SharedBuffet(size_t size)
-    : token_(new std::tuple<void*, const BuffetDescriptor*, std::atomic<uint32_t>, uint32_t>(
-        T::factory((size + 63) & ~63), &buffet_descriptor<T>(), 1,
-        std::max<size_t>(((size + 63) >> 6), 0xFFFFFFFFu))) {}
-    template<IsABuffetType T = AlignedHeapBuffer>
-    SharedBuffet(T&& buffet)
-    : token_(new std::tuple<void*, const BuffetDescriptor*, std::atomic<uint32_t>, uint32_t>(
-        T::factory((T::size(buffet) + 63) & ~63), &buffet_descriptor<T>(), 1,
-        std::max<size_t>((T::size(buffet) >> 6), 0xFFFFFFFFu)
-    )) {
-        if (T::size(buf()) > 0xFFFFFFFFu << 6) [[unlikely]] {
-            LOG_WARN_STREAM << "Buffer size exceeds maximum supported size: "
-                            << T::size(buf()) << ", memory is addressable, but size "
-                            << "may be reported incorrectly when being used as a SharedBuffet";
+    explicit SharedBuffet(T&& buffet) {
+        const size_t bytes = buffet.size();
+        if (bytes > (uint64_t{UINT32_MAX} << 6) || (bytes & 63) != 0) {
+            ALLIGATOR_THROW("SharedBuffet requires a representable 64-byte-granule buffer");
         }
+        const BuffetDescriptor* placement = BuffetDescriptors::descriptor_for(static_cast<T*>(nullptr));
+        auto owned = std::make_unique<T>(std::move(buffet));
+        token_ = new std::tuple<void*, const BuffetDescriptor*, std::atomic<uint32_t>, uint32_t>(
+            owned.get(), placement, 1, static_cast<uint32_t>(bytes >> 6));
+        try {
+            BuffetDescriptors::record_allocation(placement->type_idx, bytes, owned.get());
+        } catch (...) {
+            delete token_;
+            token_ = nullptr;
+            throw;
+        }
+        owned.release();
     }
     SharedBuffet(const SharedBuffet& other)
     : token_(other.token_) { if (token_) refs().fetch_add(1, std::memory_order_acq_rel); }
@@ -299,7 +297,8 @@ class alignas(64) ChainBuffet {
 public:
     class ChainBuffetToken {
     private:
-        std::tuple<const ChainBuffet*, std::atomic<int32_t>, const BuffetDescriptor*>* token_;
+        struct Control;
+        Control* token_ = nullptr;
         void add_ref(); void free();
         ChainBuffetToken(const ChainBuffet* buffer = nullptr);
         friend class ChainBuffet;
@@ -310,7 +309,8 @@ public:
         ChainBuffetToken(ChainBuffetToken&& other) noexcept;
         ChainBuffetToken& operator=(ChainBuffetToken&& other) noexcept;
         ~ChainBuffetToken();
-        const BuffetDescriptor* descriptor() const { return std::get<2>(*token_); }
+        const BuffetDescriptor* descriptor() const;
+        bool is_novel() const;
         /** ------------------------------------------------------------------------------------------- Buffet
          * @brief The buffet handle this token keeps alive, as the descriptor's hooks expect it.
          * @return The buffet handle.
@@ -320,48 +320,53 @@ public:
         const void* raw(size_t offset) const;
     };
 private:
-    void* buffer_;
-    const BuffetDescriptor* descriptor;
-    std::atomic<ChainBuffetToken*> token_;
+    void* buffer_ = nullptr;
+    const BuffetDescriptor* descriptor = nullptr;
+    ChainBuffetToken::Control* token_ = nullptr;
     std::atomic<size_t> bump_ptr_{0};
     std::atomic<ChainBuffet*> next_{nullptr};
+    std::atomic<bool> owns_token_{false};
     ChainBuffet* next(bool allocate_next = true);
     static std::atomic<ChainBuffet*>& current_for(size_t idx);
-    ChainBuffet(const BuffetDescriptor* desc, void* buffer);
+    static void release_chains();
+    ChainBuffet(const BuffetDescriptor* desc, size_t size, bool owned, bool novel);
     void free();
     friend class ChainBuffetToken;
+    friend class Alligator;
 public:
     ChainBuffet() = default; bool valid() const { return buffer_ != nullptr; }
     operator bool() const { return valid(); } ~ChainBuffet() { free(); }
     template<IsABuffetType T = AlignedHeapBuffer>
-    ChainBuffet(size_t size = 0, bool allocate_next = false)
-    : buffer_(T::factory(size)), descriptor(&T::descriptor) {
-        if (size > 0) { token_ = new ChainBuffetToken(this); if (allocate_next) (void)next(false);}
+    explicit ChainBuffet(size_t size, bool allocate_next = false)
+    : ChainBuffet(BuffetDescriptors::descriptor_for(static_cast<T*>(nullptr)), size, false, false) {
+        if (allocate_next) (void)next(false);
     }
     ChainBuffet(const ChainBuffet&) = delete;
     ChainBuffet& operator=(const ChainBuffet&) = delete;
     ChainBuffet(ChainBuffet&&) = delete;
     ChainBuffet& operator=(ChainBuffet&&) = delete;
-    static ChainBuffet* chain(const BuffetDescriptor* desc);
-    [[nodiscard]] SliceEntry* claim(size_t size);
+    static Slice chain(const BuffetDescriptor* desc, size_t size, bool novel_buffer = false);
+    Slice claim(size_t size, bool novel_buffer = false);
 };
 static_assert(sizeof(ChainBuffet) == 64, "ChainBuffet must be 64 bytes");
 /** --------------------------------------------------------------------------------------------------------- Pool Sizes
  * @brief Each `Slice` has a 32-bit identifier that represents a type and an index within a global buffer
  * pool.
  */
-inline static constexpr size_t POOL_BITS = 25;
+inline static constexpr size_t SLICE_SLOT_BITS = 19;
+inline static constexpr size_t SLICE_REGION_BITS = 6;
+inline static constexpr size_t POOL_BITS = SLICE_SLOT_BITS + SLICE_REGION_BITS;
 inline static constexpr size_t POOL_SIZE = 1 << POOL_BITS;
 inline static constexpr size_t REGION_SIZE = POOL_SIZE >> 6;
 inline static constexpr size_t POOL_MASK = POOL_SIZE - 1;
-inline static constexpr size_t pool_index(size_t id) { return id & POOL_MASK; }
-inline static constexpr size_t POOL_TYPE_BITS = 32 - POOL_BITS;
+inline static constexpr size_t pool_index(size_t id) { return id >> 9; }
+inline static constexpr size_t POOL_TYPE_BITS = 3;
 inline static constexpr size_t POOL_TYPE_SIZE = 1 << POOL_TYPE_BITS;
 inline static constexpr size_t POOL_TYPE_MASK = POOL_TYPE_SIZE - 1;
-inline static constexpr size_t pool_type(size_t id) { return (id >> POOL_BITS) & POOL_TYPE_MASK; }
+inline static constexpr size_t pool_type(size_t id) { return id & POOL_TYPE_MASK; }
 /** --------------------------------------------------------------------------------------------------------- GPUBuf
  * @struct GPUBuf
- * @brief Stores a slice's slab base address, byte length, and slab-relative byte offset.
+ * @brief Stores a slab base address with length and slab-relative offset in 64-byte granules.
  */
 struct alignas(16) GPUBuf {
     uint64_t address = 0;
@@ -379,7 +384,9 @@ static_assert(sizeof(GPUBuf) == 16 && offsetof(GPUBuf, size) == 8
  * @brief Represents an entry in the slice table, containing a token, size, and offset.
  */
 struct SliceEntry {
-    std::byte data[9];
+    alignas(ChainBuffet::ChainBuffetToken) std::byte data[sizeof(ChainBuffet::ChainBuffetToken)];
+    std::atomic<uint32_t> owners{0};
+    uint8_t region_id_ = 0;
     ChainBuffet::ChainBuffetToken* token();
     const ChainBuffet::ChainBuffetToken* token() const;
     void set_token(const ChainBuffet::ChainBuffetToken* token);
@@ -407,7 +414,7 @@ struct Region {
     std::atomic<uint64_t> last_idx{0};
     std::atomic<uint64_t> claimed{0};
     std::atomic<uint64_t> freed{0};
-    uint8_t region;
+    uint8_t region = 0;
     size_t slots_available() const;
     SliceEntry* claim(size_t skip_at_most);
     bool release(SliceEntry* entry);
@@ -420,7 +427,7 @@ struct Region {
  * @brief Defines the size of a SliceEntry and the total overhead for the pool.
  */
 inline static constexpr size_t SLICE_ENTRY_SIZE = sizeof(SliceEntry);
-inline static constexpr size_t ALLIGATOR_POOL_OVERHEAD = SLICE_ENTRY_SIZE * POOL_SIZE;
+inline static constexpr size_t ALLIGATOR_POOL_OVERHEAD = sizeof(Region) << SLICE_REGION_BITS;
 /** --------------------------------------------------------------------------------------------------------- Host Memory Usage
  * @struct HostMemoryUsage
  * @brief Reports physical capacity, estimated available memory, and this process's resident bytes.
@@ -505,14 +512,11 @@ concept PrimitiveSliceType = (
  * 
  * Memory slices are claims from pre-allocated memory buffers that are managed by the buffet alligator's
  * slab arena. On systems that support unified memory, they are always sliced from host-coherent GPU
- * buffers. For systems that do not support unified memory, transfers between host and device memory are
- * handled automatically by the buffet alligator.
+ * buffers when selected by the placement policy, and GPU work requires a compatible visible placement.
  * 
  * Slices can be sub-sliced to create smaller slices, and they all share the same reference counter and
  * underlying memory. Slices can behave much like `std::shared_ptr` by calling the `slice()` method with
- * no parameters passed, essentially requesting a sub-slice that is the full size of the original. The copy
- * constructor and assignment operators are deleted to cut down on unintended reference counting traffic
- * which can be expensive in high-performance scenarios.
+ * no parameters passed, while copies publish distinct identifiers sharing the same backing allocation.
  * 
  * In most cases, slices are meant to be short-lived since they are references to memory that is part of a
  * larger slab in the arena's memory pool. Holding on to a small claim for a long time can lead to
@@ -534,7 +538,8 @@ public:
      * slice is guaranteed to be zero-initialized.
      * @param size The size of the slice in bytes.
      */
-    Slice(size_t size = 0, const BuffetDescriptor* placement = default_placement());
+    Slice() noexcept = default;
+    explicit Slice(size_t size, const BuffetDescriptor* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
      * @brief Constructs a slice of memory with the specified size. If not a novel buffer, then
      * it will be claimed from a pre-allocated slab in the buffet alligator's arena.
@@ -563,9 +568,7 @@ public:
     /** ------------------------------------------------------------------------------------------- Copy/move semantics
      * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
      * much like `std::shared_ptr` in that they share the same reference counter and underlying
-     * memory. The copy constructor and assignment operators are deleted to cut down on unintended
-     * reference counting traffic which can be expensive in high-performance scenarios. Move
-     * semantics are supported to allow efficient transfer of ownership of the underlying memory.
+     * memory, while moves transfer the owned identifier without reference-counting traffic.
      */
     Slice(const Slice& other);
     Slice& operator=(const Slice& other);
@@ -609,14 +612,13 @@ public:
      * the default parameters will create a new view that is essentially identical to the original
      * slice - a shared view that increments the reference counter and will keep the underlying
      * memory alive until all views are destroyed.
-     * @param offset The offset in bytes from the start of the original slice to the start of the
-     * new view.
-     * @param length The length in bytes of the new view.
+     * @param offset Requested byte offset, rounded down to a 64-byte boundary.
+     * @param length Requested byte length, with the range end rounded up to a 64-byte boundary.
      * @return A new `Slice` object that is a view of the original slice.
      */
     Slice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
     /** ------------------------------------------------------------------------------------------- Size in bytes
-     * @brief Returns the size of the slice in bytes.
+     * @brief Returns the represented 64-byte-granule length in bytes.
      * @return The size of the slice in bytes.
      */
     size_t size_bytes() const;
@@ -713,8 +715,8 @@ public:
      */
     void adopt(Slice other);
     /** ------------------------------------------------------------------------------------------- Pool Index
-     * @brief The alligator pool slot this slice occupies; the id bits are all ones when null.
-     * @return The pool slot index.
+     * @brief Returns the complete encoded Slice identifier, with all bits set when null.
+     * @return The Slice identifier.
      */
     uint32_t pool_index() const { return id_; }
     /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
@@ -756,12 +758,17 @@ public:
      */
     uint32_t id() const { return id_; }
 private:
-    uint32_t id_;
+    uint32_t id_ = UINT32_MAX;
+    struct AdoptId {};
+    explicit Slice(AdoptId, uint32_t id) : id_(id) {}
     friend class Alligator;
-    friend class SliceEntry;
+    friend struct SliceEntry;
     friend class SliceQueue;
     friend struct SliceHandle;
     friend struct SliceNetworkAccess;
+    friend class ChainBuffet;
+    friend class ShaderState;
+    friend struct ShaderOperation;
 };
 static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice
@@ -1197,13 +1204,13 @@ class Alligator {
 private:
     std::atomic<uint64_t> next_slice_{};
     uint32_t next_id(const BuffetDescriptor* placement);
-    mutable std::array<std::atomic<Region*>, 64> regions;
+    mutable std::array<std::atomic<Region*>, 64> regions{};
     struct SliceRegion {
         uint64_t device_address;
         void* handle;
         Region* host_ptr;
         const BuffetDescriptor* descriptor;
-        SliceRegion(const BuffetDescriptor* desc = BuffetDescriptors::default_placement());
+        SliceRegion(const BuffetDescriptor* desc, uint8_t index);
         SliceRegion(const SliceRegion&) = delete;
         SliceRegion& operator=(const SliceRegion&) = delete;
         SliceRegion(SliceRegion&&) = delete;
@@ -1211,6 +1218,10 @@ private:
         ~SliceRegion();
     };
     mutable std::array<std::unique_ptr<SliceRegion>, 64> region_backing;
+    const BuffetDescriptor* metadata_placement_ = nullptr;
+    void* directory_backing_ = nullptr;
+    uint64_t* directory_ = nullptr;
+    uint64_t directory_address_ = 0;
     std::atomic<uint8_t> last_region{0};
     std::atomic<size_t> skip_at_most{4};
     SliceEntry& entry(const Slice& slice);
@@ -1225,6 +1236,8 @@ private:
     friend struct AlligatorInitializer;
     friend class ChainBuffet; friend class Kitchen;
     friend class ChainBuffetToken;
+    friend class ShaderState;
+    friend struct ShaderOperation;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
@@ -1241,6 +1254,10 @@ public:
      * @return The slice's GPUBuf entry.
      */
     static GPUBuf* gpubuf_for(const Slice& slice);
+    /** ------------------------------------------------------------------------------------------- GPU Directory
+     * @brief Returns the stable device address of the region directory, or zero for CPU-only use.
+     */
+    static uint64_t gpu_directory_address();
     /** ------------------------------------------------------------------------------------------- GPU Table
      * @brief The shared GPUBuf table's host mapping, the same bytes shaders read at gpu_table_address().
      * @param region_id The region ID of the GPU table.

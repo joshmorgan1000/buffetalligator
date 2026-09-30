@@ -3,6 +3,7 @@
  * @brief Measures fixed-capacity raw and typed priority operations with deterministic inputs.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <logging.hpp>
 #include <algorithm>
 #include <array>

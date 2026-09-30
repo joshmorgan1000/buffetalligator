@@ -3,6 +3,7 @@
  * @brief Exercises shared exclusion, barrier arrival counts, and repeated synchronization phases.
  */
 #include <alligator.hpp>
+#include <alligator/atomics.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <barrier>

@@ -3,6 +3,7 @@
  * @brief Compares synchronized publication and lookup phases against std::unordered_map.
  */
 #include "benchmark_support.hpp"
+#include <alligator/containers.hpp>
 #include <loggingutils.hpp>
 #include <array>
 #include <sstream>

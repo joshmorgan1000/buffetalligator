@@ -4,6 +4,7 @@
  * @brief Shares deterministic inputs, persistent workers, progress reporting, and timing summaries.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <logging.hpp>
 #include <algorithm>
 #include <barrier>

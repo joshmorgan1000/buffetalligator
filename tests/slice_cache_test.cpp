@@ -3,6 +3,7 @@
  * @brief Checks eviction policies, byte budgets, recency, ownership, moves, and cache keys.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <chrono>

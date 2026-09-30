@@ -3,6 +3,7 @@
  * @brief Exercises delivery, receiver challenges, and exchange deadlines through actual sockets.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -311,7 +312,7 @@ int main() {
         replay(false);
         expired_challenge();
         deadlines();
-        BuffetMenu::shutdown();
+        ba_net_shutdown();
         std::puts("Network lifecycle contracts passed");
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Network lifecycle contracts failed: %s\n", error.what());

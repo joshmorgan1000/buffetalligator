@@ -3,6 +3,7 @@
  * @brief Exercises type-erased atomic operations, ownership, registry lookup, and thread handoffs.
  */
 #include <alligator.hpp>
+#include <alligator/atomics.hpp>
 #include "functional_support.hpp"
 #include <barrier>
 #include <memory>

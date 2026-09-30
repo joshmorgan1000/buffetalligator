@@ -31,45 +31,32 @@ static_assert(std::is_trivially_copyable_v<Task> && sizeof(Task) == 32, "Task mu
 /** --------------------------------------------------------------------------------------------------------- Task Countdown
  * @struct TaskCountdown
  * @brief Synchronous completion for one task or a batch: pass `&TaskCountdown::arrive` as `done`
- * and the countdown as `done_context`, then `wait()`. The last arrival wakes the waiter through
- * C++20 atomic wait, so there is no mutex and no allocation.
+ * and the countdown as `done_context`, then `wait()` before releasing its storage.
  */
 struct TaskCountdown {
     std::atomic<uint32_t> pending;  ///< Tasks still outstanding.
+    std::atomic<bool> notified;  ///< The last arrival has finished touching the pending atomic.
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Arms the countdown for a number of tasks.
      * @param count The number of arrivals that release the waiter.
      */
-    explicit TaskCountdown(uint32_t count = 1) : pending(count) {}
+    explicit TaskCountdown(uint32_t count = 1);
     TaskCountdown(const TaskCountdown&) = delete;
     TaskCountdown& operator=(const TaskCountdown&) = delete;
     /** ------------------------------------------------------------------------------------------- Arrive
      * @brief The `done` hook: counts one task down and wakes the waiter on the last one.
      * @param countdown The TaskCountdown passed as `done_context`.
      */
-    static void arrive(void* countdown) {
-        TaskCountdown* self = static_cast<TaskCountdown*>(countdown);
-        if (self->pending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            self->pending.notify_all();
-        }
-    }
+    static void arrive(void* countdown);
     /** ------------------------------------------------------------------------------------------- Wait
      * @brief Parks until every armed task has arrived; each task's writes are visible afterwards.
      */
-    void wait() {
-        uint32_t remaining = pending.load(std::memory_order_acquire);
-        while (remaining != 0) {
-            pending.wait(remaining, std::memory_order_acquire);
-            remaining = pending.load(std::memory_order_acquire);
-        }
-    }
+    void wait();
     /** ------------------------------------------------------------------------------------------- Rearm
      * @brief Resets a drained countdown for another round.
      * @param count The number of arrivals that release the next wait.
      */
-    void rearm(uint32_t count) {
-        pending.store(count, std::memory_order_release);
-    }
+    void rearm(uint32_t count);
 };
 /** --------------------------------------------------------------------------------------------------------- Kitchen
  * @class Kitchen
@@ -114,10 +101,7 @@ public:
      * @brief Queues one task on the worker pool.
      * @param task The task record, copied into the queue.
      */
-    void submit(const Task& task) {
-        task_queue_.enqueue(worker_token(), task);
-        maybe_wakeup();
-    }
+    void submit(const Task& task);
     /** ------------------------------------------------------------------------------------------- Submit (fields)
      * @brief Queues `run(context)` on the worker pool, then `done(done_context)` when set.
      * @param run The work.
@@ -130,26 +114,19 @@ public:
         void* context,
         void (*done)(void* done_context) = nullptr,
         void* done_context = nullptr
-    ) {
-        submit(Task{run, context, done, done_context});
-    }
+    );
     /** ------------------------------------------------------------------------------------------- Submit Bulk
      * @brief Queues a batch on the worker pool with one enqueue and one wakeup signal.
      * @param tasks The task records, copied into the queue.
      * @param count How many tasks to queue.
      */
-    void submit_bulk(const Task* tasks, size_t count) {
-        task_queue_.enqueue_bulk(worker_token(), tasks, count);
-        maybe_wakeup();
-    }
+    void submit_bulk(const Task* tasks, size_t count);
     /** ------------------------------------------------------------------------------------------- Submit Waiting
      * @brief Queues one task on the waiter pool, for work that mostly parks on a fence,
      * semaphore or atomic.
      * @param task The task record, copied into the queue.
      */
-    void submit_waiting(const Task& task) {
-        waiting_task_queue_.enqueue(waiter_token(), task);
-    }
+    void submit_waiting(const Task& task);
     /** ------------------------------------------------------------------------------------------- Submit Waiting (fields)
      * @brief Queues `run(context)` on the waiter pool, then `done(done_context)` when set.
      * @param run The work.
@@ -162,12 +139,16 @@ public:
         void* context,
         void (*done)(void* done_context) = nullptr,
         void* done_context = nullptr
-    ) {
-        submit_waiting(Task{run, context, done, done_context});
-    }
+    );
+    /** ------------------------------------------------------------------------------------------- Drain
+     * @brief Waits for accepted tasks and their completion callbacks while producers are quiescent.
+     */
+    void drain();
 private:
     std::atomic<bool> stop_signal_{false};
-    std::atomic<size_t> max_thread_count_{std::thread::hardware_concurrency() - 1};
+    std::atomic<size_t> max_thread_count_{0};
+    std::atomic<size_t> outstanding_tasks_{0};
+    std::atomic<bool> growth_requested_{false};
     struct WorkerThread;
     std::atomic<size_t> active_workers_{0};
     moodycamel::BlockingConcurrentQueue<Task> task_queue_;

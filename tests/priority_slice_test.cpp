@@ -3,10 +3,11 @@
  * @brief Checks PrioritySlice ordering, key encodings, eviction, Slice ownership, adoption, and
  * concurrent exact-once accounting.
  */
-#include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <barrier>
 #include <chrono>
@@ -205,6 +206,73 @@ void slice_ownership() {
     require(frees_reached(before + 448) == before + 448,
         "destruction did not release the queued Slice");
 }
+/** --------------------------------------------------------------------------------------------------------- Slice Move Assignment
+ * @brief Checks exact payload release through populated move assignment and self-move.
+ */
+template<typename Queue>
+void slice_move_assignment() {
+    LOG_INFO_STREAM << "Checking populated Slice queue moves and exact payload release";
+    Slice warmup(64);
+    const size_t before = Memory::total_freed();
+    {
+        Queue destination(4);
+        std::array<Slice, 3> displaced;
+        for (size_t index = 0; index < displaced.size(); ++index) {
+            Slice entry = payload(100 + index);
+            displaced[index] = entry.slice();
+            require(destination.push(static_cast<uint32_t>(index), std::move(entry)),
+                "destination rejected an initial payload");
+        }
+        const uint64_t* transferred_words = nullptr;
+        const void* transferred_payload = nullptr;
+        {
+            Queue source(3);
+            for (uint32_t index = 0; index < 3; ++index) {
+                Slice entry = payload(200 + index);
+                if (index == 0) transferred_payload = entry.raw();
+                require(source.push(index, std::move(entry)),
+                    "source rejected an initial payload");
+            }
+            transferred_words = source.words();
+            require(&(destination = std::move(source)) == &destination,
+                "move assignment returned another container");
+            require(source.capacity() == 0 && source.empty(),
+                "move assignment left its source owning payloads");
+            source.clear();
+        }
+        require(destination.capacity() == 3 && destination.size() == 3
+            && destination.words() == transferred_words,
+            "move assignment did not transfer the source storage");
+        require(Memory::total_freed() == before,
+            "move assignment or source destruction released a live payload");
+        Queue& same = destination;
+        destination = std::move(same);
+        require(destination.capacity() == 3 && destination.size() == 3
+            && destination.words() == transferred_words,
+            "self-move changed the queue or its payloads");
+        require(Memory::total_freed() == before, "self-move released a live payload");
+        for (size_t index = 0; index < displaced.size(); ++index) {
+            require(displaced[index].get_as<uint64_t>() == 100 + index,
+                "move assignment invalidated a retained destination payload");
+            displaced[index].free();
+            const size_t expected = before + (index + 1) * 64;
+            require(frees_reached(expected) == expected,
+                "move assignment leaked or duplicated a destination payload reference");
+        }
+        uint32_t key = 0;
+        Slice popped;
+        require(destination.pop(key, popped) && key == 0
+            && popped.get_as<uint64_t>() == 200 && popped.raw() == transferred_payload,
+            "move assignment or self-move invalidated the transferred payload");
+        require(Memory::total_freed() == before + 192,
+            "pop released a transferred payload");
+        popped.free();
+        require(frees_reached(before + 256) == before + 256,
+            "the popped transferred payload was not released exactly once");
+    }
+    require(frees_reached(before + 384) == before + 384,
+        "move-assigned queue destruction leaked or duplicated a payload");
+}
 /** --------------------------------------------------------------------------------------------------------- Erased Words
  * @brief Checks the raw word contract, displaced-word returns, storage adoption, and rejections.
  */
@@ -240,14 +308,15 @@ void erased_words() {
     require(gaps.push(PrioritySlice::pack(4, 4)) == PrioritySlice::EMPTY
         && gaps.push(PrioritySlice::pack(5, 5)) == PrioritySlice::EMPTY
         && gaps.full(), "two freed slots were not reused");
-    Slice words(PrioritySlice::header_bytes(4) + 4 * sizeof(uint64_t));
-    uint64_t* raw = words.data<uint64_t>() + PrioritySlice::header_bytes(4) / sizeof(uint64_t);
-    raw[0] = PrioritySlice::EMPTY;
+    Slice words(PrioritySlice::header_bytes(8) + 8 * sizeof(uint64_t));
+    words.data<uint64_t>()[PrioritySlice::CAPACITY_WORD] = 8;
+    uint64_t* raw = words.data<uint64_t>() + PrioritySlice::header_bytes(8) / sizeof(uint64_t);
+    std::fill_n(raw, 8, PrioritySlice::EMPTY);
     raw[1] = PrioritySlice::pack(5, 1);
     raw[2] = PrioritySlice::EMPTY;
     raw[3] = PrioritySlice::pack(2, 9);
     PrioritySliceT<uint32_t, uint32_t> adopted(words.slice());
-    require(adopted.capacity() == 4 && adopted.size() == 2,
+    require(adopted.capacity() == 8 && adopted.size() == 2,
         "adopted storage was not read in place");
     require(adopted.storage().raw() == words.raw(), "storage view does not share the words");
     uint32_t key = 0;
@@ -255,6 +324,16 @@ void erased_words() {
     require(adopted.pop(key, value) && key == 2 && value == 9,
         "adopted words popped out of order");
     require(raw[3] == PrioritySlice::EMPTY, "pop did not free the adopted slot in place");
+    PrioritySlice odd(3);
+    Slice owned = payload(71);
+    odd.push(PrioritySlice::pack(7, SliceHandle::detach(std::move(owned))));
+    PrioritySliceT<uint32_t, Slice> owned_adopted(odd.storage());
+    require(owned_adopted.capacity() == 3 && owned_adopted.size() == 1,
+        "odd-capacity adoption interpreted padding as owned payloads");
+    Slice adopted_payload;
+    require(owned_adopted.pop(key, adopted_payload) && key == 7
+        && adopted_payload.get_as<uint64_t>() == 71 && owned_adopted.empty(),
+        "odd-capacity storage adoption changed the owned payload");
     require_throws([] { PrioritySlice zero(0); }, "a zero capacity was accepted");
     require_throws([] {
         Slice header(PrioritySlice::HEADER_BYTES);
@@ -461,6 +540,8 @@ int main() {
     comparator_order();
     key_encodings();
     slice_ownership();
+    slice_move_assignment<PrioritySliceT<uint32_t, Slice>>();
+    slice_move_assignment<HeapSliceT<uint32_t, Slice>>();
     erased_words();
     threshold_reset();
     threshold_blocks();

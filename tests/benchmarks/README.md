@@ -227,3 +227,92 @@ contract stress doubles `--workers`, limiting that option to 127. Queue capacity
 be a positive multiple of 256, and batch
 sizes range from 1 to 256. Repetitions, timeout, sizes, and explicit worker counts
 must be positive; `--warmup 0` is supported for diagnostic runs.
+
+## Slice allocator measurements
+
+The allocator harness exercises the production `Slice` API, including rounded
+1/63/64/65-byte and 4 KiB allocations, dedicated allocations, copy, move, outward
+sub-views, and release. It requires a Release build and validates every warmup
+and measured result after timing.
+
+```sh
+./run_build.sh --build-dir build/perf -DCMAKE_BUILD_TYPE=Release \
+    -DBUFFETALLIGATOR_BUILD_BENCHMARKS=ON
+mkdir -p build/perf/results
+ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_allocator_benchmark \
+    --warmup 2 --repetitions 15 --csv build/perf/results/allocator.csv
+# An explicit worker count replaces the default topology sweep.
+ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_allocator_benchmark \
+    --workers 4 --items 4096 --latency-samples 128 \
+    --csv build/perf/results/allocator-four-workers.csv
+```
+
+Defaults are 4,096 operations per pass, two warmups, and 15 measured repetitions.
+Persistent teams run at powers of two through the reported CPU concurrency and
+at twice that concurrency. `--single-thread` restricts the small-allocation sweep
+to one worker. All workers perform allocation or ownership operations; the shared
+reporter's `P/0C` labels denote allocation producers with no consumer role.
+Slab-size minus/equal/plus one granule cases measure allocation and release with
+one retained allocation on one worker, keeping their live payload budget bounded.
+
+The CSV stores every throughput repetition. Its companion `.latencies.csv`
+contains individually timestamped operations from separate instrumented passes;
+printed p50/p95/p99 values include their actual sample count. `--latency-samples`
+limits samples per repetition and may yield fewer samples for small workloads.
+An operation faster than the observable clock resolution can have a zero timestamp
+difference; raw zero samples are retained and their count is reported explicitly.
+The one-operation slab cases have only 15 latency samples by default, so their
+extreme percentiles require longer runs before drawing a tail-latency conclusion.
+First public allocation time is reported separately and excludes process startup.
+
+Requested bytes, represented payload bytes, and the `Slice` handle size are
+reported directly. The retained payload budget excludes allocator metadata,
+prepared slabs, and driver residency; those quantities are not inferred from
+payload sizes. This harness alone does not establish a memory high-water mark,
+device execution latency, or a before/after improvement. Archive the environment,
+commands, source revision and patch, and raw samples with each comparison; run
+performance measurements on an otherwise idle host after correctness gates pass.
+
+## Vulkan dispatch measurements
+
+`buffetalligator_gpu_dispatch_benchmark` currently measures Vulkan only and
+requires explicit selection before process startup. It uses the public
+`Shader`, `ShaderResult`, callback, and awaiter contracts and explicitly allocates
+streams through `VulkanContext::buffer_placement()`.
+
+```sh
+ALLIGATOR_GPU_BACKEND=vulkan ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
+    --warmup 2 --repetitions 15 --csv build/perf/results/vulkan-dispatch.csv
+# Sweep admission windows in separate processes with a fixed batch and team.
+ALLIGATOR_GPU_BACKEND=vulkan ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
+    --submitters 4 --depth 16 --batch 256 --items 128 \
+    --csv build/perf/results/vulkan-depth-16.csv
+```
+
+The default sweep uses one submitter, the probed compute queue count, and two
+submitters beyond that count, sharing one prepared Shader. Batch sizes are
+1/16/256 streams; `--depth` bounds each submitter's outstanding dispatch window
+and defaults to eight. This caller-side window is not the implementation's slot
+count and is not claimed to be an optimal depth. Workers persist across samples.
+Each stream has a deterministic marker; validation checks every marker, Slice
+identity, represented size, and terminal result outside timing, including warmups.
+
+The main CSV separates context initialization, first and repeated Shader
+preparation, encoding, first decode cache miss, warm decode cache hit, and completed
+dispatch throughput. Cold entries contain one observation and require repeated
+fresh processes for a distribution. Shader preparation includes compilation and
+pipeline creation together; the public interface does not expose their individual
+stage timings. Prior objects are released before each preparation interval.
+
+A separate instrumented pass writes every dispatch's host admission time and
+submit-to-callback or submit-to-coroutine-resume time to `.latencies.csv`, with
+p50/p95/p99 and actual sample counts printed. Throughput waits for completion and
+excludes timestamp instrumentation. These times include scheduling and admission;
+they are not GPU device timestamps. Coroutine frame construction and resumption
+are included in the awaiter path. The deterministic identity kernel measures
+small-dispatch overhead, not representative compute or memory bandwidth.
+
+Native Metal/CUDA, device execution timestamps, embedded identities, multiple
+regions, per-stage compiler profiling, and memory/residency high-water marks
+remain separate qualification work. Missing hardware, compilation errors, or
+incorrect outputs produce a nonzero result rather than timing another backend.

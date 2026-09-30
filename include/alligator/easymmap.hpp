@@ -68,9 +68,7 @@ public:
     static size_t default_size() { return 64 * 1024 * 1024; }
     static size_t type_idx() { return 3; }
     static const char* type_name() { return "MmapBuffer"; }
-    static uint64_t device_address(void* ptr) {
-        return reinterpret_cast<uint64_t>(static_cast<MmapBuffer*>(ptr)->mapping_);
-    }
+    static uint64_t device_address(void*) { return 0; }
     size_t size() const { return size_; }
     void* raw() { return mapping_; }
     const void* raw() const { return mapping_; }

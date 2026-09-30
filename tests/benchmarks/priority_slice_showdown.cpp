@@ -5,6 +5,7 @@
  * workload.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <logging.hpp>
 #include <algorithm>
 #include <array>

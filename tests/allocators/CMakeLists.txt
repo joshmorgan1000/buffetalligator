@@ -10,8 +10,11 @@ foreach(case IN ITEMS host_memory mmap)
     add_test(NAME buffetalligator_allocator_${case} COMMAND buffetalligator_allocator_test ${case})
     set_tests_properties(buffetalligator_allocator_${case} PROPERTIES TIMEOUT 30 LABELS allocators)
 endforeach()
+set(BUFFETALLIGATOR_TEST_VULKAN_BACKEND vulkan CACHE STRING
+    "Backend selection for Vulkan regressions; cpu skips GPU work for CPU sanitizers")
 foreach(case IN ITEMS vulkan_buffer vulkan_claims vulkan_novel_views)
     add_test(NAME buffetalligator_allocator_${case} COMMAND buffetalligator_vulkan_test ${case})
     set_tests_properties(buffetalligator_allocator_${case} PROPERTIES
-        TIMEOUT 30 LABELS "allocators;gpu" SKIP_RETURN_CODE 77)
+        TIMEOUT 30 LABELS "allocators;gpu" SKIP_RETURN_CODE 77
+        ENVIRONMENT "ALLIGATOR_GPU_BACKEND=${BUFFETALLIGATOR_TEST_VULKAN_BACKEND}")
 endforeach()
