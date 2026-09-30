@@ -1,21 +1,20 @@
 /** --------------------------------------------------------------------------------------------------------- CUDA Allocator
  * @file cuda_allocator.cpp
- * @brief Supplies CUDA managed or mapped-host slabs through the arena placement callbacks.
+ * @brief Allocates CudaBuffer storage as managed or mapped pinned host memory on the registered context.
  */
 #include <alligator.hpp>
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
+#include <alligator/easycuda.hpp>
+#include <cuda.h>
 #include <cstring>
-#include <memory>
+#include <string>
 
 namespace buffetalligator {
 namespace {
-/** --------------------------------------------------------------------------------------------------------- CUDA Context
- * @brief Holds the caller-owned context shared by the placement callbacks.
- */
-struct CudaContext {
-    CUcontext native = nullptr;
-    const Placemat* placement = nullptr;
-};
-CudaContext context;
+/// @brief The caller-owned context every CudaBuffer allocates on, set once by register_type.
+CUcontext registered_context = nullptr;
+/// @brief The CUDA descriptor, set once by register_type.
+const BuffetDescriptor* registered_descriptor = nullptr;
 /** --------------------------------------------------------------------------------------------------------- Check CUDA
  * @brief Reports CUDA failures at allocation and query boundaries.
  */
@@ -27,7 +26,7 @@ void check_cuda(CUresult result, const char* operation) {
  * @brief Activates the registered context while preserving the calling thread's context stack.
  */
 struct ContextScope {
-    ContextScope() { check_cuda(cuCtxPushCurrent(context.native), "Activating CUDA context"); }
+    ContextScope() { check_cuda(cuCtxPushCurrent(registered_context), "Activating CUDA context"); }
     ~ContextScope() {
         CUcontext previous;
         const CUresult result = cuCtxPopCurrent(&previous);
@@ -36,79 +35,60 @@ struct ContextScope {
     ContextScope(const ContextScope&) = delete;
     ContextScope& operator=(const ContextScope&) = delete;
 };
-/** --------------------------------------------------------------------------------------------------------- CUDA Allocation
- * @brief Holds the host and device addresses of one slab.
- */
-struct CudaAllocation {
-    void* host = nullptr;
-    CUdeviceptr device = 0;
-};
+}
 /** --------------------------------------------------------------------------------------------------------- Allocate Managed
- * @brief Allocates and initializes a managed slab while its context is current.
+ * @brief Allocates and zeroes a managed buffer while the registered context is current.
+ * @param buffer The buffer receiving the allocation.
  */
-Placemat::Handle* managed_allocate(size_t size, void*) {
+void CudaBuffer::allocate_managed(CudaBuffer& buffer) {
     ContextScope scope;
-    auto handle = std::make_unique<Placemat::Handle>();
-    auto allocation = std::make_unique<CudaAllocation>();
-    check_cuda(cuMemAllocManaged(&allocation->device, size, CU_MEM_ATTACH_GLOBAL),
-               "Allocating CUDA managed slab");
-    allocation->host = reinterpret_cast<void*>(allocation->device);
-    std::memset(allocation->host, 0, size);
-    handle->substrate_handle = allocation.release();
-    return handle.release();
+    check_cuda(cuMemAllocManaged(&buffer.device_, buffer.size_, CU_MEM_ATTACH_GLOBAL),
+               "Allocating CUDA managed buffer");
+    buffer.host_ = reinterpret_cast<void*>(buffer.device_);
+    std::memset(buffer.host_, 0, buffer.size_);
 }
 /** --------------------------------------------------------------------------------------------------------- Allocate Mapped
- * @brief Allocates a pinned host slab and resolves its CUDA address once.
+ * @brief Allocates a zeroed pinned host buffer and resolves its CUDA address once.
+ * @param buffer The buffer receiving the allocation.
  */
-Placemat::Handle* mapped_allocate(size_t size, void*) {
+void CudaBuffer::allocate_mapped(CudaBuffer& buffer) {
     ContextScope scope;
-    auto handle = std::make_unique<Placemat::Handle>();
-    auto allocation = std::make_unique<CudaAllocation>();
-    check_cuda(cuMemHostAlloc(&allocation->host, size,
-        CU_MEMHOSTALLOC_DEVICEMAP | CU_MEMHOSTALLOC_PORTABLE), "Allocating CUDA mapped slab");
-    const CUresult result = cuMemHostGetDevicePointer(&allocation->device, allocation->host, 0);
+    check_cuda(cuMemHostAlloc(&buffer.host_, buffer.size_,
+        CU_MEMHOSTALLOC_DEVICEMAP | CU_MEMHOSTALLOC_PORTABLE), "Allocating CUDA mapped buffer");
+    const CUresult result = cuMemHostGetDevicePointer(&buffer.device_, buffer.host_, 0);
     if (result != CUDA_SUCCESS) {
-        cuMemFreeHost(allocation->host);
+        cuMemFreeHost(buffer.host_);
+        buffer.host_ = nullptr;
         check_cuda(result, "Resolving CUDA mapped address");
     }
-    std::memset(allocation->host, 0, size);
-    handle->substrate_handle = allocation.release();
-    return handle.release();
+    std::memset(buffer.host_, 0, buffer.size_);
 }
-/** --------------------------------------------------------------------------------------------------------- Free Managed
- * @brief Releases a managed slab on the arena reclamation thread.
+/** --------------------------------------------------------------------------------------------------------- Release Managed
+ * @brief Frees a managed buffer on the registered context.
+ * @param buffer The buffer being released.
  */
-void managed_deallocate(Placemat::Handle* handle, void*) {
+void CudaBuffer::release_managed(CudaBuffer& buffer) {
     ContextScope scope;
-    std::unique_ptr<CudaAllocation> allocation(static_cast<CudaAllocation*>(handle->substrate_handle));
-    check_cuda(cuMemFree(allocation->device), "Freeing CUDA managed slab");
+    check_cuda(cuMemFree(buffer.device_), "Freeing CUDA managed buffer");
 }
-/** --------------------------------------------------------------------------------------------------------- Free Mapped
- * @brief Releases a pinned host slab on the arena reclamation thread.
+/** --------------------------------------------------------------------------------------------------------- Release Mapped
+ * @brief Frees a pinned host buffer on the registered context.
+ * @param buffer The buffer being released.
  */
-void mapped_deallocate(Placemat::Handle* handle, void*) {
+void CudaBuffer::release_mapped(CudaBuffer& buffer) {
     ContextScope scope;
-    std::unique_ptr<CudaAllocation> allocation(static_cast<CudaAllocation*>(handle->substrate_handle));
-    check_cuda(cuMemFreeHost(allocation->host), "Freeing CUDA mapped slab");
-}
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief Returns the host address established during allocation.
- */
-void* cuda_host_pointer(Placemat::Handle* handle) {
-    return static_cast<CudaAllocation*>(handle->substrate_handle)->host;
-}
-/** --------------------------------------------------------------------------------------------------------- Context
- * @brief Returns the process-lifetime CUDA placement context.
- */
-void* cuda_context() { return &context; }
+    check_cuda(cuMemFreeHost(buffer.host_), "Freeing CUDA mapped buffer");
 }
 /** --------------------------------------------------------------------------------------------------------- Register Type
- * @brief Probes CUDA memory capabilities and selects concrete placement callbacks once.
+ * @brief Probes the requested memory kind, binds its hooks, and registers the CUDA descriptor once.
+ * @param context A caller-owned CUDA context that outlives every CudaBuffer.
+ * @param kind Managed memory, or pinned host memory mapped into the device.
+ * @return The registered descriptor.
  */
-const Placemat* CudaAllocator::register_type(CUcontext native, CudaMemoryKind kind) {
-    if (context.placement) ALLIGATOR_THROW("The CUDA placement is already registered");
-    if (!native) ALLIGATOR_THROW("CUDA registration requires a context");
-    context.native = native;
+const BuffetDescriptor* CudaBuffer::register_type(CUcontext context, CudaMemoryKind kind) {
+    if (registered_descriptor) ALLIGATOR_THROW("The CUDA buffet type is already registered");
+    if (!context) ALLIGATOR_THROW("CUDA registration requires a context");
+    registered_context = context;
     ContextScope scope;
     CUdevice device;
     check_cuda(cuCtxGetDevice(&device), "Querying CUDA device");
@@ -117,37 +97,32 @@ const Placemat* CudaAllocator::register_type(CUcontext native, CudaMemoryKind ki
         check_cuda(cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS,
                                        device), "Querying concurrent managed access");
         if (!supported) {
-            ALLIGATOR_THROW("Background managed slabs require concurrent managed access; "
-                            "select mapped_host for this device");
+            ALLIGATOR_THROW("Managed CUDA buffers require concurrent managed access; "
+                            "select CudaMemoryKind::mapped_host for this device");
         }
-    } else if (kind == CudaMemoryKind::mapped_host) {
+        allocate_ = &CudaBuffer::allocate_managed;
+        release_ = &CudaBuffer::release_managed;
+    } else {
         check_cuda(cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY,
                                        device), "Querying mapped host support");
         if (!supported) ALLIGATOR_THROW("The CUDA device cannot map host memory");
-    } else {
-        ALLIGATOR_THROW("Unknown CUDA memory kind");
+        allocate_ = &CudaBuffer::allocate_mapped;
+        release_ = &CudaBuffer::release_mapped;
     }
-    context.placement = BuffetMenu::get(BuffetMenu::register_type(
-        "cuda", 64ull * 1024 * 1024, 64,
-        kind == CudaMemoryKind::managed ? &managed_allocate : &mapped_allocate,
-        kind == CudaMemoryKind::managed ? &managed_deallocate : &mapped_deallocate,
-        &cuda_host_pointer, &cuda_context
-    ));
-    return context.placement;
-}
-/** --------------------------------------------------------------------------------------------------------- Device Address
- * @brief Resolves the native device address including a Slice's offset.
- */
-CUdeviceptr CudaAllocator::device_address(const Slice& slice) {
-    const auto* allocation = static_cast<CudaAllocation*>(Placemat::get_for(&slice)->substrate_handle);
-    return allocation->device + (static_cast<const char*>(slice.raw()) -
-                                 static_cast<const char*>(allocation->host));
+    const BuffetDescriptor* descriptor = BuffetDescriptors::descriptor_for(static_cast<CudaBuffer*>(nullptr));
+    if (BuffetDescriptors::register_descriptor(descriptor) != type_idx()) {
+        ALLIGATOR_THROW("CudaBuffer must be the first registered buffet type after the built-ins; "
+                        "register it before any other custom type");
+    }
+    registered_descriptor = descriptor;
+    return registered_descriptor;
 }
 /** --------------------------------------------------------------------------------------------------------- Memory Usage
  * @brief Queries capacity and free memory while preserving the caller's current context.
+ * @return The device's memory usage.
  */
-DeviceMemoryUsage CudaAllocator::memory_usage() {
-    if (!context.placement) ALLIGATOR_THROW("Register the CUDA placement before querying its memory");
+DeviceMemoryUsage CudaBuffer::memory_usage() {
+    if (!registered_descriptor) ALLIGATOR_THROW("Register the CUDA buffet type before querying its memory");
     ContextScope scope;
     size_t available = 0;
     size_t capacity = 0;
@@ -155,3 +130,4 @@ DeviceMemoryUsage CudaAllocator::memory_usage() {
     return {capacity, available, std::nullopt, std::nullopt};
 }
 } // namespace buffetalligator
+#endif // defined(BUFFETALLIGATOR_HAS_CUDA)

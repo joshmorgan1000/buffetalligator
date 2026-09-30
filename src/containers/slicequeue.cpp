@@ -3,6 +3,7 @@
  * @brief Exposes the C TLS queue through move-only Slice ownership and thread-bound handles.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 extern "C" {
 #include "core/ba_queue.h"
 }
@@ -16,7 +17,7 @@ void SliceQueue::release_descriptor(void* descriptor) noexcept {
     ba_slice_t* carried = static_cast<ba_slice_t*>(descriptor);
     if (carried->id == BA_NULL_ID) return;
     Slice slice;
-    slice.id_ = static_cast<SliceId>(carried->id);
+    slice.id_ = static_cast<uint32_t>(carried->id);
     carried->id = BA_NULL_ID;
     slice.free();
 }
@@ -91,7 +92,7 @@ bool SliceQueue::Consumer::pop(Slice& output) noexcept {
     ba_slice_t received;
     if (!ba_queue_pop(static_cast<ba_queue_local_t*>(local_), &received, 1)) return false;
     output.free();
-    output.id_ = static_cast<SliceId>(received.id);
+    output.id_ = static_cast<uint32_t>(received.id);
     return true;
 }
 /** --------------------------------------------------------------------------------------------------------- Pop Bulk
@@ -104,7 +105,7 @@ size_t SliceQueue::Consumer::pop(std::span<Slice> output) noexcept {
         std::min(output.size(), block_size));
     for (size_t index = 0; index < count; ++index) {
         output[index].free();
-        output[index].id_ = static_cast<SliceId>(received[index].id);
+        output[index].id_ = static_cast<uint32_t>(received[index].id);
     }
     return count;
 }

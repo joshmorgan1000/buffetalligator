@@ -3,7 +3,8 @@
  * @brief Michael lock-free hash buckets sorted by hash with hazard-protected payload replacement.
  */
 #include <alligator.hpp>
-#include "simd.hpp"
+#include <alligator/containers.hpp>
+#include <simd.hpp>
 #include <array>
 #include <bit>
 #include <limits>

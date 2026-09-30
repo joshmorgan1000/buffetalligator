@@ -6,6 +6,7 @@
  * their results here.
  */
 #include <alligator.hpp>
+#include <alligator/atomics.hpp>
 #include <optional>
 #include <source_location>
 #ifndef BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
@@ -15,8 +16,8 @@
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Memory
  * @class Memory
- * @brief Tracks completed slab allocations and deallocations per registered Placemat. This class
- * performs no allocation itself; call sites report their own results here.
+ * @brief Tracks completed buffet allocations and deallocations per buffet type. This class
+ * performs no allocation itself; the descriptor factory and deleter hooks report here.
  */
 class Memory {
 public:
@@ -30,11 +31,11 @@ public:
         std::source_location location;
     };
 private:
-    /** ------------------------------------------------------------------------------------------- PlacematDetails
-     * @struct PlacematDetails
-     * @brief Running allocation totals for one registered Placemat.
+    /** ------------------------------------------------------------------------------------------- PlacementDetails
+     * @struct PlacementDetails
+     * @brief Running allocation totals for one buffet type.
      */
-    struct PlacematDetails {
+    struct PlacementDetails {
         AtomicContainer* total_allocations_;  ///< Bytes allocated through this placement.
         AtomicContainer* total_freed_;  ///< Bytes freed through this placement.
         AtomicContainer* total_available_;  ///< Reported capacity for this placement.
@@ -43,11 +44,11 @@ private:
     AtomicContainer* total_allocations_;
     /// @brief AtomicContainer to track total memory freed across every placement.
     AtomicContainer* total_freed_;
-    /// @brief Per-placement allocation totals, indexed by Placemat::type().
-    std::vector<PlacematDetails> placemat_details_;
+    /// @brief Per-type allocation totals, indexed by BuffetDescriptor::type_idx.
+    std::vector<PlacementDetails> placement_details_;
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
     /// @brief Live backing allocations keyed by their stable placement handles.
-    std::unordered_map<const Plate*, AllocationInfo> allocations_;
+    std::unordered_map<const void*, AllocationInfo> allocations_;
     /// @brief Serializes location records shared by allocating threads and the teardown worker.
     AtomicMutex allocations_mutex_;
 #endif
@@ -57,11 +58,11 @@ private:
     Memory() {
         total_allocations_ = AtomicRegistry::create_global<uint64_t>("buffetalligator_allocations", uint64_t(0));
         total_freed_ = AtomicRegistry::create_global<uint64_t>("buffetalligator_freed", uint64_t(0));
-        constexpr size_t placement_count = 256;
-        placemat_details_.reserve(placement_count);
+        constexpr size_t placement_count = 8;
+        placement_details_.reserve(placement_count);
         for (size_t i = 0; i < placement_count; ++i) {
-            const std::string prefix = "buffetalligator_placemat_" + std::to_string(i) + "_";
-            placemat_details_.push_back(PlacematDetails{
+            const std::string prefix = "buffetalligator_placement_" + std::to_string(i) + "_";
+            placement_details_.push_back(PlacementDetails{
                 AtomicRegistry::create_global<uint64_t>(prefix + "allocations", uint64_t(0)),
                 AtomicRegistry::create_global<uint64_t>(prefix + "freed", uint64_t(0)),
                 AtomicRegistry::create_global<uint64_t>(prefix + "available", uint64_t(0))
@@ -90,13 +91,13 @@ public:
      * @brief Records one live allocation's source location when detailed tracking is enabled.
      * @param placement The placement owning the backing allocation.
      * @param size The backing allocation size in bytes.
-     * @param handle The stable placement handle identifying the allocation.
+     * @param handle The buffet handle identifying the allocation.
      * @param location The completed allocation's source location.
      */
     static void record_code_location(
-        const Placemat& placement,
+        const BuffetDescriptor& placement,
         size_t size,
-        const Plate* plate,
+        const void* handle,
         const std::source_location& location = std::source_location::current()
     ) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
@@ -104,43 +105,44 @@ public:
         const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
-        tracker.allocations_.emplace(plate, AllocationInfo{
-            static_cast<uint64_t>(timestamp), size, placement.type(), location
+        tracker.allocations_.emplace(handle, AllocationInfo{
+            static_cast<uint64_t>(timestamp), size, placement.type_idx, location
         });
 #else
         (void)placement;
         (void)size;
-        (void)plate;
+        (void)handle;
         (void)location;
 #endif
     }
     /** ------------------------------------------------------------------------------------------- Forget Code Location
      * @brief Retires a completed deallocation's location record when detailed tracking is enabled.
-     * @param handle The placement handle whose backing allocation has been released.
+     * @param handle The buffet handle whose backing allocation has been released.
      */
-    static void forget_code_location(const Plate* plate) {
+    static void forget_code_location(const void* handle) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
         Memory& tracker = instance();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
-        tracker.allocations_.erase(plate);
+        tracker.allocations_.erase(handle);
 #else
-        (void)plate;
+        (void)handle;
 #endif
     }
     /** ------------------------------------------------------------------------------------------- Allocation Info
-     * @brief Returns a live allocation record or no value when absent or detailed tracking is disabled.
-     * @param handle The placement handle identifying the allocation.
+     * @brief Returns a live allocation record or no value when absent or detailed tracking is
+     * disabled.
+     * @param handle The buffet handle identifying the allocation.
      * @return A snapshot of the allocation's recorded details.
      */
-    static std::optional<AllocationInfo> allocation_info(const Plate* plate) {
+    static std::optional<AllocationInfo> allocation_info(const void* handle) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
         Memory& tracker = instance();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
-        const auto found = tracker.allocations_.find(plate);
+        const auto found = tracker.allocations_.find(handle);
         if (found == tracker.allocations_.end()) return std::nullopt;
         return found->second;
 #else
-        (void)plate;
+        (void)handle;
         return std::nullopt;
 #endif
     }
@@ -149,77 +151,87 @@ public:
      * @param placement The placement that allocated the slab.
      * @param size The page-rounded slab size.
      */
-    static void record_allocation(const Placemat& placement, size_t size) {
-        instance().total_allocations_->fetch_add<uint64_t>(static_cast<uint64_t>(size), std::memory_order_relaxed);
-        instance().placemat_details_[placement.type()].total_allocations_->fetch_add<uint64_t>(
-            static_cast<uint64_t>(size), std::memory_order_relaxed);
+    static void record_allocation(const BuffetDescriptor& placement, size_t size) {
+        instance().total_allocations_->fetch_add<uint64_t>(
+            static_cast<uint64_t>(size),
+            std::memory_order_relaxed
+        );
+        instance().placement_details_[placement.type_idx].total_allocations_->fetch_add<uint64_t>(
+            static_cast<uint64_t>(size),
+            std::memory_order_relaxed
+        );
     }
     /** ------------------------------------------------------------------------------------------- Record Deallocation
      * @brief Records one completed slab deallocation for the owning placement.
      * @param placement The placement that deallocated the slab.
      * @param size The page-rounded slab size.
      */
-    static void record_deallocation(const Placemat& placement, size_t size) {
-        instance().total_freed_->fetch_add<uint64_t>(static_cast<uint64_t>(size), std::memory_order_relaxed);
-        instance().placemat_details_[placement.type()].total_freed_->fetch_add<uint64_t>(
-            static_cast<uint64_t>(size), std::memory_order_relaxed);
+    static void record_deallocation(const BuffetDescriptor& placement, size_t size) {
+        instance().total_freed_->fetch_add<uint64_t>(
+            static_cast<uint64_t>(size),
+            std::memory_order_relaxed
+        );
+        instance().placement_details_[placement.type_idx].total_freed_->fetch_add<uint64_t>(
+            static_cast<uint64_t>(size),
+            std::memory_order_relaxed
+        );
     }
     /** ------------------------------------------------------------------------------------------- Total Allocations
-     * @brief Returns all slab bytes allocated through registered placements.
+     * @brief Returns all slab bytes allocated through buffet types.
      * @return Total allocated bytes.
      */
     static size_t total_allocations() {
         return instance().total_allocations_->load<uint64_t>(std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Total Freed
-     * @brief Returns all slab bytes returned through registered placements.
+     * @brief Returns all slab bytes returned through buffet types.
      * @return Total freed bytes.
      */
     static size_t total_freed() {
         return instance().total_freed_->load<uint64_t>(std::memory_order_acquire);
     }
-    /** ------------------------------------------------------------------------------------------- Placemat Allocations
-     * @brief Returns all slab bytes ever allocated through one registered placement.
+    /** ------------------------------------------------------------------------------------------- Placement Allocations
+     * @brief Returns all slab bytes ever allocated through one buffet type.
      * @param placement The placement to query.
      * @return Allocated bytes for the placement.
      */
-    static size_t placement_allocations(const Placemat& placement) {
-        return instance().placemat_details_[placement.type()].total_allocations_->load<uint64_t>(
+    static size_t placement_allocations(const BuffetDescriptor& placement) {
+        return instance().placement_details_[placement.type_idx].total_allocations_->load<uint64_t>(
             std::memory_order_acquire);
     }
-    /** ------------------------------------------------------------------------------------------- Placemat Freed
-     * @brief Returns all slab bytes ever freed through one registered placement.
+    /** ------------------------------------------------------------------------------------------- Placement Freed
+     * @brief Returns all slab bytes ever freed through one buffet type.
      * @param placement The placement to query.
      * @return Freed bytes for the placement.
      */
-    static size_t placement_freed(const Placemat& placement) {
-        return instance().placemat_details_[placement.type()].total_freed_->load<uint64_t>(
+    static size_t placement_freed(const BuffetDescriptor& placement) {
+        return instance().placement_details_[placement.type_idx].total_freed_->load<uint64_t>(
             std::memory_order_acquire);
     }
-    /** ------------------------------------------------------------------------------------------- Placemat Usage
-     * @brief Returns live slab bytes owned by one registered placement.
+    /** ------------------------------------------------------------------------------------------- Placement Usage
+     * @brief Returns live slab bytes owned by one buffet type.
      * @param placement The placement to query.
      * @return Live bytes for the placement.
      */
-    static size_t placement_usage(const Placemat& placement) {
+    static size_t placement_usage(const BuffetDescriptor& placement) {
         return placement_allocations(placement) - placement_freed(placement);
     }
-    /** ------------------------------------------------------------------------------------------- Placemat Available
-     * @brief Returns the last reported capacity for one registered placement.
+    /** ------------------------------------------------------------------------------------------- Placement Available
+     * @brief Returns the last reported capacity for one buffet type.
      * @param placement The placement to query.
      * @return Reported available bytes for the placement.
      */
-    static size_t placement_available(const Placemat& placement) {
-        return instance().placemat_details_[placement.type()].total_available_->load<uint64_t>(
+    static size_t placement_available(const BuffetDescriptor& placement) {
+        return instance().placement_details_[placement.type_idx].total_available_->load<uint64_t>(
             std::memory_order_acquire);
     }
-    /** ------------------------------------------------------------------------------------------- Set Placemat Available
-     * @brief Records the reported capacity for one registered placement.
+    /** ------------------------------------------------------------------------------------------- Set Placement Available
+     * @brief Records the reported capacity for one buffet type.
      * @param placement The placement being reported on.
      * @param size The reported available bytes.
      */
-    static void set_placement_available(const Placemat& placement, size_t size) {
-        instance().placemat_details_[placement.type()].total_available_->store<uint64_t>(
+    static void set_placement_available(const BuffetDescriptor& placement, size_t size) {
+        instance().placement_details_[placement.type_idx].total_available_->store<uint64_t>(
             static_cast<uint64_t>(size), std::memory_order_release);
     }
 };

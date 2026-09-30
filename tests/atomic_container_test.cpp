@@ -5,7 +5,7 @@
  * pins the storage ledger: a pointer container must free the std::atomic<T*> wrapper it allocated
  * without touching the pointee, and every container must free its storage on destruction.
  */
-#include <alligator.hpp>
+#include <buffet.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

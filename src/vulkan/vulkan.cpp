@@ -4,6 +4,8 @@
  */
 #include <logging.hpp>
 #include <alligator.hpp>
+#include <alligator/kitchen.hpp>
+#include <alligator/easygpu.hpp>
 #include <shaderc/shaderc.hpp>
 #include <algorithm>
 #include <cstddef>
@@ -12,92 +14,9 @@
 #include <memory>
 #include <vector>
 
+extern "C" void ba_net_shutdown(void);
+
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Vulkan Static Methods
- * @struct VulkanStaticMethods
- * @brief Provides static methods for Vulkan buffer management.
- */
-struct VulkanStaticMethods {
-    VulkanStaticMethods() = delete; // Prevent instantiation of this static-only class.
-    /** ------------------------------------------------------------------------------------------- Prepare Runtime
-     * @brief Loads the Vulkan driver on the registering thread before the allocator worker starts.
-     */
-    static void prepare_runtime();
-    /** ------------------------------------------------------------------------------------------- Vulkan Allocator
-     * @brief Allocates a mapped Vulkan buffer of the specified size.
-     * @param size The size of the Vulkan buffer to allocate.
-     * @param context The rung index pointer the placement handed us.
-     * @return The host mapping and the VulkanBuffer handle pair.
-     */
-    static std::pair<void*, void*> vulkan_allocator(size_t size, void* context);
-    /** ------------------------------------------------------------------------------------------- Deallocate
-     * @brief Destroys a Vulkan buffer and clears its host mapping.
-     * @param host_ptr The host mapping of the buffer.
-     * @param substrate_handle The VulkanBuffer handle backing the mapping.
-     * @return The cleared host pointer and substrate handle pair.
-     */
-    static std::pair<void*, void*> vulkan_deallocate(void* host_ptr, void* substrate_handle);
-    /** ------------------------------------------------------------------------------------------- Get Vulkan Context
-     * @brief Retrieves the Vulkan context.
-     * @return A pointer to the Vulkan context.
-     */
-    static void* vulkan_get_context();
-    /** ------------------------------------------------------------------------------------------- Get Host Pointer
-     * @brief The persistent host mapping of a slab.
-     * @param substrate_handle The VulkanBuffer handle backing the slab.
-     * @return The host pointer of the slab's mapping.
-     */
-    static HostPtr vulkan_get_host_ptr(void* substrate_handle);
-    /** ------------------------------------------------------------------------------------------- Get GPUBuf
-     * @brief The device address and size of a whole slab.
-     * @param substrate_handle The VulkanBuffer handle backing the slab.
-     * @return The slab's GPUBuf entry at offset zero.
-     */
-    static GPUBuf vulkan_get_gpu_buf(void* substrate_handle);
-};
-/** --------------------------------------------------------------------------------------------------------- VulkanPlacements
- * @struct VulkanPlacements
- * @brief One Vulkan Placemat per ladder rung; the rung rides in the Placemat's context word and
- * the allocator resolves it to the memory type `VulkanContext` probed for it.
- */
-struct VulkanPlacements {
-    VulkanPlacements() = delete;
-    /** ------------------------------------------------------------------------------------------- rung_context
-     * @brief The `get_context` hook for one rung: a pointer to that rung's index.
-     */
-    template <uint8_t Rung>
-    static void* rung_context() {
-        VulkanStaticMethods::prepare_runtime();
-        static uint8_t rung = Rung;
-        return &rung;
-    }
-    /** ------------------------------------------------------------------------------------------- rung
-     * @brief Registers (once) and returns the Vulkan Placemat for a ladder rung.
-     */
-    template <uint8_t Rung>
-    static const Placemat* rung(const char* name) {
-        static const Placemat* placemat = BuffetMenu::get(BuffetMenu::register_type(
-            name, 64 * 1024 * 1024, 4096,
-            &VulkanStaticMethods::vulkan_allocator, &VulkanStaticMethods::vulkan_deallocate,
-            &VulkanPlacements::rung_context<Rung>, &VulkanStaticMethods::vulkan_get_host_ptr, nullptr,
-            &VulkanStaticMethods::vulkan_get_gpu_buf));
-        return placemat;
-    }
-    /** ------------------------------------------------------------------------------------------- Prime
-     * @brief Registers every ladder rung before the first Slice allocates; the alligator's tracker
-     * sizes its per-placement tables at the first slab, so a rung first touched later would index
-     * past them (contract: process-lifetime Placemats register before the first Slice).
-     */
-    static void prime() {
-        rung<0>("vulkan_host");
-        rung<1>("vulkan_host_visible");
-        rung<2>("vulkan_host_cacheable");
-        rung<3>("vulkan_device");
-        rung<4>("vulkan_unified");
-        rung<5>("vulkan_basic_heap");
-        rung<6>("vulkan_buffer");
-    }
-};
 /** --------------------------------------------------------------------------------------------------------- make_transfer_unit
  * @brief Create this thread's TransferUnit from its own pool.
  */
@@ -388,33 +307,6 @@ VulkanContext::VulkanContext() {
     if (buffer_memory_type_index_ == UINT32_MAX) {
         ALLIGATOR_GPU_THROW("VulkanContext: no host-visible memory type for storage buffers");
     }
-    const vk::MemoryPropertyFlags device_local = vk::MemoryPropertyFlagBits::eDeviceLocal;
-    const auto ladder = [&](std::initializer_list<vk::MemoryPropertyFlags> rungs) {
-        for (const vk::MemoryPropertyFlags rung : rungs) {
-            const uint32_t found = try_find_memory_type(requirements.memoryTypeBits, rung);
-            if (found != UINT32_MAX) return found;
-        }
-        return buffer_memory_type_index_;
-    };
-    placement_type_indices_[0] = ladder({device_local | cached, cached});                    // HOST
-    /// HOST_VISIBLE means uncached on the CPU side (a streaming ring's payload reads go to RAM);
-    /// only a device with no such type falls back to a cached one.
-    const uint32_t uncached = try_find_memory_type(
-        requirements.memoryTypeBits, device_local | coherent, vk::MemoryPropertyFlagBits::eHostCached);
-    placement_type_indices_[1] = uncached != UINT32_MAX ? uncached : try_find_memory_type(
-        requirements.memoryTypeBits, coherent, vk::MemoryPropertyFlagBits::eHostCached);
-    if (placement_type_indices_[1] == UINT32_MAX) placement_type_indices_[1] = ladder({device_local | coherent, coherent});
-    placement_type_indices_[2] = ladder({device_local | cached, cached});                   // HOST_CACHEABLE
-    placement_type_indices_[3] = ladder({device_local | cached, device_local | coherent});  // DEVICE
-    placement_type_indices_[4] = ladder({device_local | cached, cached});                   // UNIFIED
-    placement_type_indices_[5] = buffer_memory_type_index_;                                 // BASIC_HEAP (never Vulkan-allocated)
-    placement_type_indices_[6] = buffer_memory_type_index_;                                 // UNSPECIFIED
-    for (size_t index = 0; index < placement_type_indices_.size(); ++index) {
-        placement_cpu_cached_[index] =
-            (memory_properties_.memoryTypes[placement_type_indices_[index]].propertyFlags
-                & vk::MemoryPropertyFlagBits::eHostCached) == vk::MemoryPropertyFlagBits::eHostCached;
-    }
-    placement_cpu_cached_[static_cast<size_t>(PlacementIndex::BASIC_HEAP)] = true;
     pipeline_cache_ = device_.createPipelineCache({});
     device_present_ = true;
     device_props_.gpu_free_bytes = poll_budget_headroom();
@@ -449,8 +341,8 @@ uint64_t VulkanContext::poll_budget_headroom() const {
  * already be destroyed.
  */
 VulkanContext::~VulkanContext() {
-    // Join the slab allocator before destroying the device it uses for deferred frees.
-    BuffetMenu::shutdown();
+    // Stop the network reactors before the device their in-flight Slices may live on goes away.
+    ba_net_shutdown();
     alive_.store(false, std::memory_order_release);
     if (!device_) {
         return;
@@ -503,13 +395,19 @@ void VulkanContext::submit_command_buffer(
     submit_info.pCommandBuffers = &command_buffer;
     context.compute_queues_[queue_slot].submit(submit_info, fence);
     if (callback != nullptr) {
-        Alligator::inst().submit_waiting([](vk::Device dev, vk::Fence fc, void (*cb)(void*), void* ctx) {
-            vk::Result result = dev.waitForFences(fc, VK_TRUE, UINT64_MAX);
-            if (result != vk::Result::eSuccess) {
-                ALLIGATOR_GPU_THROW("Vulkan: failed to wait for fence");
-            }
-            cb(ctx);
-        }, context.device_, fence, callback, callback_context);
+        Kitchen::inst().submit_waiting(&VulkanContext::wait_for_fence,
+            static_cast<VkFence>(fence), callback, callback_context);
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- wait_for_fence
+ * @brief The waiter-pool task behind a submission callback: parks until the fence signals.
+ * @param fence The submission's VkFence handle.
+ */
+void VulkanContext::wait_for_fence(void* fence) {
+    const vk::Result result = instance().device_.waitForFences(
+        vk::Fence(static_cast<VkFence>(fence)), VK_TRUE, UINT64_MAX);
+    if (result != vk::Result::eSuccess) {
+        ALLIGATOR_GPU_THROW("Vulkan: failed to wait for fence");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- queue_family_index
@@ -531,34 +429,11 @@ vk::BufferCreateInfo VulkanContext::buffer_create_info(vk::DeviceSize bytes, vk:
     return instance().shared_buffer_info(bytes, usage);
 }
 /** --------------------------------------------------------------------------------------------------------- buffer_placement
- * @brief The placement resolved to the storage-buffer memory type the capability ladder
- * probed at init - the same type the job table and parameter buffers verify against their
- * memory requirements. Never a named-rung assumption: rung 6 carries the probed index, and
- * context init threw already if no host-coherent type exists. Heap without a device.
+ * @brief The VulkanBuffer descriptor: mapped, device-addressable storage on the probed memory type.
  * @return The placement.
  */
-const Placemat* VulkanContext::buffer_placement() {
-    if (!instance().device_present_) return BuffetMenu::get("heap");
-    return VulkanPlacements::rung<6>("vulkan_buffer");
-}
-/** --------------------------------------------------------------------------------------------------------- ensure_device_default
- * @brief Probes the device once and, under unified memory, makes the buffer rung the default
- * placement unless a registration already chose one; a caller that loses the claim waits.
- */
-void BuffetMenu::ensure_device_default() {
-    BuffetMenu& menu = instance();
-    bool unclaimed = false;
-    if (!menu.device_default_claimed_.compare_exchange_strong(unclaimed, true, std::memory_order_acq_rel)) {
-        while (!menu.device_default_ready_.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-        return;
-    }
-    if (GPU::unified_memory() && default_placement_slot() == get("aligned_heap")) {
-        VulkanPlacements::prime();
-        default_placement_slot() = VulkanContext::buffer_placement();
-    }
-    menu.device_default_ready_.store(true, std::memory_order_release);
+const BuffetDescriptor* VulkanContext::buffer_placement() {
+    return BuffetDescriptors::get(VulkanBuffer::type_idx());
 }
 /** --------------------------------------------------------------------------------------------------------- queue_count
  * @brief Compute queues across all compute families, for GPU worker-count decisions.
@@ -675,10 +550,10 @@ VulkanBuffer::VulkanBuffer(size_t size_bytes, uint32_t memory_type_index)
     address_ = VulkanContext::instance().device_.getBufferAddress(vk::BufferDeviceAddressInfo(buffer_));
     std::memset(host_, 0, size_);
 }
-/** --------------------------------------------------------------------------------------------------------- VulkanBuffer Destructor
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer Release
  * @brief Unmap and free through the owning context, unless that context has already been torn down.
  */
-VulkanBuffer::~VulkanBuffer() {
+void VulkanBuffer::release() {
     if (!memory_) {
         std::free(host_);
         return;
@@ -718,10 +593,10 @@ std::string GPU::device_name() {
  */
 Slice GPU::compile_glsl(std::string_view body) {
     if (!VulkanContext::device_present()) {
-        GPU_THROW("GPU::compile_glsl: no Vulkan compute device is present.");
+        ALLIGATOR_GPU_THROW("GPU::compile_glsl: no Vulkan compute device is present.");
     }
     if (!VulkanContext::device_properties().supports_int64) {
-        GPU_THROW("GPU::compile_glsl: the prelude addresses memory with uint64_t, "
+        ALLIGATOR_GPU_THROW("GPU::compile_glsl: the prelude addresses memory with uint64_t, "
             "but the device lacks shaderInt64.");
     }
     const std::string assembled = kernel_shader_source(body);
@@ -732,7 +607,7 @@ Slice GPU::compile_glsl(std::string_view body) {
             VulkanContext::device_properties().supports_float16,
             "vulkan_gpu_compile_glsl");
     } catch (const std::exception& error) {
-        GPU_THROW(std::string("GPU::compile_glsl: ") + error.what());
+        ALLIGATOR_GPU_THROW(std::string("GPU::compile_glsl: ") + error.what());
     }
     Slice words(4 * spirv.size());
     std::memcpy(words.raw(), spirv.data(), words.size_bytes());
@@ -796,7 +671,7 @@ struct ShaderState::Impl {
         const auto& props = VulkanContext::device_properties();
         if (props.max_workgroup_size[0] < 16 || props.max_workgroup_size[1] < 4
             || props.max_workgroup_invocations < 64)
-            GPU_THROW("Kernel: device cannot execute the (16,4,1) local shape");
+            ALLIGATOR_GPU_THROW("Kernel: device cannot execute the (16,4,1) local shape");
         limit = std::min(limit, size_t(props.max_workgroup_count[format == Format::Slices ? 1 : 2]));
         module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
         const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(KernelPush));
@@ -804,7 +679,7 @@ struct ShaderState::Impl {
         const vk::PipelineShaderStageCreateInfo stage({}, vk::ShaderStageFlagBits::eCompute, module, "main");
         const auto created = device.createComputePipeline(VulkanContext::pipeline_cache(),
             vk::ComputePipelineCreateInfo({}, stage, layout));
-        if (created.result != vk::Result::eSuccess) GPU_THROW("Kernel pipeline: " + vk::to_string(created.result));
+        if (created.result != vk::Result::eSuccess) ALLIGATOR_GPU_THROW("Kernel pipeline: " + vk::to_string(created.result));
         pipeline = created.value;
         device.destroyShaderModule(module); module = nullptr;
         for (size_t index = 1; index < stage_words.size(); ++index) {
@@ -813,7 +688,7 @@ struct ShaderState::Impl {
             const vk::PipelineShaderStageCreateInfo pass({}, vk::ShaderStageFlagBits::eCompute, module, "main");
             const auto built = device.createComputePipeline(VulkanContext::pipeline_cache(),
                 vk::ComputePipelineCreateInfo({}, pass, layout));
-            if (built.result != vk::Result::eSuccess) GPU_THROW("Kernel stage pipeline: " + vk::to_string(built.result));
+            if (built.result != vk::Result::eSuccess) ALLIGATOR_GPU_THROW("Kernel stage pipeline: " + vk::to_string(built.result));
             stage_pipelines.push_back(built.value);
             device.destroyShaderModule(module); module = nullptr;
         }
@@ -824,7 +699,7 @@ struct ShaderState::Impl {
             | vk::BufferUsageFlagBits::eIndirectBuffer));
         const auto requirements = device.getBufferMemoryRequirements(buffer);
         const uint32_t type = VulkanContext::buffer_memory_type_index();
-        if (!(requirements.memoryTypeBits & (1u << type))) GPU_THROW("Kernel: incompatible coherent memory type");
+        if (!(requirements.memoryTypeBits & (1u << type))) ALLIGATOR_GPU_THROW("Kernel: incompatible coherent memory type");
         vk::MemoryAllocateInfo allocation(requirements.size, type);
         allocation.pNext = &VulkanContext::allocate_flags();
         memory = device.allocateMemory(allocation);
@@ -882,13 +757,13 @@ struct ShaderState::Impl {
         VulkanContext::submit_command_buffer(
             commands[VulkanContext::submission_family_slot()], fence, nullptr, nullptr);
         const auto result = VulkanContext::device().waitForFences(fence, VK_TRUE, UINT64_MAX);
-        if (result != vk::Result::eSuccess) GPU_THROW("Kernel fence wait: " + vk::to_string(result));
+        if (result != vk::Result::eSuccess) ALLIGATOR_GPU_THROW("Kernel fence wait: " + vk::to_string(result));
     }
 };
 namespace {
 void require_kernel_device() {
-    if (!VulkanContext::device_present()) GPU_THROW("Kernel: no Vulkan compute device");
-    if (!VulkanContext::device_properties().supports_int64) GPU_THROW("Kernel: shaderInt64 is required");
+    if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("Kernel: no Vulkan compute device");
+    if (!VulkanContext::device_properties().supports_int64) ALLIGATOR_GPU_THROW("Kernel: shaderInt64 is required");
 }
 /** --------------------------------------------------------------------------------------------------------- reference_shader_source
  * @brief Generates the reference shader source code.
@@ -934,7 +809,7 @@ ShaderState::ShaderState(
 ) {
     require_kernel_device();
     if (!workgroups_x || workgroups_x > VulkanContext::device_properties().max_workgroup_count[0])
-        GPU_THROW("Kernel: workgroups_x is outside the device limit");
+        ALLIGATOR_GPU_THROW("Kernel: workgroups_x is outside the device limit");
     auto words = compile_vulkan_glsl(
         references ? reference_shader_source(source) : public_shader_source(source),
         VulkanContext::device_properties().supports_float16,
@@ -964,7 +839,7 @@ ShaderState::ShaderState(
     for (const auto& stage : stages) {
         if (!stage.workgroups_x || stage.workgroups_x > props.max_workgroup_count[0]
             || stage.workgroups_y > props.max_workgroup_count[1])
-            GPU_THROW("Kernel stage dispatch exceeds the device shape");
+            ALLIGATOR_GPU_THROW("Kernel stage dispatch exceeds the device shape");
         code.push_back(compile_vulkan_glsl(reference_shader_source(stage.glsl), props.supports_float16, name));
     }
     impl_ = std::make_unique<Impl>(std::move(code), stages, name, references, resources);
@@ -1048,7 +923,6 @@ void ShaderState::dispatch_references(uint32_t first, uint32_t count) {
             vk::DispatchIndirectCommand(stage.workgroups_x, stage.workgroups_y, stage.per_request ? count : 1);
     }
     impl_->submit(impl_->reference_workgroups_x, 1, count);
-
 }
 /** --------------------------------------------------------------------------------------------------------- Shader::Shader
  * @brief Constructs a Shader by compiling the given GLSL source and preparing the Vulkan resources.
@@ -1059,7 +933,7 @@ Shader::Shader(std::string_view source, std::string_view name) {
     try {
         state_ = std::make_unique<ShaderState>(source, name);
     } catch (const vk::SystemError& error) {
-        GPU_THROW(std::string("Vulkan Shader setup failed: ") + error.what());
+        ALLIGATOR_GPU_THROW(std::string("Vulkan Shader setup failed: ") + error.what());
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Shader move */
@@ -1074,7 +948,7 @@ std::shared_ptr<moodycamel::LightweightSemaphore> Shader::operator()(
     void (*callback)(Slice slice),
     uint32_t workgroups
 ) const {
-    if (!state_) GPU_THROW("Vulkan Shader: moved-from Shader cannot dispatch");
+    if (!state_) ALLIGATOR_GPU_THROW("Vulkan Shader: moved-from Shader cannot dispatch");
     // Public Shader remains synchronous; Kernel owns asynchronous scheduling and completion.
     state_->dispatch(slices, count, workgroups);
     if (callback != nullptr) {
@@ -1133,7 +1007,7 @@ ShaderState* shader_state_of(const Shader& shader) {
 /** --------------------------------------------------------------------------------------------------------- GPU::encode */
 Slice GPU::encode(const Shader& program) {
     const ShaderState* state = shader_state_of(program);
-    if (state == nullptr) GPU_THROW("GPU::encode: moved-from Shader cannot be encoded.");
+    if (state == nullptr) ALLIGATOR_GPU_THROW("GPU::encode: moved-from Shader cannot be encoded.");
     const std::vector<uint32_t>& spirv = state->spirv();
     const std::string& name = state->name();
     const size_t spirv_bytes = spirv.size() * sizeof(uint32_t);
@@ -1151,7 +1025,7 @@ Slice GPU::encode(const Shader& program) {
 }
 /** --------------------------------------------------------------------------------------------------------- GPU::decode */
 Shader GPU::decode(const Slice&) {
-    GPU_THROW("GPU::decode: blocked on a locked-header gap (report G0-5) — Shader has no "
+    ALLIGATOR_GPU_THROW("GPU::decode: blocked on a locked-header gap (report G0-5) — Shader has no "
         "accessible way to construct from a prepared ShaderState; needs friend struct GPU "
         "or a private Shader(std::unique_ptr<ShaderState>) constructor in gpu.hpp.");
 }
@@ -1194,7 +1068,7 @@ ShaderState& job_table_engine_for(const Slice& program) {
         while (state == nullptr) state = slot.state.load(std::memory_order_acquire);
         return *state;
     }
-    GPU_THROW("GPU::run: job-table program registry is full (raise JOB_TABLE_REGISTRY_SLOTS)");
+    ALLIGATOR_GPU_THROW("GPU::run: job-table program registry is full (raise JOB_TABLE_REGISTRY_SLOTS)");
 }
 } // namespace
 } // namespace vulkan
@@ -1212,78 +1086,4 @@ void GPU::run(const Slice& program, Slice* streams, size_t stream_count) {
         engine.dispatch(round);
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Prepare Vulkan Runtime
- * @brief Avoids waiting for a worker to dlopen the driver while extension import holds the loader lock.
- */
-void VulkanStaticMethods::prepare_runtime() {
-    static_cast<void>(VulkanContext::instance());
-}
-/** --------------------------------------------------------------------------------------------------------- Vulkan Allocator
- * @brief Allocates one mapped, device-addressable slab on the rung named by `context`.
- * @param size The slab size in bytes.
- * @param context The rung index (from the Placemat's `get_context`).
- * @return The host mapping and the VulkanBuffer handle pair.
- */
-std::pair<void*, void*> VulkanStaticMethods::vulkan_allocator(size_t size, void* context) {
-    const uint8_t rung = *static_cast<const uint8_t*>(context);
-    VulkanBuffer* slab = new VulkanBuffer(size, VulkanContext::instance().placement_type_indices_[rung]);
-    return {slab->host(), slab};
-}
-/** --------------------------------------------------------------------------------------------------------- Deallocate
- * @brief Destroys the slab behind a handle.
- * @param host_ptr The host mapping of the slab.
- * @param substrate_handle The VulkanBuffer handle backing the mapping.
- * @return The cleared host pointer and substrate handle pair.
- */
-std::pair<void*, void*> VulkanStaticMethods::vulkan_deallocate(void* host_ptr, void* substrate_handle) {
-    static_cast<void>(host_ptr);
-    delete static_cast<VulkanBuffer*>(substrate_handle);
-    return {nullptr, nullptr};
-}
-/** --------------------------------------------------------------------------------------------------------- Get Host Pointer
- * @brief The persistent host mapping of a slab.
- * @param substrate_handle The VulkanBuffer handle backing the slab.
- * @return The host pointer of the slab's mapping.
- */
-HostPtr VulkanStaticMethods::vulkan_get_host_ptr(void* substrate_handle) {
-    return HostPtr{static_cast<VulkanBuffer*>(substrate_handle)->host()};
-}
-/** --------------------------------------------------------------------------------------------------------- Get GPUBuf
- * @brief The device address and size of a whole slab.
- * @param substrate_handle The VulkanBuffer handle backing the slab.
- * @return The slab's GPUBuf entry at offset zero.
- */
-GPUBuf VulkanStaticMethods::vulkan_get_gpu_buf(void* substrate_handle) {
-    const VulkanBuffer* slab = static_cast<const VulkanBuffer*>(substrate_handle);
-    return GPUBuf{slab->address(), static_cast<uint32_t>(slab->size()), 0};
-}
-/** --------------------------------------------------------------------------------------------------------- Get Vulkan Context
- * @brief The un-rung'd context hook: the default rung index.
- * @return A pointer to the HOST_VISIBLE rung index.
- */
-void* VulkanStaticMethods::vulkan_get_context() {
-    return VulkanPlacements::rung_context<static_cast<uint8_t>(PlacementIndex::HOST_VISIBLE)>();
-}
-/** --------------------------------------------------------------------------------------------------------- bit_placement
- * @brief Where device-shared bit stores (planes, survivor masks) live: the zero-copy rung
- * when a device is present (UNIFIED on unified-memory systems, HOST_CACHEABLE on discrete),
- * plain heap without one.
- * @return The placement.
- */
-const Placemat* VulkanKernel::table_placement() {
-    if (!VulkanContext::instance().device_present_) return BuffetMenu::get("heap");
-    return VulkanContext::instance().device_props_.unified_memory
-        ? VulkanPlacements::rung<4>("vulkan_unified")
-        : VulkanPlacements::rung<2>("vulkan_host_cacheable");
-}
-/** --------------------------------------------------------------------------------------------------------- Placement table
- * @brief The Placemat behind each alligator placement: the heap built-in for the host-only rungs,
- * one Vulkan Placemat per device rung.
- */
-const Placemat* const Placemat::HOST = BuffetMenu::get("heap");
-const Placemat* const Placemat::HOST_VISIBLE = VulkanPlacements::rung<1>("vulkan_host_visible");
-const Placemat* const Placemat::HOST_CACHEABLE = VulkanPlacements::rung<2>("vulkan_host_cacheable");
-const Placemat* const Placemat::DEVICE = VulkanPlacements::rung<3>("vulkan_device");
-const Placemat* const Placemat::UNIFIED = VulkanPlacements::rung<4>("vulkan_unified");
-const Placemat* const Placemat::BASIC_HEAP = BuffetMenu::get("heap");
 } // namespace buffetalligator

@@ -35,17 +35,30 @@ find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 include(GNUInstallDirs)
 include(cmake/NetworkDependencies.cmake)
+# Link-time optimization for optimized builds, probed from the toolchain rather than assumed.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT BUFFETALLIGATOR_LTO_SUPPORTED OUTPUT BUFFETALLIGATOR_LTO_DETAILS LANGUAGES C CXX)
+if(BUFFETALLIGATOR_LTO_SUPPORTED)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    message(STATUS "Link-time optimization enabled for Release and RelWithDebInfo")
+else()
+    message(STATUS "Link-time optimization unavailable with this toolchain: ${BUFFETALLIGATOR_LTO_DETAILS}")
+endif()
+# ELF consumers that link without LTO still need machine code inside the installed archive.
+if(BUFFETALLIGATOR_LTO_SUPPORTED AND NOT APPLE)
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag(-ffat-lto-objects BUFFETALLIGATOR_HAS_FAT_LTO_OBJECTS)
+endif()
 add_library(alligator STATIC
     src/memory/slice.cpp
     src/memory/alligator.cpp
-    src/memory/buffetmenu.cpp
-    src/memory/placemat.cpp
-    src/memory/pressure.cpp
+    src/memory/chainbuffet.cpp
+    src/kitchen/kitchen.cpp
     src/memory/mmap_allocator.cpp
     src/containers/slicequeue.cpp
     src/containers/slicemap.cpp
     src/containers/priorityslice.cpp
-    src/containers/heapslice.cpp
     src/core/ba_queue.c
     src/network/ba_wire.c
     src/network/ba_network.c
@@ -53,6 +66,9 @@ add_library(alligator STATIC
     src/network/slice_channel.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
+if(BUFFETALLIGATOR_HAS_FAT_LTO_OBJECTS)
+    target_compile_options(alligator PRIVATE $<$<CONFIG:Release,RelWithDebInfo>:-ffat-lto-objects>)
+endif()
 include(cmake/AllocatorBackends.cmake)
 target_include_directories(alligator
     PUBLIC
@@ -93,6 +109,10 @@ if(BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS)
 endif()
 if(BUFFETALLIGATOR_BUILD_BENCHMARKS)
     add_subdirectory(tests/benchmarks)
+endif()
+option(BUFFETALLIGATOR_BUILD_EXPERIMENTS "Build the standalone design experiments" OFF)
+if(BUFFETALLIGATOR_BUILD_EXPERIMENTS)
+    add_subdirectory(experiments)
 endif()
 include(CMakePackageConfigHelpers)
 set(BUFFETALLIGATOR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/alligator")

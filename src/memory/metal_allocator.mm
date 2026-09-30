@@ -1,10 +1,10 @@
 /** --------------------------------------------------------------------------------------------------------- Metal Allocator
  * @file metal_allocator.mm
- * @brief Supplies shared Metal buffers through the arena placement callbacks.
+ * @brief Allocates MetalBuffer storage as shared, device-addressable MTLBuffers on the registered device.
  */
-#include <alligator_allocators.hpp>
+#include <alligator/easymetal.hpp>
 #include <Metal/Metal.h>
-#include <memory>
+#include <cstring>
 
 namespace buffetalligator {
 namespace {
@@ -14,80 +14,74 @@ namespace {
 struct MetalContext {
     id<MTLDevice> device = nil;
     NSUInteger maximum_length = 0;
-    const Placemat* placement = nullptr;
+    const BuffetDescriptor* descriptor = nullptr;
 };
 MetalContext context;
-/** --------------------------------------------------------------------------------------------------------- Allocate
- * @brief Creates one zero-initialized shared Metal slab.
+}
+/** --------------------------------------------------------------------------------------------------------- MetalBuffer Constructor
+ * @brief Creates one zero-initialized shared MTLBuffer and records its contents and gpuAddress.
+ * @param size Buffer size in bytes, rounded up to 64.
  */
-Placemat::Handle* metal_allocate(size_t size, void*) {
+MetalBuffer::MetalBuffer(size_t size) : size_((size + 63) & ~size_t{63}) {
     @autoreleasepool {
-        if (size > context.maximum_length) ALLIGATOR_THROW("Metal slab exceeds maxBufferLength");
-        auto handle = std::make_unique<Placemat::Handle>();
-        id<MTLBuffer> buffer = [context.device newBufferWithLength:size
+        if (size_ > context.maximum_length) ALLIGATOR_THROW("MetalBuffer exceeds maxBufferLength");
+        id<MTLBuffer> native = [context.device newBufferWithLength:size_
             options:MTLResourceStorageModeShared | MTLResourceCPUCacheModeDefaultCache];
-        if (!buffer) ALLIGATOR_THROW("Allocating Metal shared slab failed");
-        handle->substrate_handle = (__bridge_retained void*)buffer;
-        return handle.release();
+        if (!native) ALLIGATOR_THROW("Allocating a shared MTLBuffer failed");
+        host_ = [native contents];
+        std::memset(host_, 0, size_);
+        if (@available(macOS 13.0, iOS 16.0, *)) {
+            address_ = native.gpuAddress;
+        }
+        buffer_ = (__bridge_retained void*)native;
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Deallocate
- * @brief Releases the slab's retained Metal buffer during arena reclamation.
+/** --------------------------------------------------------------------------------------------------------- MetalBuffer Release
+ * @brief Drops the retained MTLBuffer.
  */
-void metal_deallocate(Placemat::Handle* handle, void*) {
+void MetalBuffer::release() {
+    if (!buffer_) return;
     @autoreleasepool {
-        id<MTLBuffer> buffer = (__bridge_transfer id<MTLBuffer>)handle->substrate_handle;
-        (void)buffer;
+        id<MTLBuffer> native = (__bridge_transfer id<MTLBuffer>)buffer_;
+        (void)native;
     }
-}
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief Returns a shared Metal buffer's persistent host address.
- */
-void* metal_host_pointer(Placemat::Handle* handle) {
-    return [(__bridge id<MTLBuffer>)handle->substrate_handle contents];
-}
-/** --------------------------------------------------------------------------------------------------------- Context
- * @brief Returns the process-lifetime Metal placement context.
- */
-void* metal_context() { return &context; }
+    buffer_ = nullptr;
+    host_ = nullptr;
 }
 /** --------------------------------------------------------------------------------------------------------- Register Type
- * @brief Registers shared Metal allocation callbacks before arena startup.
+ * @brief Retains the caller's device, requires gpuAddress support, and registers the descriptor once.
+ * @param device A bridged id<MTLDevice>.
+ * @return The registered descriptor.
  */
-const Placemat* MetalAllocator::register_type(void* device) {
+const BuffetDescriptor* MetalBuffer::register_type(void* device) {
     @autoreleasepool {
-        if (context.placement) ALLIGATOR_THROW("The Metal placement is already registered");
+        if (context.descriptor) ALLIGATOR_THROW("The Metal buffet type is already registered");
         if (!device) ALLIGATOR_THROW("Metal registration requires an MTLDevice");
+        if (@available(macOS 13.0, iOS 16.0, *)) {
+        } else {
+            ALLIGATOR_THROW("MetalBuffer device addresses require macOS 13 or iOS 16");
+        }
         context.device = (__bridge id<MTLDevice>)device;
         context.maximum_length = context.device.maxBufferLength;
-        if (context.maximum_length < 64ull * 1024 * 1024) {
-            ALLIGATOR_THROW("The Metal device cannot allocate a 64 MiB slab");
+        if (context.maximum_length < default_size()) {
+            ALLIGATOR_THROW("The Metal device cannot allocate a 64 MiB buffer");
         }
-        context.placement = BuffetMenu::get(BuffetMenu::register_type(
-            "metal", 64ull * 1024 * 1024, 64, &metal_allocate, &metal_deallocate,
-            &metal_host_pointer, &metal_context
-        ));
-        return context.placement;
+        const BuffetDescriptor* descriptor =
+            BuffetDescriptors::descriptor_for(static_cast<MetalBuffer*>(nullptr));
+        if (BuffetDescriptors::register_descriptor(descriptor) != type_idx()) {
+            ALLIGATOR_THROW("MetalBuffer must be the first registered buffet type after the built-ins; "
+                            "register it before any other custom type");
+        }
+        context.descriptor = descriptor;
+        return context.descriptor;
     }
-}
-/** --------------------------------------------------------------------------------------------------------- Buffer
- * @brief Returns the borrowed native buffer for a Slice from this placement.
- */
-void* MetalAllocator::buffer(const Slice& slice) {
-    return Placemat::get_for(&slice)->substrate_handle;
-}
-/** --------------------------------------------------------------------------------------------------------- Buffer Offset
- * @brief Resolves a Slice's offset inside its native Metal buffer.
- */
-uint64_t MetalAllocator::buffer_offset(const Slice& slice) {
-    return static_cast<const char*>(slice.raw()) -
-        static_cast<const char*>([(__bridge id<MTLBuffer>)buffer(slice) contents]);
 }
 /** --------------------------------------------------------------------------------------------------------- Memory Usage
  * @brief Queries native Metal allocation and working-set counters.
+ * @return The device's memory usage.
  */
-DeviceMemoryUsage MetalAllocator::memory_usage() {
-    if (!context.placement) ALLIGATOR_THROW("Register the Metal placement before querying its memory");
+DeviceMemoryUsage MetalBuffer::memory_usage() {
+    if (!context.descriptor) ALLIGATOR_THROW("Register the Metal buffet type before querying its memory");
     return {std::nullopt, std::nullopt, context.device.currentAllocatedSize,
             context.device.recommendedMaxWorkingSetSize};
 }

@@ -3,6 +3,8 @@
  * @brief Bridges the public channel operations and the C arena boundary to the private C reactor.
  */
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
+#include <cstring>
 extern "C" {
 #include "network/ba_network.h"
 }
@@ -31,7 +33,7 @@ struct SliceNetworkAccess {
     static Slice take(ba_slice_t* descriptor) noexcept {
         Slice slice;
         if (descriptor->id != BA_NULL_ID) {
-            slice.id_ = static_cast<SliceId>(descriptor->id);
+            slice.id_ = static_cast<uint32_t>(descriptor->id);
         }
         descriptor->id = BA_NULL_ID;
         return slice;
@@ -41,7 +43,7 @@ struct SliceNetworkAccess {
      */
     static int claim(uint32_t type, size_t bytes, uint32_t flags, ba_slice_t* out) noexcept {
         try {
-            const Placemat* placement = BuffetMenu::get(static_cast<uint16_t>(type));
+            const BuffetDescriptor* placement = BuffetDescriptors::get(type);
             if (!placement) return -1;
             Slice slice(bytes, (flags & BA_CLAIM_NOVEL) != 0, placement);
             out->id = slice.pool_index();
@@ -57,7 +59,7 @@ struct SliceNetworkAccess {
     static void release(ba_slice_t* descriptor) noexcept {
         if (descriptor->id == BA_NULL_ID) return;
         Slice slice;
-        slice.id_ = static_cast<SliceId>(descriptor->id);
+        slice.id_ = static_cast<uint32_t>(descriptor->id);
         descriptor->id = BA_NULL_ID;
         slice.free();
     }
@@ -67,10 +69,10 @@ struct SliceNetworkAccess {
     static uint32_t placement_of(const ba_slice_t* descriptor) noexcept {
         if (descriptor->id == BA_NULL_ID) return UINT32_MAX;
         Slice view;
-        view.id_ = static_cast<SliceId>(descriptor->id);
-        const Placemat* placement = view.placement();
+        view.id_ = static_cast<uint32_t>(descriptor->id);
+        const BuffetDescriptor* placement = view.placement();
         view.id_ = 0xFFFFFFFFu;
-        return placement ? placement->type() : UINT32_MAX;
+        return placement ? placement->type_idx : UINT32_MAX;
     }
     /** ------------------------------------------------------------------------------------------- Novel Of
      * @brief Reports whether a live descriptor's backing is a dedicated novel buffer.
@@ -78,7 +80,7 @@ struct SliceNetworkAccess {
     static int novel_of(const ba_slice_t* descriptor) noexcept {
         if (descriptor->id == BA_NULL_ID) return 0;
         Slice view;
-        view.id_ = static_cast<SliceId>(descriptor->id);
+        view.id_ = static_cast<uint32_t>(descriptor->id);
         const int novel = view.is_novel() ? 1 : 0;
         view.id_ = 0xFFFFFFFFu;
         return novel;
@@ -89,7 +91,7 @@ struct SliceNetworkAccess {
     static size_t size_of(const ba_slice_t* descriptor) noexcept {
         if (descriptor->id == BA_NULL_ID) return 0;
         Slice view;
-        view.id_ = static_cast<SliceId>(descriptor->id);
+        view.id_ = static_cast<uint32_t>(descriptor->id);
         const size_t bytes = view.size_bytes();
         view.id_ = 0xFFFFFFFFu;
         return bytes;
@@ -100,7 +102,7 @@ struct SliceNetworkAccess {
     static void* ptr_of(const ba_slice_t* descriptor) noexcept {
         if (descriptor->id == BA_NULL_ID) return nullptr;
         Slice view;
-        view.id_ = static_cast<SliceId>(descriptor->id);
+        view.id_ = static_cast<uint32_t>(descriptor->id);
         void* ptr = view.raw();
         view.id_ = 0xFFFFFFFFu;
         return ptr;
@@ -155,16 +157,18 @@ void* ba_slice_ptr(const ba_slice_t* descriptor) {
     return buffetalligator::SliceNetworkAccess::ptr_of(descriptor);
 }
 const char* ba_placement_name(uint32_t type) {
-    const size_t count = buffetalligator::BuffetMenu::count();
-    if (type >= count) return nullptr;
-    return buffetalligator::BuffetMenu::get(static_cast<uint16_t>(type))->name();
+    const buffetalligator::BuffetDescriptor* placement = buffetalligator::BuffetDescriptors::get(type);
+    return placement ? placement->type_name : nullptr;
 }
 /** --------------------------------------------------------------------------------------------------------- Resolve Network Placement
  * @brief Resolves a received placement name to its registered identifier.
  */
 int ba_net_placement(const char* name) {
-    const auto placement = buffetalligator::BuffetMenu::get(std::string(name));
-    return placement ? placement->type() : -1;
+    for (size_t type = 0; type < buffetalligator::BuffetDescriptors::count(); ++type) {
+        const buffetalligator::BuffetDescriptor* placement = buffetalligator::BuffetDescriptors::get(type);
+        if (placement && std::strcmp(placement->type_name, name) == 0) return static_cast<int>(type);
+    }
+    return -1;
 }
 /** --------------------------------------------------------------------------------------------------------- Deliver
  * @brief Contains user exceptions at the C callback boundary while preserving Slice cleanup.

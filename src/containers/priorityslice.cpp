@@ -4,7 +4,8 @@
  * the header, and in natural order a per-block cache that confines every scan to one block.
  */
 #include <alligator.hpp>
-#include "simd.hpp"
+#include <alligator/containers.hpp>
+#include <simd.hpp>
 
 namespace buffetalligator {
 namespace {
@@ -210,7 +211,7 @@ PrioritySlice::PrioritySlice(
     size_t capacity,
     Compare compare,
     bool novel_buffer,
-    const Placemat* placement
+    const BuffetDescriptor* placement
 ) : storage_(checked_bytes(capacity), novel_buffer, placement)
 , header_(storage_.data<uint64_t>())
 , max_cache_(header_ + HEADER_WORDS)

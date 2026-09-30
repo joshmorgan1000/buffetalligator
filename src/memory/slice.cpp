@@ -5,57 +5,18 @@
 #include <alligator.hpp>
 #include <containers/bitplane.hpp>
 #include <memory/tracker.hpp>
-#include <memory/plate.hpp>
 #include <simd.hpp>
 #include <algorithm>
 #include <cstring>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Default Placement
- * @brief Returns the default placement for slices, which is determined by the system's
- * capabilities.
- * @return The default `Placement` enum value for slices.
- */
-const Placemat* Slice::default_placement() {
-    return BuffetMenu::default_placement();
-}
-/** --------------------------------------------------------------------------------------------------------- SliceId Slice
- * @brief Cuts a view from this identifier into a fresh pool slot, so a plate's base slot is never
- * owned by the Slice handed out.
- * @param offset The byte offset of the view.
- * @param size The view length in bytes, or SIZE_MAX for the remainder.
- * @return The view, holding one reference on the backing plate.
- */
-Slice SliceId::slice(size_t offset, size_t size) const {
-    Alligator& alligator = Alligator::inst();
-    const SliceId view_id = alligator.next_id();
-    const GPUBuf base = *alligator.gpubuf(*this);
-    const uint32_t length = size == SIZE_MAX ? base.size - static_cast<uint32_t>(offset) : static_cast<uint32_t>(size);
-    *alligator.gpubuf(view_id) = GPUBuf{
-        base.address, length, base.offset + static_cast<uint32_t>(offset)};
-    *alligator.host_ptr(view_id) = HostPtr{static_cast<uint8_t*>(alligator.host_ptr(*this)->ptr) + offset};
-    alligator.plate(view_id) = alligator.plate(*this);
-    return Slice(view_id);
-}
-/** --------------------------------------------------------------------------------------------------------- Constructor - SliceId
- * @brief Constructs a slice object from an existing SliceId.
- * @param slice_id The identifier of the slice.
- */
-Slice::Slice(SliceId slice_id) : id_(slice_id) {
-    if (slice_id == static_cast<SliceId>(0xFFFFFFFFu)) return;
-    if (!Alligator::inst().occupancy_->is_set(slice_id.id_)) {
-        id_ = 0xFFFFFFFFu;
-        return;
-    }
-    Alligator::inst().plate(slice_id)->ref_count.fetch_add(1, std::memory_order_relaxed);
-}
 /** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
  * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The slice is
  * guaranteed to be zero-initialized.
  * @param size The size of the slice in bytes.
  */
-Slice::Slice(size_t size, const Placemat* placement) {
-    *this = placement->current_plate()->claim(size, false);
+Slice::Slice(size_t size, const BuffetDescriptor* placement) {
+    SliceEntry* entry = ChainBuffet::chain(placement)->claim(size);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - Fresh Claim
  * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena, with
@@ -66,7 +27,7 @@ Slice::Slice(size_t size, const Placemat* placement) {
  * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
  * reduce fragmentation in the arena.
  */
-Slice::Slice(size_t size, bool novel_buffer, const Placemat* placement) {
+Slice::Slice(size_t size, bool novel_buffer, const BuffetDescriptor* placement) {
     *this = placement->current_plate()->claim(size, novel_buffer);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
@@ -205,7 +166,7 @@ void Slice::resize(
     size_t new_size,
     bool preserve_data,
     bool novel_buffer,
-    const Placemat* placement
+    const BuffetDescriptor* placement
 ) {
     if (is_null()) {
         *this = Slice(new_size, novel_buffer, placement);
@@ -626,6 +587,6 @@ void Placemat::record_slab_release(const Plate* plate) {
  * @param plate The plate to free.
  */
 void Placemat::call_free_later(Plate* plate) {
-    Alligator::inst().submit([](Plate* later) { later->free(); }, plate);
+    Kitchen::inst().submit([](Plate* later) { later->free(); }, plate);
 }
 } // namespace buffetalligator

@@ -8,6 +8,7 @@
  */
 #include <logging.hpp>
 #include <alligator.hpp>
+#include <alligator/containers.hpp>
 #include <openssl/cmac.h>
 #include <openssl/core_names.h>
 #include <openssl/evp.h>

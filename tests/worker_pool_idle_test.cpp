@@ -1,89 +1,131 @@
 /** --------------------------------------------------------------------------------------------------------- Worker Pool Idle Test
  * @file worker_pool_idle_test.cpp
- * @brief Verifies idle workers park, resume queued work, and stop during process teardown.
+ * @brief Verifies idle workers park, resume queued work, run completion callbacks, and stop during
+ * process teardown.
  */
-#include <alligator.hpp>
+#include <alligator/kitchen.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <atomic>
 #include <barrier>
 #include <chrono>
 #include <ctime>
-#include <future>
 #include <thread>
-#include <vector>
 
 namespace {
-using buffetalligator::Alligator;
-using buffetalligator::make_task;
+using buffetalligator::Kitchen;
+using buffetalligator::Task;
+using buffetalligator::TaskCountdown;
 using functional::require;
 constexpr size_t producer_count = 4;
 constexpr size_t tasks_per_producer = 64;
 using CompletionCounts = std::array<std::atomic<unsigned>, producer_count * tasks_per_producer>;
 /** --------------------------------------------------------------------------------------------------------- Await
- * @brief Requires a submitted task to complete without another submission waking the pool.
+ * @brief Requires queued work to finish within two seconds without another submission waking the pool.
+ * @param countdown The countdown armed for that work.
  */
-template<typename Result>
-Result await(std::future<Result>& future) {
-    require(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready,
-        "queued task did not wake a worker");
-    return future.get();
+void await(TaskCountdown& countdown) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (countdown.pending.load(std::memory_order_acquire) != 0) {
+        require(std::chrono::steady_clock::now() < deadline, "queued task did not wake a worker");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    countdown.wait();
 }
-/** --------------------------------------------------------------------------------------------------------- Advance
- * @brief Checks task-chain ordering and records each completed stage.
+/** --------------------------------------------------------------------------------------------------------- Stage
+ * @struct Stage
+ * @brief One step of an ordered task chain: the shared stage counter and the value it must see.
  */
-size_t advance(std::atomic<size_t>* completed, size_t expected) {
-    const size_t previous = completed->fetch_add(1, std::memory_order_relaxed);
-    require(previous == expected, "task chain ran out of order or more than once");
-    return previous + 1;
+struct Stage {
+    std::atomic<size_t>* completed;
+    size_t expected;
+    size_t result = 0;
+};
+/** --------------------------------------------------------------------------------------------------------- Advance
+ * @brief Checks chain ordering and records each completed stage.
+ * @param context The Stage being run.
+ */
+void advance(void* context) {
+    Stage* stage = static_cast<Stage*>(context);
+    const size_t previous = stage->completed->fetch_add(1, std::memory_order_relaxed);
+    require(previous == stage->expected, "task chain ran out of order or more than once");
+    stage->result = previous + 1;
+}
+/** --------------------------------------------------------------------------------------------------------- Chain
+ * @struct Chain
+ * @brief A waiter-pool stage whose completion queues a worker stage, whose completion queues a final one.
+ */
+struct Chain {
+    std::atomic<size_t> completed{0};
+    std::array<Stage, 3> stages{Stage{&completed, 0}, Stage{&completed, 1}, Stage{&completed, 2}};
+    TaskCountdown finished{1};
+};
+/** --------------------------------------------------------------------------------------------------------- Worker Stage Done
+ * @brief Continuation of the worker stage: queues the final stage on the worker pool.
+ * @param context The Chain.
+ */
+void worker_stage_done(void* context) {
+    Chain* chain = static_cast<Chain*>(context);
+    Kitchen::inst().submit(&advance, &chain->stages[2], &TaskCountdown::arrive, &chain->finished);
+}
+/** --------------------------------------------------------------------------------------------------------- Waiting Stage Done
+ * @brief Continuation of the waiter-pool stage: queues the worker stage.
+ * @param context The Chain.
+ */
+void waiting_stage_done(void* context) {
+    Chain* chain = static_cast<Chain*>(context);
+    Kitchen::inst().submit(&advance, &chain->stages[1], &worker_stage_done, chain);
 }
 /** --------------------------------------------------------------------------------------------------------- Continuations
- * @brief Starts a cold worker pool from a waiting-task continuation before any regular submission.
+ * @brief Starts a cold worker pool from a waiter-pool completion callback before any regular submission.
  */
 void continuations() {
-    std::atomic<size_t> completed{0};
-    auto [waiting_task, waiting_future] = make_task<size_t>(advance, &completed, size_t{0});
-    auto [worker_task, worker_future] = make_task<size_t>(advance, &completed, size_t{1});
-    auto final_future = worker_task.after_this<size_t>(advance, &completed, size_t{2});
-    waiting_task.after_this(std::move(worker_task));
-    Alligator::inst().submit_waiting(std::move(waiting_task));
-    require(await(waiting_future) == 1, "waiting task returned the wrong result");
-    require(await(worker_future) == 2, "waiting continuation returned the wrong result");
-    require(await(final_future) == 3, "worker continuation returned the wrong result");
+    Chain chain;
+    Kitchen::inst().submit_waiting(&advance, &chain.stages[0], &waiting_stage_done, &chain);
+    await(chain.finished);
+    require(chain.stages[0].result == 1 && chain.stages[1].result == 2 && chain.stages[2].result == 3,
+        "chained completion callbacks returned the wrong results");
 }
 /** --------------------------------------------------------------------------------------------------------- Idle Wakeups
- * @brief Alternates callable and preconstructed submissions after workers have time to park.
+ * @brief Alternates single and bulk submissions after workers have time to park.
  */
 void idle_wakeups() {
     std::atomic<size_t> completed{0};
     for (size_t round = 0; round < 16; ++round) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        auto callable_future = Alligator::inst().submit<size_t>(advance, &completed, round * 2);
-        require(await(callable_future) == round * 2 + 1, "idle callable result differs");
-        auto [task, task_future] = make_task<size_t>(advance, &completed, round * 2 + 1);
-        Alligator::inst().submit(std::move(task));
-        require(await(task_future) == round * 2 + 2, "preconstructed task result differs");
+        Stage single{&completed, round * 2};
+        TaskCountdown single_done(1);
+        Kitchen::inst().submit(&advance, &single, &TaskCountdown::arrive, &single_done);
+        await(single_done);
+        require(single.result == round * 2 + 1, "idle single submission result differs");
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        Stage bulk{&completed, round * 2 + 1};
+        TaskCountdown bulk_done(1);
+        const Task batch[1] = {Task{&advance, &bulk, &TaskCountdown::arrive, &bulk_done}};
+        Kitchen::inst().submit_bulk(batch, 1);
+        await(bulk_done);
+        require(bulk.result == round * 2 + 2, "idle bulk submission result differs");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Complete Once
  * @brief Records execution of a unique task from a concurrent submission burst.
+ * @param context The task's own completion counter.
  */
-void complete_once(CompletionCounts* completed, size_t task_index) {
-    require((*completed)[task_index].fetch_add(1, std::memory_order_relaxed) == 0,
-        "concurrent submission executed more than once");
+void complete_once(void* context) {
+    std::atomic<unsigned>* count = static_cast<std::atomic<unsigned>*>(context);
+    require(count->fetch_add(1, std::memory_order_relaxed) == 0, "concurrent submission executed more than once");
 }
 /** --------------------------------------------------------------------------------------------------------- Produce
  * @brief Submits and awaits one producer's independent batch of tasks.
  */
 void produce(CompletionCounts* completed, std::barrier<>* start, size_t producer_index) {
-    std::vector<std::future<void>> futures;
-    futures.reserve(tasks_per_producer);
+    TaskCountdown finished(static_cast<uint32_t>(tasks_per_producer));
     start->arrive_and_wait();
     for (size_t task_index = 0; task_index < tasks_per_producer; ++task_index) {
-        futures.push_back(Alligator::inst().submit(complete_once, completed,
-            producer_index * tasks_per_producer + task_index));
+        Kitchen::inst().submit(&complete_once, &(*completed)[producer_index * tasks_per_producer + task_index],
+            &TaskCountdown::arrive, &finished);
     }
-    for (std::future<void>& future : futures) await(future);
+    await(finished);
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Producers
  * @brief Verifies concurrent queue wakeups preserve exactly-once task completion.

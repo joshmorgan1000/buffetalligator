@@ -1,394 +1,165 @@
 /** --------------------------------------------------------------------------------------------------------- Buffet Alligator
  * @file alligator.cpp
- * @brief Implementation of the Alligator class.
+ * @brief Implementation of the Alligator class: Slice tables and memory management only; the
+ * thread pool lives in the Kitchen.
  */
 #include <alligator.hpp>
+#include <alligator/kitchen.hpp>
 #include <loggingutils.hpp>
-#include <memory/pressure.hpp>
 #include <memory/tracker.hpp>
 #include <containers/bitplane.hpp>
-#include <memory/plate.hpp>
 #include <new>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Next Slice ID
- * @brief Generate the next available slice ID.
- * @return The next available slice ID.
+/** --------------------------------------------------------------------------------------------------------- Next ID
+ * @brief Generates the next unique slice ID.
+ * @return The next slice ID.
  */
-SliceId Alligator::next_id() {
+uint32_t Alligator::next_id(const BuffetDescriptor* placement) {
+    uint8_t last = last_region.load(std::memory_order_acquire);
+    size_t tries = 0;
     while (true) {
-        uint32_t current = static_cast<uint32_t>(
-            next_slice_.fetch_add(1, std::memory_order_relaxed) & ((1 << POOL_BITS) - 1)
-        );
-        if (!occupancy_->test_and_set(current)) {
-            return static_cast<SliceId>(current);
-        }
-    }
-}
-/** --------------------------------------------------------------------------------------------------------- Maybe Wakeup
- * @brief Wakes up the Alligator if necessary.
- */
-void Alligator::maybe_wakeup() {
-    if (active_workers_.load(std::memory_order_acquire) == 0) {
-        thread_change_queue_.enqueue(ThreadChangeReq{
-            std::make_unique<size_t>(0),
-            nullptr
-        });
-    }
-}
-/** ------------------------------------------------------------------------------------------- Worker Thread
- * @struct WorkerThread
- * @brief Runs queued tasks and parks until more work or a stop wakeup arrives.
- */
-struct Alligator::WorkerThread {
-    /// @brief The owning Alligator, handed in so the thread never touches inst().
-    Alligator* alligator;
-    /// @brief The unique identifier for this worker thread.
-    int id;
-    /// @brief Local stop flag for this worker thread.
-    std::atomic<bool> stop{false};
-    /// @brief The thread object, started by start() once the worker is published in its slot.
-    std::thread thread_;
-    /** ----------------------------------------------------------------------------- Work Loop
-     * @brief Blocks for tasks, requests workers for the backlog, and exits when stopped.
-     */
-    void work() {
-        Alligator& al = *alligator;
-        while (!al.stop_signal_.load(std::memory_order_acquire)
-               && !stop.load(std::memory_order_acquire)) {
-            Task task;
-            al.task_queue_.wait_dequeue(task);
-            if (al.stop_signal_.load(std::memory_order_acquire)
-                || stop.load(std::memory_order_acquire)) {
+        Region* r = regions[last].load(std::memory_order_acquire);
+        while (r == nullptr || r == reinterpret_cast<Region*>(-1)) {
+            Region* expected = nullptr;
+            if (regions[last].compare_exchange_weak(expected, reinterpret_cast<Region*>(-1), std::memory_order_acq_rel)) {
+                region_backing[last] = std::make_unique<SliceRegion>();
+                r = region_backing[last].get()->host_ptr;
+                regions[last].store(r, std::memory_order_release);
                 break;
             }
-            const size_t current_tasks = al.task_queue_.size_approx();
-            const size_t active_threads = al.active_workers_.load(std::memory_order_acquire);
-            if (current_tasks >= active_threads
-                && active_threads < al.max_thread_count_.load(std::memory_order_acquire)
-            ) {
-                al.thread_change_queue_.enqueue({
-                    std::make_unique<size_t>(active_threads),
-                    nullptr
-                });
-            }
-            task.execute();
-            if (task.after_this_task != nullptr) {
-                al.task_queue_.enqueue(std::move(*task.after_this_task));
-            }
+            std::this_thread::yield();
+            r = regions[last].load(std::memory_order_acquire);
         }
-        al.active_workers_.fetch_sub(1, std::memory_order_release);
-        al.thread_change_queue_.enqueue({
-            nullptr,
-            std::make_unique<int>(id)
-        });
-    }
-    /** ----------------------------------------------------------------------------- Start
-     * @brief Starts the thread; called only after the worker is published in its slot.
-     */
-    void start() {
-        thread_ = std::thread(&WorkerThread::work, this);
-    }
-    /** ----------------------------------------------------------------------------- Constructor
-     * @brief Constructs an unstarted worker.
-     * @param alligator_ The owning Alligator.
-     * @param id_ This worker's key in the worker map.
-     */
-    WorkerThread(Alligator* alligator_, int id_) : alligator(alligator_), id(id_) {}
-    /** ----------------------------------------------------------------------------- Destructor
-     * @brief Destroys the WorkerThread object and stops the thread.
-     */
-    ~WorkerThread() {
-        stop.store(true, std::memory_order_release);
-        if (thread_.joinable()) {
-            thread_.join();
+        SliceEntry* entry = r->claim(skip_at_most.load(std::memory_order_acquire));
+        if (entry != nullptr) {
+            return ((((entry - r->slice_table()) << 6)
+                | (last & 0x3f)) << 3) | (placement->type_idx & 0x7);
         }
-    }
-    WorkerThread(const WorkerThread&) = delete;
-    WorkerThread& operator=(const WorkerThread&) = delete;
-};
-/** --------------------------------------------------------------------------------------------------------- Thread Changer
- * @struct ThreadChanger
- * @brief Manages the thread that handles dynamic changes to the number of worker and waiter threads.
- */
-struct Alligator::ThreadChanger {
-    /// @brief The owning Alligator, handed in so the thread never touches inst().
-    Alligator* alligator;
-    /// @brief The thread object for the thread changer.
-    std::thread thread_;
-    /// @brief The stop signal for the thread changer.
-    std::atomic<bool> stop{false};
-    /** ------------------------------------------------------------------------------------------- Work Loop
-     * @brief The main work loop for the thread changer.
-     */
-    void work() {
-        Alligator& al = *alligator;
-        while (!al.stop_signal_.load(std::memory_order_acquire)
-                && !stop.load(std::memory_order_acquire)
-        ) {
-            ThreadChangeReq request;
-            al.thread_change_queue_.wait_dequeue(request);
-            if (al.stop_signal_.load(std::memory_order_acquire)
-                || stop.load(std::memory_order_acquire)) {
-                break;
-            }
-            if (request.shutdown_id) {
-                int id_to_shutdown = *request.shutdown_id;
-                auto it = al.worker_threads_.find(id_to_shutdown);
-                if (it != al.worker_threads_.end()) {
-                    al.worker_threads_.erase(it);
-                }
-                continue;
-            }
-            if (request.current_active) {
-                if (*request.current_active !=
-                        al.active_workers_.load(std::memory_order_acquire)
-                ) {
-                    continue;
-                }
-                al.active_workers_.fetch_add(1, std::memory_order_acq_rel);
-                int new_id = rand();
-                while (al.worker_threads_.find(new_id)
-                        != al.worker_threads_.end()
-                ) {
-                    new_id = rand();
-                }
-                auto new_worker = std::make_unique<WorkerThread>(&al, new_id);
-                WorkerThread* worker_ptr = new_worker.get();
-                al.worker_threads_[new_id] = std::move(new_worker);
-                worker_ptr->start();
-                continue;
+        // A failed CAS leaves the winner's region in `last`, so concurrent advances move one region, not N.
+        const uint8_t desired = (last + 1) & 0x3f;
+        if (last_region.compare_exchange_strong(last, desired, std::memory_order_acq_rel)) {
+            last = desired;
+        }
+        if (++tries == 64) {
+            tries = 0;
+            if (skip_at_most.fetch_add(1, std::memory_order_acq_rel) == 1024) {
+                LOG_WARN_STREAM << "Alligator: advanced skip_at_most beyond 1024";
             }
         }
     }
-    /** ------------------------------------------------------------------------------------------- Start
-     * @brief Starts the thread changer by launching its work loop in a separate thread.
-     */
-    void start() {
-        thread_ = std::thread(&ThreadChanger::work, this);
-    }
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs an unstarted thread changer.
-     * @param alligator_ The owning Alligator.
-     */
-    ThreadChanger(Alligator* alligator_) : alligator(alligator_) {}
-    ~ThreadChanger() {
-        stop.store(true, std::memory_order_release);
-        alligator->thread_change_queue_.enqueue(ThreadChangeReq{});
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-    }
-    ThreadChanger(const ThreadChanger&) = delete;
-    ThreadChanger& operator=(const ThreadChanger&) = delete;
-};
-/** ------------------------------------------------------------------------------------------- Waiting Thread
- * @struct WaitingThread
- * @brief Runs waiting tasks and parks until more work or a stop wakeup arrives.
- */
-struct Alligator::WaitingThread {
-    /// @brief The owning Alligator, handed in so the thread never touches inst().
-    Alligator* alligator;
-    /// @brief The thread object, started by start() once the worker is published in its slot.
-    std::thread thread_;
-    /// @brief The stop signal for this waiting thread.
-    std::atomic<bool> stop{false};
-    /** ----------------------------------------------------------------------------- Work Loop
-     * @brief Blocks for waiting tasks and forwards their continuations to the worker pool.
-     */
-    void work() {
-        Alligator& al = *alligator;
-        while (!al.stop_signal_.load(std::memory_order_acquire)
-            && !stop.load(std::memory_order_acquire)
-        ) {
-            Task task;
-            al.waiting_task_queue_.wait_dequeue(task);
-            if (al.stop_signal_.load(std::memory_order_acquire)
-                || stop.load(std::memory_order_acquire)) {
-                break;
-            }
-            task.execute();
-            if (task.after_this_task != nullptr) {
-                al.submit(std::move(*task.after_this_task));
-            }
-        }
-    }
-    /** ----------------------------------------------------------------------------- Start
-     * @brief Starts the thread; called only after the waiting thread is published
-     * in its slot.
-     */
-    void start() {
-        thread_ = std::thread(&WaitingThread::work, this);
-    }
-    /** ----------------------------------------------------------------------------- Constructor
-     * @brief Constructs an unstarted waiting thread.
-     * @param alligator_ The owning Alligator.
-     */
-    WaitingThread(Alligator* alligator_) : alligator(alligator_) {}
-    /** ----------------------------------------------------------------------------- Destructor
-     * @brief Destroys the WaitingThread object and stops the thread.
-     */
-    ~WaitingThread() {
-        stop.store(true, std::memory_order_release);
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-    }
-    WaitingThread(const WaitingThread&) = delete;
-    WaitingThread& operator=(const WaitingThread&) = delete;
-};
-/** --------------------------------------------------------------------------------------------------------- Alligator Constructor
- * @brief Constructs a new Alligator object and initializes its resources.
- */
-Alligator::Alligator() {
-    plates_ = static_cast<Plate**>(std::aligned_alloc(64, (1 << POOL_BITS) * sizeof(Plate*)));
-    host_ptrs_ = static_cast<HostPtr*>(std::aligned_alloc(64, (1 << POOL_BITS) * sizeof(HostPtr)));
-    const Placemat* table_placement = VulkanKernel::table_placement();
-    const size_t table_bytes = (1 << POOL_BITS) * sizeof(GPUBuf);
-    auto [table_host, table_substrate] = table_placement->allocate()(
-        table_bytes, table_placement->get_context()());
-    gpu_table_ = static_cast<GPUBuf*>(table_host);
-    occupancy_ = std::make_unique<ConcurrentBitplane>(1 << POOL_BITS);
-    gpubufs_ = new Plate(const_cast<Placemat*>(table_placement), table_bytes, table_substrate, true);
-    plate(SliceId(gpubufs_->slice_id.load(std::memory_order_acquire))) = gpubufs_;
-    for (size_t i = 0; i < std::thread::hardware_concurrency(); ++i) {
-        waiting_threads_.emplace_back(std::make_unique<WaitingThread>(this));
-        waiting_threads_.back()->start();
-    }
-    thread_changer_ = std::make_unique<ThreadChanger>(this);
-    thread_changer_->start();
 }
-/** --------------------------------------------------------------------------------------------------------- Claim
- * @brief Claims a slice from the occupancy bitplane.
- * @return The ID of the claimed slice.
+/** --------------------------------------------------------------------------------------------------------- Entry
+ * @brief Returns a reference to the SliceEntry corresponding to the given slice.
+ * @param slice The slice to resolve.
+ * @return Reference to the SliceEntry.
  */
-Plate*& Alligator::plate(SliceId slice_id) {
-    return plates_[slice_id.id_];
+SliceEntry& Alligator::entry(const Slice& slice) {
+    uint32_t slice_id = slice.id() >> 3;  // first 3 bits are the BuffetDescriptor
+    const uint8_t region_id = slice_id & 0x3f;
+    const uint32_t slot_id = slice_id >> 6;
+    return regions[region_id].load(std::memory_order_acquire)->slots[slot_id];
 }
-/** --------------------------------------------------------------------------------------------------------- Plate (const)
- * @brief Retrieves the plate associated with the given slice ID.
- * @param slice_id The ID of the slice.
- * @return A pointer to the plate if it exists, nullptr otherwise.
+/** --------------------------------------------------------------------------------------------------------- Entry (const)
+ * @brief Returns a const reference to the SliceEntry corresponding to the given slice.
+ * @param slice The slice to resolve.
+ * @return Const reference to the SliceEntry.
  */
-const Plate*& Alligator::plate(const SliceId& slice_id) const {
-    return const_cast<const Plate*&>(plates_[slice_id.id_]);
-}
-/** --------------------------------------------------------------------------------------------------------- HostPtr
- * @brief Retrieves the host pointer entry stored for the given slice ID.
- * @param slice_id The ID of the slice.
- * @return The host pointer entry's slot in the value table.
- */
-HostPtr* Alligator::host_ptr(SliceId slice_id) {
-    return host_ptrs_ + slice_id.id_;
-}
-/** --------------------------------------------------------------------------------------------------------- HostPtr (const)
- * @brief Retrieves the host pointer entry stored for the given slice ID.
- * @param slice_id The ID of the slice.
- * @return The host pointer entry's slot in the value table.
- */
-const HostPtr* Alligator::host_ptr(const SliceId& slice_id) const {
-    return host_ptrs_ + slice_id.id_;
+const SliceEntry& Alligator::entry(const Slice& slice) const {
+    uint32_t slice_id = slice.id() >> 3;  // first 3 bits are the BuffetDescriptor
+    const uint8_t region_id = slice_id & 0x3f;
+    const uint32_t slot_id = slice_id >> 6;
+    return regions[region_id].load(std::memory_order_acquire)->slots[slot_id];
 }
 /** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @brief Retrieves the GPU buffer entry stored for the given slice ID.
- * @param slice_id The ID of the slice.
- * @return The GPUBuf entry's slot in the value table.
+ * @brief Returns the GPUBuf corresponding to the given slice.
+ * @param slice The slice to resolve.
+ * @return The slice's GPUBuf entry.
  */
-GPUBuf* Alligator::gpubuf(SliceId slice_id) {
-    return gpu_table_ + slice_id.id_;
+GPUBuf* Alligator::gpubuf(const Slice& slice) {
+    const uint32_t slice_id = slice.id() >> 3;
+    return &regions[slice_id & 0x3f].load(std::memory_order_acquire)->gpu_slots[slice_id >> 6];
 }
 /** --------------------------------------------------------------------------------------------------------- GPUBuf (const)
- * @brief Retrieves the GPU buffer entry stored for the given slice ID.
- * @param slice_id The ID of the slice.
- * @return The GPUBuf entry's slot in the value table.
+ * @brief Returns the const GPUBuf corresponding to the given slice.
+ * @param slice The slice to resolve.
+ * @return The slice's const GPUBuf entry.
  */
-const GPUBuf* Alligator::gpubuf(const SliceId& slice_id) const {
-    return gpu_table_ + slice_id.id_;
+const GPUBuf* Alligator::gpubuf(const Slice& slice) const {
+    const uint32_t slice_id = slice.id() >> 3;
+    return &regions[slice_id & 0x3f].load(std::memory_order_acquire)->gpu_slots[slice_id >> 6];
 }
 /** --------------------------------------------------------------------------------------------------------- Destroy
- * @brief Destroys the resources associated with the given slice ID.
- * @param slice_id The ID of the slice.
+ * @brief Destroys the given slice.
+ * @param slice The slice to destroy.
  */
-void Alligator::destroy(SliceId slice_id) {
-    Plate* p = plate(slice_id);
-    plate(slice_id) = nullptr;
-    *gpubuf(slice_id) = GPUBuf{};
-    *host_ptr(slice_id) = HostPtr{};
-    if (!occupancy_->test_and_clear(slice_id)) {
-        ALLIGATOR_THROW("Went to destroy a slice in a slot and nothing was there!!");
-    }
-    if (p != nullptr) {
-        Placemat::call_free_later(p);
-    }
+void Alligator::destroy(Slice& slice) {
+    const uint32_t slice_id = slice.id() >> 3;
+    const uint32_t slot_id = slice_id >> 6;
+    Region* r = regions[slice_id & 0x3f].load(std::memory_order_acquire);
+    r->slots[slot_id].clear();
+    r->gpu_slots[slot_id].clear();
+    r->release(&r->slots[slot_id]);
+    slice.id_ = 0xFFFFFFFFu;
 }
-/** --------------------------------------------------------------------------------------------------------- Host Table
- * @brief The host pointer table's first entry, indexed by pool index at an 8-byte stride.
- * @return The table base.
+/** --------------------------------------------------------------------------------------------------------- Constructor
+ * @brief Constructs an Alligator instance.
  */
-const HostPtr* Alligator::host_table() {
-    return inst().host_ptrs_;
-}
-/** --------------------------------------------------------------------------------------------------------- GPU Table
- * @brief The shared GPUBuf table's host mapping.
- * @return The table base.
- */
-const GPUBuf* Alligator::gpu_table() {
-    return inst().gpu_table_;
-}
-/** --------------------------------------------------------------------------------------------------------- GPU Table Address
- * @brief The shared GPUBuf table's device address, 0 without a compute device.
- * @return The device address.
- */
-uint64_t Alligator::gpu_table_address() {
-    const GetGPUBufMethod get_gpu_buf = inst().gpubufs_->placemat->get_gpu_buf();
-    return get_gpu_buf == nullptr ? 0 : get_gpu_buf(inst().gpubufs_->substrate_handle).address;
-}
-/** --------------------------------------------------------------------------------------------------------- Alligator Storage
- * @brief Raw storage for the singleton; zero-initialized, so it exists before any dynamic init runs.
- */
-alignas(Alligator) static unsigned char alligator_storage[sizeof(Alligator)];
-/// @brief Count of live AlligatorInitializer objects, one per including translation unit.
-static size_t alligator_initializer_count = 0;
-/** --------------------------------------------------------------------------------------------------------- Alligator Initializer
- * @brief The first including translation unit constructs the logger, tracker and built-ins, then the Alligator.
- */
-AlligatorInitializer::AlligatorInitializer() {
-    if (alligator_initializer_count++ == 0) {
-        static_cast<void>(threadsafe_logger::logging::GlobalLoggingContext::instance());
-        static_cast<void>(threadsafe_logger::logging::GlobalLoggingContext::progress_mutex());
-        static_cast<void>(Memory::total_allocations());
-        static_cast<void>(BuffetMenu::get("heap"));
-        new (alligator_storage) Alligator();
-    }
-}
-/** --------------------------------------------------------------------------------------------------------- Alligator Finalizer
- * @brief The last including translation unit to tear down destroys the Alligator.
- */
-AlligatorInitializer::~AlligatorInitializer() {
-    if (--alligator_initializer_count == 0) {
-        Alligator::inst().~Alligator();
-    }
-}
-/** --------------------------------------------------------------------------------------------------------- Instance
- * @brief Retrieves the singleton instance of the Alligator.
- * @return A reference to the Alligator instance.
- */
-Alligator& Alligator::inst() {
-    return *std::launder(reinterpret_cast<Alligator*>(alligator_storage));
+Alligator::Alligator() {
+    region_backing[0] = std::make_unique<SliceRegion>();
+    regions[0].store(region_backing[0].get()->host_ptr, std::memory_order_release);
 }
 /** --------------------------------------------------------------------------------------------------------- Destructor
- * @brief Stops pool growth, wakes every parked thread, and joins without draining queued tasks.
+ * @brief Destructs the Alligator instance.
  */
 Alligator::~Alligator() {
-    stop_signal_.store(true, std::memory_order_release);
-    thread_changer_.reset();
-    for (size_t index = 0; index < worker_threads_.size(); ++index) {
-        task_queue_.enqueue(Task{});
+    for (size_t i = 0; i < regions.size(); ++i) {
+        region_backing[i].reset();
+        regions[i].store(nullptr, std::memory_order_release);
     }
-    for (size_t index = 0; index < waiting_threads_.size(); ++index) {
-        waiting_task_queue_.enqueue(Task{});
+}
+/** ------------------------------------------------------------------------------------------- Instance
+ * @brief Returns the singleton instance of the Alligator.
+ * @return The Alligator instance.
+ */
+Alligator& Alligator::inst() {
+    static Alligator instance;
+    return instance;
+}
+/** ------------------------------------------------------------------------------------------- GPU Table
+ * @brief The shared GPUBuf table's host mapping, the same bytes shaders read at gpu_table_address().
+ * @param region_id The region ID of the GPU table.
+ * @return The table base.
+ */
+const GPUBuf* Alligator::gpu_table(uint8_t region_id) {
+    return inst().regions[region_id].load(std::memory_order_acquire)->gpu_table();
+}
+/** ------------------------------------------------------------------------------------------- GPUBuf For
+ * @brief The writable GPUBuf for a live slice.
+ * @param slice The slice to resolve.
+ * @return The slice's GPUBuf entry.
+ */
+GPUBuf* Alligator::gpubuf_for(const Slice& slice) {
+    return inst().gpubuf(slice);
+}
+/** --------------------------------------------------------------------------------------------------------- SliceRegion Constructor
+ * @brief Constructs a SliceRegion with the given BuffetDescriptor.
+ * @param desc The BuffetDescriptor to use for allocation.
+ */
+Alligator::SliceRegion::SliceRegion(const BuffetDescriptor* desc) : descriptor(desc) {
+    handle = descriptor->factory(sizeof(Region));
+    device_address = descriptor->device_address(handle);
+    host_ptr = static_cast<Region*>(descriptor->host_ptr(handle, 0));
+}
+/** --------------------------------------------------------------------------------------------------------- SliceRegion Destructor
+ * @brief Destructs the SliceRegion, releasing its resources.
+ */
+Alligator::SliceRegion::~SliceRegion() {
+    if (handle) {
+        descriptor->deleter(handle);
+        handle = nullptr;
+        device_address = 0;
+        host_ptr = nullptr;
     }
-    worker_threads_.clear();
-    waiting_threads_.clear();
 }
 } // namespace buffetalligator
