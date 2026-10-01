@@ -27,6 +27,7 @@ if(NOT TARGET logging::logging)
     if(NOT EXISTS "${THREADSAFE_LOGGER_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR "threadsafe-logger is missing; run ./run_build.sh to fetch and build it")
     endif()
+    include(cmake/LoggerLifetime.cmake)
     set(LOGGING_BUILD_TESTS OFF)
     add_subdirectory("${THREADSAFE_LOGGER_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/deps/threadsafe-logger")
     set(BUFFETALLIGATOR_OWNS_LOGGING_TARGET ON)
@@ -56,6 +57,8 @@ add_library(alligator STATIC
     src/gpu/shader_source.cpp
     src/memory/slice.cpp
     src/memory/alligator.cpp
+    src/memory/lifetime.cpp
+    src/memory/registry.cpp
     src/memory/chainbuffet.cpp
     src/kitchen/kitchen.cpp
     src/memory/mmap_allocator.cpp
@@ -115,7 +118,7 @@ if(BUFFETALLIGATOR_BUILD_BENCHMARKS)
 endif()
 option(BUFFETALLIGATOR_BUILD_EXPERIMENTS "Build the standalone design experiments" OFF)
 if(BUFFETALLIGATOR_BUILD_EXPERIMENTS)
-    add_subdirectory(experiments)
+    add_subdirectory(tests/experiments)
 endif()
 include(CMakePackageConfigHelpers)
 set(BUFFETALLIGATOR_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/alligator")

@@ -56,8 +56,8 @@ if(APPLE)
         target_compile_features(alligator_spirvcross PRIVATE cxx_std_20)
         target_include_directories(alligator_spirvcross PRIVATE "${cross_source}")
         target_include_directories(alligator PRIVATE "${cross_source}")
-        target_sources(alligator PRIVATE src/memory/metal_allocator.mm src/metal/metal.mm)
-        set_source_files_properties(src/memory/metal_allocator.mm src/metal/metal.mm
+        target_sources(alligator PRIVATE src/memory/metal_allocator.mm src/metal/context.mm src/metal/metal.mm)
+        set_source_files_properties(src/memory/metal_allocator.mm src/metal/context.mm src/metal/metal.mm
             PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-mmacosx-version-min=13.0")
         set_target_properties(alligator PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED ON)
         target_compile_definitions(alligator PUBLIC BUFFETALLIGATOR_HAS_METAL=1)

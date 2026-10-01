@@ -4,6 +4,7 @@
  */
 #define BUFFETALLIGATOR_SHADER_TESTING 1
 #include "../src/vulkan/vulkan.cpp"
+#include "../src/gpu/shader.cpp"
 #include "functional_support.hpp"
 #include <atomic>
 #include <coroutine>
@@ -47,6 +48,31 @@ static void preparation_failures() {
             "Preparation did not recover after unwinding its partial resources");
     }
     require(shader_test_live_slots.load() == 0, "Prepared submission slots survived their owner");
+}
+/** --------------------------------------------------------------------------------------------------------- Rejected Admission
+ * @brief Proves a rejected result releases captured identities and prepared resources before returning.
+ */
+static void rejected_admission() {
+    ShaderResult result;
+    auto shader = std::make_unique<Shader>(INCREMENT_BODY, "rejected_admission");
+    Slice payload(64, true, VulkanContext::buffer_placement());
+    SliceEntry* entry = SliceEntry::from_slice(payload);
+    TaskCountdown unexpected;
+    shader_test_fail_admission.store(true, std::memory_order_release);
+    bool rejected = false;
+    try { (*shader)(payload, result, &TaskCountdown::arrive, &unexpected); }
+    catch (const std::bad_alloc&) { rejected = true; }
+    require(rejected && !result.ready(), "Rejected admission published a completed result");
+    require(entry->owners.load(std::memory_order_acquire) == 1,
+        "Rejected admission left a captured Slice identity in its result");
+    require(unexpected.pending.load(std::memory_order_acquire) == 1,
+        "Rejected admission invoked a completion callback");
+    shader.reset();
+    require(shader_test_live_slots.load() == 0,
+        "Rejected admission kept its destroyed Shader alive through the caller's result");
+    payload.free();
+    require(entry->owners.load(std::memory_order_acquire) == 0,
+        "Rejected admission prevented the caller's final release");
 }
 /** --------------------------------------------------------------------------------------------------------- Completion Observation
  * @brief Checks the owned result and retained payload while a callback owns completion.
@@ -191,6 +217,52 @@ static void cache_retry() {
     result.rethrow();
     require(payload.get_as<uint32_t>() == 124, "A failed cache insertion prevented later preparation");
 }
+/** --------------------------------------------------------------------------------------------------------- Shutdown Admission
+ * @brief Holds capture before acceptance while final shutdown closes and waits for its ownership.
+ */
+struct ShutdownAdmission {
+    Shader shader{INCREMENT_BODY, "shutdown_admission"};
+    Slice payload{64, VulkanContext::buffer_placement()};
+    ShaderResult result;
+    std::atomic<bool> rejected{false};
+    static void submit(ShutdownAdmission* pending) {
+        try { pending->shader(pending->payload, pending->result); }
+        catch (const GPUException&) { pending->rejected.store(true, std::memory_order_release); }
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- Shutdown Capture
+ * @brief Prevents arena shutdown from passing an unaccepted operation that already retained Slice ids.
+ */
+static void shutdown_capture() {
+    Kitchen::inst().drain();
+    ShutdownAdmission pending;
+    shader_test_admission_entered.store(false, std::memory_order_release);
+    shader_test_hold_admission.store(true, std::memory_order_release);
+    std::thread producer(&ShutdownAdmission::submit, &pending);
+    shader_test_admission_entered.wait(false, std::memory_order_acquire);
+    std::thread shutdown(&ShaderState::drain);
+    for (;;) {
+        bool closed;
+        {
+            std::lock_guard lock(shader_runtime().mutex);
+            closed = shader_runtime().stopping;
+            if (closed) require(shader_runtime().active == 1,
+                "Shutdown did not account for capture blocked before acceptance");
+        }
+        if (closed) break;
+        std::this_thread::yield();
+    }
+    require(SliceEntry::from_slice(pending.payload)->owners.load(std::memory_order_acquire) == 2,
+        "The held admission did not retain its captured Slice identity");
+    shader_test_hold_admission.store(false, std::memory_order_release);
+    shader_test_hold_admission.notify_all();
+    producer.join();
+    shutdown.join();
+    require(pending.rejected.load(std::memory_order_acquire) && !pending.result.ready(),
+        "An operation crossed final shutdown's closed admission gate");
+    require(SliceEntry::from_slice(pending.payload)->owners.load(std::memory_order_acquire) == 1,
+        "Shutdown rejection retained the captured Slice after its producer returned");
+}
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Runs hardware-backed failure paths without submitting any failing command to the device.
  */
@@ -201,9 +273,11 @@ int main() {
     }
     try {
         preparation_failures();
+        rejected_admission();
         submission_failure();
         coroutine_failure();
         cache_retry();
+        shutdown_capture();
     } catch (const std::exception& error) {
         LOG_ERROR_STREAM << "Shader failure test failed: " << error.what();
         return 1;

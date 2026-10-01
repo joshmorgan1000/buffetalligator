@@ -1,0 +1,20 @@
+diff --git a/include/loggingutils.hpp b/include/loggingutils.hpp
+--- a/include/loggingutils.hpp
++++ b/include/loggingutils.hpp
+@@ -177,11 +177,11 @@ inline const char* TTYWHITE = "\033[97m";
+ inline const char* TTYCYAN = "\033[96m";
+ inline const char* TTYPURPLE = "\033[95m";
+ inline const char* TTYRESET = "\033[0m";
+-inline static const std::string INFO_LOG_STANZA = TTYBRGREEN + std::string(" [INFO] ") + TTYGREEN;
+-inline static const std::string WARN_LOG_STANZA = TTYYELLOW + std::string(" [WARN] ") + TTYORANGE;
+-inline static const std::string ERROR_LOG_STANZA = TTYRED + std::string(" [ERROR]") + TTYRED;
+-inline static const std::string DEBUG_LOG_STANZA = TTYCYAN + std::string(" [DEBUG]") + TTYBLUE;
+-inline static const std::string TRACE_LOG_STANZA = TTYPURPLE + std::string(" [TRACE]");
++inline static constexpr char INFO_LOG_STANZA[] = "\033[92m [INFO] \033[32m";
++inline static constexpr char WARN_LOG_STANZA[] = "\033[93m [WARN] \033[33m";
++inline static constexpr char ERROR_LOG_STANZA[] = "\033[31m [ERROR]\033[31m";
++inline static constexpr char DEBUG_LOG_STANZA[] = "\033[96m [DEBUG]\033[94m";
++inline static constexpr char TRACE_LOG_STANZA[] = "\033[95m [TRACE]";
+ inline const char* LogLevelName(Logger::LogLevel level) {
+     switch (level) {
+         case Logger::LogLevel::INFO:  return "INFO";

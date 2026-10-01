@@ -237,10 +237,7 @@ public:
     /** ------------------------------------------------------------------------------------------- Singleton instance
      * @brief The singleton VulkanCompute instance.
      */
-    static VulkanContext& instance() {
-        static VulkanContext inst;
-        return inst;
-    }
+    static VulkanContext& instance();
     /** ------------------------------------------------------------------------------------------- destructor
      * @brief Drain the device and tear down. Caller-owned buffers, rigs, and pipelines must
      * already be destroyed.

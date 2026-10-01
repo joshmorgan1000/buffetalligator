@@ -9,6 +9,7 @@
 #include <vulkan/shader_state.hpp>
 #include <loggingutils.hpp>
 #include <memory/tracker.hpp>
+#include <memory/lifetime.hpp>
 #include <containers/bitplane.hpp>
 #include <new>
 extern "C" void ba_net_shutdown(void);
@@ -151,8 +152,9 @@ Alligator::~Alligator() {
  * @return The Alligator instance.
  */
 Alligator& Alligator::inst() {
-    static Alligator instance;
-    return instance;
+    static RuntimeFinalizer lifetime(new Alligator, &RuntimeFinalizer::delete_owner<Alligator>,
+        RuntimeFinalizer::Phase::Arena);
+    return *static_cast<Alligator*>(lifetime.object);
 }
 /** ------------------------------------------------------------------------------------------- GPU Table
  * @brief Returns one region's host mapping of the records reached through the GPU directory.

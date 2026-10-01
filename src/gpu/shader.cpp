@@ -6,6 +6,7 @@
 #include <alligator/kitchen.hpp>
 #include <vulkan/shader_state.hpp>
 #include <gpu/runtime.hpp>
+#include <memory/lifetime.hpp>
 #include <algorithm>
 #include <array>
 #include <condition_variable>
@@ -36,8 +37,8 @@ struct ShaderRuntime {
     std::vector<CacheEntry> cache;
 };
 ShaderRuntime& shader_runtime() {
-    static ShaderRuntime runtime;
-    return runtime;
+    static RuntimeFinalizer lifetime(new ShaderRuntime, &RuntimeFinalizer::delete_owner<ShaderRuntime>);
+    return *static_cast<ShaderRuntime*>(lifetime.object);
 }
 /** --------------------------------------------------------------------------------------------------------- Shader Preparation
  * @brief Counts in-progress preparation before final shutdown closes admission.
@@ -55,6 +56,11 @@ struct ShaderPreparation {
     }
 };
 void shader_runtime_initialize() { (void)shader_runtime(); }
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+static std::atomic<bool> shader_test_fail_admission{false};
+static std::atomic<bool> shader_test_hold_admission{false};
+static std::atomic<bool> shader_test_admission_entered{false};
+#endif
 /** --------------------------------------------------------------------------------------------------------- Shader State Resources
  * @brief Shares a backend program while admitting independent stable submission slots.
  */
@@ -288,6 +294,10 @@ struct ShaderOperation {
             ++shader_runtime().active;
         }
         try {
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+            if (shader_test_fail_admission.exchange(false, std::memory_order_acq_rel))
+                throw std::bad_alloc();
+#endif
             Kitchen::inst().submit(&ShaderOperation::complete, operation.get());
         } catch (...) {
             operation->self.reset();
@@ -407,10 +417,19 @@ Shader::~Shader() = default;
 void Shader::operator()(const Slice* slices, size_t count, ShaderResult& result,
     void (*done)(void*), void* context, uint32_t workgroups,
     std::span<const Slice> dependencies) const {
+    ShaderPreparation admission;
     if (!state_) ALLIGATOR_GPU_THROW("A moved-from Shader cannot dispatch");
     auto operation = state_->start(slices, count, done, context, workgroups, dependencies);
+#ifdef BUFFETALLIGATOR_SHADER_TESTING
+    if (shader_test_hold_admission.load(std::memory_order_acquire)) {
+        shader_test_admission_entered.store(true, std::memory_order_release);
+        shader_test_admission_entered.notify_all();
+        shader_test_hold_admission.wait(true, std::memory_order_acquire);
+    }
+#endif
     result.operation_ = operation;
-    ShaderOperation::accept(operation);
+    try { ShaderOperation::accept(operation); }
+    catch (...) { result.operation_.reset(); throw; }
 }
 void Shader::operator()(const Slice& slice, ShaderResult& result, void (*done)(void*),
     void* context, uint32_t workgroups, std::span<const Slice> dependencies) const {

@@ -1,11 +1,12 @@
 /** --------------------------------------------------------------------------------------------------------- GPU Dispatch Benchmark
  * @file gpu_dispatch_benchmark.cpp
- * @brief Measures completed Vulkan dispatches, owned callbacks, coroutine resumes, and program preparation.
+ * @brief Measures completed native and translated dispatches, owned completions, and program preparation.
  */
 #include "benchmark_support.hpp"
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
+#include <gpu/runtime.hpp>
 #include <coroutine>
 #include <exception>
 #include <memory>
@@ -16,16 +17,19 @@ namespace {
 using namespace benchmarks;
 using namespace buffetalligator;
 /** --------------------------------------------------------------------------------------------------------- Configuration
- * @brief Configures persistent Vulkan submitters and their bounded admission windows.
+ * @brief Configures explicit backend/source identity and bounded persistent submitter workloads.
  */
 struct Configuration {
     Options common;
     size_t submitters = 0;
     size_t depth = 8;
     size_t batch = 0;
+    std::string backend;
+    std::string source = "translated";
+    std::string tag;
 };
 /** --------------------------------------------------------------------------------------------------------- Parse Configuration
- * @brief Reuses common timing options with explicit Vulkan submission controls.
+ * @brief Reuses common timing options with explicit source and submission controls.
  */
 Configuration configuration(int count, char** arguments) {
     Configuration result;
@@ -33,20 +37,27 @@ Configuration configuration(int count, char** arguments) {
     bool items_set = false, repetitions_set = false, warmup_set = false;
     for (int index = 1; index < count; ++index) {
         const std::string_view argument(arguments[index]);
+        if (argument == "--source") {
+            require(index + 1 < count, "--source requires native or translated.");
+            result.source = arguments[++index];
+            require(result.source == "native" || result.source == "translated",
+                "--source requires native or translated.");
+            continue;
+        }
         if (argument == "--submitters" || argument == "--depth" || argument == "--batch") {
-            require(index + 1 < count, "A Vulkan benchmark option is missing its value.");
+            require(index + 1 < count, "A GPU benchmark option is missing its value.");
             const std::string_view value(arguments[++index]);
             size_t number = 0;
             const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
             require(parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size()
-                && number != 0, "Vulkan benchmark options require a positive integer.");
+                && number != 0, "GPU benchmark options require a positive integer.");
             if (argument == "--submitters") result.submitters = number;
             else if (argument == "--depth") result.depth = number;
             else result.batch = number;
             continue;
         }
         require(argument != "--producers" && argument != "--consumers" && argument != "--lookups",
-            "Use --submitters, --depth, and --batch for the Vulkan benchmark.");
+            "Use --submitters, --depth, and --batch for the GPU benchmark.");
         items_set = items_set || argument == "--items";
         repetitions_set = repetitions_set || argument == "--repetitions";
         warmup_set = warmup_set || argument == "--warmup";
@@ -60,7 +71,9 @@ Configuration configuration(int count, char** arguments) {
     if (!items_set) result.common.items = 128;
     if (!repetitions_set) result.common.repetitions = 15;
     if (!warmup_set) result.common.warmup = 2;
-    if (result.common.csv.empty()) result.common.csv = "vulkan_dispatch_samples.csv";
+    if (const char* selected = std::getenv("ALLIGATOR_GPU_BACKEND")) result.backend = selected;
+    result.tag = result.backend + '-' + result.source;
+    if (result.common.csv.empty()) result.common.csv = result.tag + "_dispatch_samples.csv";
     require(result.common.repetitions <= SIZE_MAX - result.common.warmup, "Sample count overflow.");
     require(!result.common.single_thread || result.submitters <= 1,
         "Use --single-thread or --submitters N, not both.");
@@ -153,7 +166,7 @@ struct Workload {
             auto dispatch = std::make_unique<Dispatch>();
             dispatch->streams.reserve(batch);
             for (size_t stream = 0; stream < batch; ++stream) {
-                dispatch->streams.emplace_back(64, VulkanContext::buffer_placement());
+                dispatch->streams.emplace_back(64, gpu_device().placement);
                 dispatch->streams.back().get_as<uint32_t>() = uint32_t(index * batch + stream);
             }
             dispatches.push_back(std::move(dispatch));
@@ -228,7 +241,7 @@ struct Workload {
                 const uint32_t* words = stream.data<uint32_t>();
                 require(words[1] == (words[0] ^ uint32_t(0x9e3779b9))
                     && words[2] == stream.id() && words[3] == stream.size_bytes(),
-                    "Vulkan dispatch returned incorrect payload, identity, or granule length.");
+                    "GPU dispatch returned incorrect payload, identity, or granule length.");
             }
         }
     }
@@ -237,26 +250,28 @@ struct Workload {
  * @brief Separates pipeline preparation, source encoding, cold decode, and warm decode-cache lookup.
  */
 Shader preparation(const Configuration& config, Reporter& reporter) {
-    Progress progress("Vulkan program preparation", config.common.timeout);
+    Progress progress(config.tag + " program preparation", config.common.timeout);
     Options options = config.common;
     options.items = 1;
     options.capacity = 0;
     std::vector<double> compile;
     std::optional<Shader> shader;
+    const ShaderSource selected_source = config.source == "native"
+        ? ShaderSource{{}, identity_source, {}} : ShaderSource{identity_source, {}, {}};
     for (size_t sample = 0; sample < options.warmup + options.repetitions; ++sample) {
         shader.reset();
         const auto started = Clock::now();
-        shader.emplace(identity_source, "vulkan_dispatch_benchmark");
+        shader.emplace(selected_source, "gpu_dispatch_benchmark");
         const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
         if (sample >= options.warmup) compile.push_back(seconds);
-        if (sample == 0) reporter.report("Vulkan", "first-shader-prepare", {1, 0, true},
+        if (sample == 0) reporter.report(config.tag, "first-shader-prepare", {1, 0, true},
             options, 1, {seconds});
         Workload check(*shader, 1, 1, 1, 1, false);
         check.prepare();
         check.run(0);
         check.validate();
     }
-    reporter.report("Vulkan", "shader-prepare", {1, 0, true}, options, 1, std::move(compile));
+    reporter.report(config.tag, "shader-prepare", {1, 0, true}, options, 1, std::move(compile));
     std::vector<double> encode;
     Slice encoded;
     for (size_t sample = 0; sample < options.warmup + options.repetitions; ++sample) {
@@ -269,7 +284,7 @@ Shader preparation(const Configuration& config, Reporter& reporter) {
             && encoded.data<uint8_t>()[3] == 'P', "Encoded program signature is invalid.");
         if (sample >= options.warmup) encode.push_back(seconds);
     }
-    reporter.report("Vulkan", "encode", {1, 0, true}, options, 1, std::move(encode));
+    reporter.report(config.tag, "encode", {1, 0, true}, options, 1, std::move(encode));
     std::vector<double> decode;
     std::optional<Shader> decoded;
     for (size_t sample = 0; sample <= options.warmup + options.repetitions; ++sample) {
@@ -277,7 +292,7 @@ Shader preparation(const Configuration& config, Reporter& reporter) {
         const auto started = Clock::now();
         decoded.emplace(GPU::decode(encoded));
         const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
-        if (sample == 0) reporter.report("Vulkan", "first-decode-cache-miss", {1, 0, true},
+        if (sample == 0) reporter.report(config.tag, "first-decode-cache-miss", {1, 0, true},
             options, 1, {seconds});
         else if (sample > options.warmup) decode.push_back(seconds);
         Workload check(*decoded, 1, 1, 1, 1, false);
@@ -285,7 +300,7 @@ Shader preparation(const Configuration& config, Reporter& reporter) {
         check.run(0);
         check.validate();
     }
-    reporter.report("Vulkan", "decode-cache-hit", {1, 0, true}, options, 1, std::move(decode));
+    reporter.report(config.tag, "decode-cache-hit", {1, 0, true}, options, 1, std::move(decode));
     return std::move(*shader);
 }
 /** --------------------------------------------------------------------------------------------------------- Measure
@@ -300,7 +315,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
     const Shape shape{workers, 0, workers == 1};
     const std::string label = std::string(awaiter ? "awaiter" : "callback") + "-batch-"
         + std::to_string(batch) + "-depth-" + std::to_string(config.depth);
-    Progress progress("Vulkan " + label + ' ' + shape.label(), options.timeout);
+    Progress progress(config.tag + ' ' + label + ' ' + shape.label(), options.timeout);
     Workload workload(shader, options.items, batch, workers, config.depth, awaiter);
     Team team(workload, workers);
     std::vector<double> throughput;
@@ -310,7 +325,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
         workload.validate();
         if (sample >= options.warmup) throughput.push_back(elapsed);
     }
-    reporter.report("Vulkan", label, shape, options, options.items, std::move(throughput));
+    reporter.report(config.tag, label, shape, options, options.items, std::move(throughput));
     workload.instrumented = true;
     std::vector<double> latencies;
     for (size_t sample = 0; sample < options.repetitions; ++sample) {
@@ -320,15 +335,16 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
         for (size_t index = 0; index < workload.dispatches.size(); ++index) {
             const Dispatch& dispatch = *workload.dispatches[index];
             latencies.push_back(dispatch.nanoseconds);
-            latency_csv << label << ',' << workers << ',' << batch << ',' << config.depth
+            latency_csv << config.backend << ',' << config.source << ',' << label << ','
+                << workers << ',' << batch << ',' << config.depth
                 << ',' << sample + 1 << ',' << index << ',' << std::setprecision(12)
                 << dispatch.admission_nanoseconds << ',' << dispatch.nanoseconds << '\n';
         }
     }
     latency_csv.flush();
-    require(latency_csv.good(), "Failed to write Vulkan latency samples.");
+    require(latency_csv.good(), "Failed to write GPU latency samples.");
     std::sort(latencies.begin(), latencies.end());
-    LOG_INFO_STREAM << "Vulkan " << label << ' ' << shape.label()
+    LOG_INFO_STREAM << config.tag << ' ' << label << ' ' << shape.label()
         << " host submit-to-completion p50=" << latencies[(latencies.size() - 1) / 2]
         << " ns; p95=" << latencies[(latencies.size() - 1) * 95 / 100]
         << " ns; p99=" << latencies[(latencies.size() - 1) * 99 / 100]
@@ -336,48 +352,62 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
- * @brief Measures the current Vulkan implementation in a fresh explicitly selected backend process.
+ * @brief Measures one selected backend and source path in a fresh process.
  */
 int main(int count, char** arguments) {
     try {
         const Configuration config = configuration(count, arguments);
         if (config.common.help) {
-            LOG_INFO_STREAM << "Vulkan only: set ALLIGATOR_GPU_BACKEND=vulkan before process startup.";
+            LOG_INFO_STREAM << "Set ALLIGATOR_GPU_BACKEND=vulkan or metal before process startup; "
+                << "--source translated (default) uses GLSL; --source native uses Metal MSL only.";
             LOG_INFO_STREAM << "Options: --items N (128 dispatches) --warmup N (2) --repetitions N (15) "
                 << "--submitters N --single-thread --depth N (8) --batch N (default 1/16/256) "
-                << "--timeout SECONDS (120) --csv PATH (vulkan_dispatch_samples.csv)";
+                << "--timeout SECONDS (120) --csv PATH (BACKEND-SOURCE_dispatch_samples.csv)";
             return 0;
         }
 #ifndef NDEBUG
         throw std::runtime_error("GPU performance runs require a Release build from ./run_build.sh.");
 #endif
-        const char* backend = std::getenv("ALLIGATOR_GPU_BACKEND");
-        require(backend != nullptr && std::string_view(backend) == "vulkan",
-            "Run this Vulkan harness with ALLIGATOR_GPU_BACKEND=vulkan; other backends are unverified.");
+        require(config.backend == "vulkan" || config.backend == "metal",
+            "Select ALLIGATOR_GPU_BACKEND=vulkan or metal before process startup.");
+        require(config.source != "native" || config.backend == "metal",
+            "--source native requires the Metal backend.");
         Reporter reporter(config.common);
         {
-            Progress progress("Vulkan context initialization", config.common.timeout);
+            Progress progress(config.tag + " context initialization", config.common.timeout);
             const auto started = Clock::now();
-            require(GPU::exists(), "The Vulkan benchmark requires a hardware compute device.");
+            require(GPU::exists(), "The GPU benchmark requires a hardware compute device.");
             const double seconds = std::chrono::duration<double>(Clock::now() - started).count();
-            reporter.report("Vulkan", "context-initialization", {1, 0, true}, config.common, 1, {seconds});
+            reporter.report(config.tag, "context-initialization", {1, 0, true}, config.common, 1, {seconds});
         }
-        LOG_INFO_STREAM << "backend=vulkan; device=" << GPU::device_name()
-            << "; queues=" << VulkanContext::queue_count()
-            << "; placement=" << VulkanContext::buffer_placement()->type_name
+        const GPUDevice& device = gpu_device();
+        require(device.kind == (config.backend == "metal" ? GPUBackend::Metal : GPUBackend::Vulkan),
+            "The frozen GPU backend differs from the requested measurement.");
+        LOG_INFO_STREAM << "backend=" << config.backend << "; source=" << config.source
+            << "; device=" << GPU::device_name() << "; unified=" << GPU::unified_memory()
+            << "; placement=" << device.placement->type_name
             << "; workgroups per stream=1; stream bytes=64";
         LOG_INFO_STREAM << "Host admission and callback/awaiter observation include scheduler costs; "
-            << "device timestamps, native backends, bandwidth, and memory high-water are unmeasured.";
+            << "device timestamps, bandwidth, and memory high-water are unmeasured.";
         std::ofstream latency_csv(config.common.csv + ".latencies.csv");
-        require(latency_csv.is_open(), "Cannot open Vulkan latency CSV output.");
-        latency_csv << "workload,submitters,batch,depth,repetition,dispatch_index,admission_nanoseconds,completion_nanoseconds\n";
+        require(latency_csv.is_open(), "Cannot open GPU latency CSV output.");
+        latency_csv << "backend,source,workload,submitters,batch,depth,repetition,dispatch_index,admission_nanoseconds,completion_nanoseconds\n";
         Shader shader = preparation(config, reporter);
         std::vector<size_t> workers;
         if (config.common.single_thread) workers.push_back(1);
         else if (config.submitters) workers.push_back(config.submitters);
-        else {
+        else if (device.kind == GPUBackend::Vulkan) {
             workers = {1, VulkanContext::queue_count(), VulkanContext::queue_count() + 2};
             workers.erase(std::unique(workers.begin(), workers.end()), workers.end());
+            LOG_INFO_STREAM << "Vulkan submitter candidates derive from compute queue count="
+                << VulkanContext::queue_count();
+        } else {
+            const size_t processors = std::thread::hardware_concurrency();
+            require(processors != 0, "CPU count unavailable; supply --submitters N.");
+            workers = {1, processors, processors + 2};
+            workers.erase(std::unique(workers.begin(), workers.end()), workers.end());
+            LOG_INFO_STREAM << "Metal submitter candidates use host logical CPUs=" << processors
+                << "; this benchmark topology does not describe GPU queues or prepared slots";
         }
         const std::vector<size_t> batches = config.batch ? std::vector<size_t>{config.batch}
             : std::vector<size_t>{1, 16, 256};
@@ -387,11 +417,11 @@ int main(int count, char** arguments) {
                 measure(config, reporter, latency_csv, shader, submitters, batch, true);
             }
         }
-        LOG_INFO_STREAM << "Vulkan raw samples: " << config.common.csv << " and "
+        LOG_INFO_STREAM << config.tag << " raw samples: " << config.common.csv << " and "
             << config.common.csv << ".latencies.csv";
         return 0;
     } catch (const std::exception& error) {
-        LOG_ERROR_STREAM << "Vulkan dispatch benchmark failed: " << error.what();
+        LOG_ERROR_STREAM << "GPU dispatch benchmark failed: " << error.what();
         return 1;
     }
 }

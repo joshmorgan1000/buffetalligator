@@ -3,7 +3,7 @@
  * @file include/alligator/atomics.hpp
  * @brief Provides atomic operations and utilities for the Alligator project.
  */
-#include <logging.hpp>
+#include <alligator.hpp>
 #include <atomic>
 #include <memory>
 #include <chrono>
@@ -1112,19 +1112,13 @@ private:
      * instances of AtomicRegistry.
      * @return Pointer to the global registry map.
      */
-    static std::unordered_map<std::string, std::unique_ptr<AtomicContainer>>* global_registry() {
-        static std::unordered_map<std::string, std::unique_ptr<AtomicContainer>> registry;
-        return &registry;
-    }
+    static std::unordered_map<std::string, std::unique_ptr<AtomicContainer>>* global_registry();
     /** --------------------------------------------------------------------------------- Global Gate
      * @brief Returns a reference to the global mutex used to protect access to the
      * global registry. This ensures thread-safe operations on the global registry.
      * @return Reference to the global AtomicMutex.
      */
-    static AtomicMutex& global_gate() {
-        static AtomicMutex gate;
-        return gate;
-    }
+    static AtomicMutex& global_gate();
 public:
     /** --------------------------------------------------------------------------------- Constructor
      * @brief Constructs an empty AtomicRegistry.

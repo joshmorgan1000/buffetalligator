@@ -9,7 +9,7 @@ From the repository root, build through the normal entry point:
 
 ```sh
 ./run_build.sh --build-dir build/gpu-plan \
-  -DCMAKE_PROJECT_INCLUDE="$PWD/experiments/metal_glsl_gate/register.cmake"
+  -DCMAKE_PROJECT_INCLUDE="$PWD/tests/experiments/metal_glsl_gate/register.cmake"
 ```
 
 Run with Metal API and shader validation, preserving the complete output:

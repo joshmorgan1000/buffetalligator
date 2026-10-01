@@ -80,7 +80,7 @@ const BuffetDescriptor rollover_placement{
 /** --------------------------------------------------------------------------------------------------------- Verify Final Release
  * @brief Checks current roots and prepared successors after their actual process-exit destructors.
  */
-void verify_final_release() {
+void verify_final_release(void*) {
     const size_t allocations = allocation_count.load(std::memory_order_relaxed);
     for (size_t identity = 0; identity < allocations; ++identity) {
         require(releases[identity].load(std::memory_order_relaxed) == 1,
@@ -333,7 +333,7 @@ int main() {
     LOG_INFO_STREAM << "Starting Slice ownership regressions and final-release verification";
     require(setenv("ALLIGATOR_GPU_BACKEND", "cpu", 1) == 0,
         "CPU-only allocation regression could not select its backend");
-    require(std::atexit(verify_final_release) == 0, "final backing verification registration failed");
+    static RuntimeFinalizer verification(nullptr, &verify_final_release);
     BuffetDescriptors::register_descriptor(&small_placement);
     BuffetDescriptors::register_descriptor(&retry_placement);
     BuffetDescriptors::register_descriptor(&rollover_placement);

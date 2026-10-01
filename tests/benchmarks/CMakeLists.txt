@@ -11,6 +11,8 @@ foreach(source IN LISTS benchmark_sources)
 endforeach()
 target_include_directories(buffetalligator_slicemapvsvecset
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
+target_include_directories(buffetalligator_gpu_dispatch_benchmark
+    PRIVATE "${PROJECT_SOURCE_DIR}/src")
 if(BUFFETALLIGATOR_BUILD_TESTS)
     add_test(NAME buffetalligator_map_comparison_contracts
         COMMAND buffetalligator_slicemapvsvecset --case contracts)

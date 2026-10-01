@@ -273,24 +273,33 @@ device execution latency, or a before/after improvement. Archive the environment
 commands, source revision and patch, and raw samples with each comparison; run
 performance measurements on an otherwise idle host after correctness gates pass.
 
-## Vulkan dispatch measurements
+## GPU dispatch measurements
 
-`buffetalligator_gpu_dispatch_benchmark` currently measures Vulkan only and
-requires explicit selection before process startup. It uses the public
-`Shader`, `ShaderResult`, callback, and awaiter contracts and explicitly allocates
-streams through `VulkanContext::buffer_placement()`.
+`buffetalligator_gpu_dispatch_benchmark` measures an explicitly selected Vulkan
+or Metal backend in each fresh process. `--source translated` supplies GLSL only;
+`--source native` supplies MSL only and requires Metal. The body, workgroup shape,
+payloads, and output checks are identical across these paths. The harness uses
+the public `Shader`, `ShaderResult`, callback, and awaiter contracts and obtains
+the selected placement from the private runtime descriptor.
 
 ```sh
 ALLIGATOR_GPU_BACKEND=vulkan ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
-    --warmup 2 --repetitions 15 --csv build/perf/results/vulkan-dispatch.csv
+    --source translated --warmup 2 --repetitions 15 --csv build/perf/results/vulkan-translated.csv
+ALLIGATOR_GPU_BACKEND=metal ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
+    --source translated --warmup 2 --repetitions 15 --csv build/perf/results/metal-translated.csv
+ALLIGATOR_GPU_BACKEND=metal ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
+    --source native --warmup 2 --repetitions 15 --csv build/perf/results/metal-native.csv
 # Sweep admission windows in separate processes with a fixed batch and team.
 ALLIGATOR_GPU_BACKEND=vulkan ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
     --submitters 4 --depth 16 --batch 256 --items 128 \
     --csv build/perf/results/vulkan-depth-16.csv
 ```
 
-The default sweep uses one submitter, the probed compute queue count, and two
-submitters beyond that count, sharing one prepared Shader. Batch sizes are
+The Vulkan default sweep uses one submitter, the probed compute queue count, and
+two submitters beyond that count. Metal uses one submitter, the host logical CPU
+count, and two beyond that count as benchmark topology candidates; those values
+do not report Metal queue counts, hardware maxima, or prepared slot counts.
+All submitters share one prepared Shader. Batch sizes are
 1/16/256 streams; `--depth` bounds each submitter's outstanding dispatch window
 and defaults to eight. This caller-side window is not the implementation's slot
 count and is not claimed to be an optimal depth. Workers persist across samples.
@@ -303,6 +312,9 @@ dispatch throughput. Cold entries contain one observation and require repeated
 fresh processes for a distribution. Shader preparation includes compilation and
 pipeline creation together; the public interface does not expose their individual
 stage timings. Prior objects are released before each preparation interval.
+Both CSV files identify the backend and source path; the default output filename
+is `BACKEND-SOURCE_dispatch_samples.csv`. An explicit `--submitters N` replaces
+the default candidate sweep for matched native/translated comparisons.
 
 A separate instrumented pass writes every dispatch's host admission time and
 submit-to-callback or submit-to-coroutine-resume time to `.latencies.csv`, with
@@ -312,7 +324,28 @@ they are not GPU device timestamps. Coroutine frame construction and resumption
 are included in the awaiter path. The deterministic identity kernel measures
 small-dispatch overhead, not representative compute or memory bandwidth.
 
-Native Metal/CUDA, device execution timestamps, embedded identities, multiple
+Native CUDA, device execution timestamps, embedded identities, multiple
 regions, per-stage compiler profiling, and memory/residency high-water marks
 remain separate qualification work. Missing hardware, compilation errors, or
 incorrect outputs produce a nonzero result rather than timing another backend.
+
+## PrioritySlice raw and typed operation samples
+
+The existing fixed-capacity raw/typed harness keeps its deterministic 100,000-
+iteration traces and result checks. Warmup and measured repetition counts are
+now configurable, defaulting to two and 15 respectively; every measured sample
+is written before any sorting or aggregation.
+
+```sh
+ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_priority_slice_benchmark \
+    --warmup 2 --repetitions 15 --csv build/perf/results/priority.csv
+```
+
+`--timeout SECONDS` bounds each case including its warmups and verification, and
+progress is reported once per second. With no arguments, the executable writes
+`priority_samples.csv` in the working directory. CSV rows identify raw/typed
+queue, capacity, workload, iteration unit, repetition, iteration count, elapsed
+seconds, and aggregate nanoseconds per iteration. Accepted/rejected pushes count
+one push per iteration; refill and rotate traces count one pop/push pair. Median
+and range are aggregate costs, not individually timestamped request percentiles.
+The separate showdown harness and its historical reports are unchanged.

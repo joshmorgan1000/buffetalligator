@@ -4,6 +4,7 @@
  */
 #include <gpu/runtime.hpp>
 #include <gpu/backend.hpp>
+#include <memory/lifetime.hpp>
 #include <alligator/easyvulkan.hpp>
 #if defined(BUFFETALLIGATOR_HAS_METAL)
 #include <alligator/easymetal.hpp>
@@ -54,8 +55,8 @@ struct GPUSelection {
 };
 } // namespace
 const GPUDevice& gpu_device() {
-    static const GPUSelection selection;
-    return selection.device;
+    static RuntimeFinalizer lifetime(new GPUSelection, &RuntimeFinalizer::delete_owner<GPUSelection>);
+    return static_cast<GPUSelection*>(lifetime.object)->device;
 }
 DeviceMemoryUsage gpu_memory_usage() {
     const auto& device = gpu_device();

@@ -33,9 +33,9 @@ struct ShaderPrepareInfo {
     ShaderFormat format = ShaderFormat::Slices;
     size_t capacity = 1024;
     const Slice* references = nullptr;
-    std::span<const KernelGpuStage> stages;
+    std::span<const KernelGpuStage> stages{};
     uint32_t resources = 0;
-    std::span<const uint32_t> words;
+    std::span<const uint32_t> words{};
 };
 /** --------------------------------------------------------------------------------------------------------- Shader Slot
  * @brief Keeps mutable parameters and a borrowed native slot stable through retirement.

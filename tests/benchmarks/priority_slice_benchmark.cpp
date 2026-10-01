@@ -5,19 +5,57 @@
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
 #include <logging.hpp>
+#include "benchmark_support.hpp"
 #include <algorithm>
-#include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
+#include <iomanip>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace {
 using buffetalligator::PrioritySlice;
 using buffetalligator::PrioritySliceT;
 constexpr uint32_t ITEMS = 100000;
-constexpr size_t REPETITIONS = 7;
 volatile uint64_t checksum = 0;
+/** --------------------------------------------------------------------------------------------------------- Options
+ * @brief Configures repeated observations without changing the fixed deterministic operation traces.
+ */
+struct Options {
+    size_t warmup = 2;
+    size_t repetitions = 15;
+    size_t timeout = 120;
+    std::string csv = "priority_samples.csv";
+    bool help = false;
+};
+/** --------------------------------------------------------------------------------------------------------- Parse
+ * @brief Parses warmups, measured repetitions, progress timeout, and raw sample output.
+ */
+Options parse(int count, char** arguments) {
+    Options options;
+    for (int index = 1; index < count; ++index) {
+        const std::string_view argument(arguments[index]);
+        if (argument == "--help") { options.help = true; continue; }
+        benchmarks::require(index + 1 < count, "An option is missing its value; use --help.");
+        const std::string_view value(arguments[++index]);
+        if (argument == "--csv") { options.csv = value; continue; }
+        size_t number = 0;
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+        benchmarks::require(parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size(),
+            "Expected an unsigned integer option value; use --help.");
+        benchmarks::require(number != 0 || argument == "--warmup", "Only --warmup accepts zero.");
+        if (argument == "--warmup") options.warmup = number;
+        else if (argument == "--repetitions") options.repetitions = number;
+        else if (argument == "--timeout") options.timeout = number;
+        else throw std::runtime_error("Unknown option: " + std::string(argument));
+    }
+    return options;
+}
 /// @brief The queue operation measured by one benchmark case.
 enum class Workload { accepted_push, rejected_push, pop_and_refill, pop_and_rotate };
 /** --------------------------------------------------------------------------------------------------------- Push
@@ -84,34 +122,68 @@ double measure(size_t capacity) {
         throw std::runtime_error("priority workload returned an unexpected result");
     }
     checksum = checksum + observed;
-    return std::chrono::duration<double, std::nano>(end - start).count() / ITEMS;
+    return std::chrono::duration<double>(end - start).count();
 }
 /** --------------------------------------------------------------------------------------------------------- Report
  * @brief Reports the median and range across identical repetitions.
  */
 template<bool Typed, Workload Mode>
-void report(size_t capacity, const char* operation) {
-    std::array<double, REPETITIONS> samples;
-    (void)measure<Typed, Mode>(capacity);
-    for (double& sample : samples) sample = measure<Typed, Mode>(capacity);
+void report(const Options& options, std::ofstream& csv, size_t capacity, const char* operation) {
+    const char* kind = Typed ? "typed" : "raw";
+    const char* unit = Mode == Workload::accepted_push || Mode == Workload::rejected_push
+        ? "push" : "pop-push-pair";
+    benchmarks::Progress progress(std::string("PrioritySlice ") + kind + ' ' + operation
+        + " capacity=" + std::to_string(capacity), options.timeout);
+    for (size_t index = 0; index < options.warmup; ++index) (void)measure<Typed, Mode>(capacity);
+    std::vector<double> samples(options.repetitions);
+    for (size_t index = 0; index < samples.size(); ++index) {
+        samples[index] = measure<Typed, Mode>(capacity);
+        csv << kind << ',' << capacity << ',' << operation << ',' << unit << ',' << index + 1
+            << ',' << ITEMS << ',' << std::setprecision(12) << samples[index] << ','
+            << samples[index] * 1e9 / ITEMS << '\n';
+    }
+    csv.flush();
+    benchmarks::require(csv.good(), "Failed to write priority benchmark samples.");
     std::sort(samples.begin(), samples.end());
-    LOG_INFO_STREAM << (Typed ? "typed" : "raw") << " capacity=" << capacity << " " << operation
-        << ((Mode == Workload::accepted_push || Mode == Workload::rejected_push)
-            ? " ns/op median=" : " ns/pair median=")
-        << samples[REPETITIONS / 2] << " min=" << samples.front()
-        << " max=" << samples.back();
+    const size_t middle = samples.size() / 2;
+    const double median = samples.size() % 2 ? samples[middle]
+        : (samples[middle - 1] + samples[middle]) / 2;
+    LOG_INFO_STREAM << kind << " capacity=" << capacity << ' ' << operation << " ns/" << unit
+        << " (aggregate) median=" << median * 1e9 / ITEMS
+        << " min=" << samples.front() * 1e9 / ITEMS << " max=" << samples.back() * 1e9 / ITEMS
+        << "; measured repetitions=" << samples.size();
 }
 } // namespace
-int main() {
-    for (size_t capacity : {size_t(32), size_t(256)}) {
-        report<false, Workload::accepted_push>(capacity, "accepted-push");
-        report<true, Workload::accepted_push>(capacity, "accepted-push");
-        report<false, Workload::rejected_push>(capacity, "rejected-push");
-        report<true, Workload::rejected_push>(capacity, "rejected-push");
-        report<false, Workload::pop_and_refill>(capacity, "pop-and-refill");
-        report<true, Workload::pop_and_refill>(capacity, "pop-and-refill");
-        report<false, Workload::pop_and_rotate>(capacity, "pop-and-rotate");
-        report<true, Workload::pop_and_rotate>(capacity, "pop-and-rotate");
+int main(int count, char** arguments) {
+    try {
+        const Options options = parse(count, arguments);
+        if (options.help) {
+            LOG_INFO_STREAM << "Options: --warmup N (2) --repetitions N (15) --timeout SECONDS (120) "
+                << "--csv PATH (priority_samples.csv); each sample keeps the fixed 100000-operation trace.";
+            return 0;
+        }
+        std::ofstream csv(options.csv);
+        benchmarks::require(csv.is_open(), "Cannot open priority benchmark CSV output.");
+        csv << "queue,capacity,workload,iteration_unit,repetition,iterations,seconds,aggregate_nanoseconds_per_iteration\n";
+        LOG_INFO_STREAM << "PrioritySlice benchmark: warmups=" << options.warmup
+            << "; measured repetitions=" << options.repetitions << "; iterations/sample=" << ITEMS;
+#ifndef NDEBUG
+        LOG_WARN_STREAM << "Assertions enabled; these timings are not Release performance results.";
+#endif
+        for (size_t capacity : {size_t(32), size_t(256)}) {
+            report<false, Workload::accepted_push>(options, csv, capacity, "accepted-push");
+            report<true, Workload::accepted_push>(options, csv, capacity, "accepted-push");
+            report<false, Workload::rejected_push>(options, csv, capacity, "rejected-push");
+            report<true, Workload::rejected_push>(options, csv, capacity, "rejected-push");
+            report<false, Workload::pop_and_refill>(options, csv, capacity, "pop-and-refill");
+            report<true, Workload::pop_and_refill>(options, csv, capacity, "pop-and-refill");
+            report<false, Workload::pop_and_rotate>(options, csv, capacity, "pop-and-rotate");
+            report<true, Workload::pop_and_rotate>(options, csv, capacity, "pop-and-rotate");
+        }
+        LOG_INFO_STREAM << "PrioritySlice benchmark checksum=" << checksum << "; raw samples=" << options.csv;
+        return 0;
+    } catch (const std::exception& error) {
+        LOG_ERROR_STREAM << "PrioritySlice benchmark failed: " << error.what();
+        return 1;
     }
-    LOG_INFO_STREAM << "PrioritySlice benchmark checksum=" << checksum;
 }

@@ -37,7 +37,7 @@ void save_text(const std::filesystem::path& path, const std::string& text) {
  * @brief Reads the current production public-list tail without duplicating its Slice lookup logic.
  */
 std::string public_source(const std::string& body) {
-    std::ifstream input(std::string(ALLIGATOR_GATE_SOURCE_ROOT) + "/src/vulkan/vulkan.cpp");
+    std::ifstream input(std::string(ALLIGATOR_GATE_SOURCE_ROOT) + "/src/gpu/shader_source.cpp");
     const std::string implementation{std::istreambuf_iterator<char>(input), {}};
     const size_t declaration = implementation.find("std::string_view PUBLIC_GLSL_TAIL");
     require(declaration != std::string::npos, "Production public-list prelude declaration is missing");

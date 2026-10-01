@@ -7,6 +7,7 @@
  */
 #include <alligator.hpp>
 #include <alligator/atomics.hpp>
+#include <memory/lifetime.hpp>
 #include <optional>
 #include <source_location>
 #ifndef BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
@@ -46,6 +47,7 @@ private:
     AtomicContainer* total_freed_;
     /// @brief Per-type allocation totals, indexed by BuffetDescriptor::type_idx.
     std::vector<PlacementDetails> placement_details_;
+    std::array<std::unique_ptr<AtomicContainer>, 26> retired_counters_;
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
     /// @brief Live backing allocations keyed by their stable placement handles.
     std::unordered_map<const void*, AllocationInfo> allocations_;
@@ -74,8 +76,24 @@ private:
      * @return Reference to the Memory tracker instance.
      */
     static Memory& instance() {
-        static Memory* const instance = new Memory();
-        return *instance;
+        static RuntimeFinalizer lifetime(new Memory, &RuntimeFinalizer::delete_owner<Memory>);
+        static RuntimeFinalizer counters(lifetime.object, &Memory::retain_counters,
+            RuntimeFinalizer::Phase::TrackerDetach);
+        return *static_cast<Memory*>(lifetime.object);
+    }
+    /** ------------------------------------------------------------------------------------------- Retain Counters
+     * @brief Transfers accounting ownership before global values release their arena-backed payloads.
+     */
+    static void retain_counters(void* context) {
+        auto& counters = static_cast<Memory*>(context)->retired_counters_;
+        counters[0] = AtomicRegistry::remove_global("buffetalligator_allocations");
+        counters[1] = AtomicRegistry::remove_global("buffetalligator_freed");
+        for (size_t index = 0; index < 8; ++index) {
+            const std::string prefix = "buffetalligator_placement_" + std::to_string(index) + "_";
+            counters[2 + index * 3] = AtomicRegistry::remove_global(prefix + "allocations");
+            counters[3 + index * 3] = AtomicRegistry::remove_global(prefix + "freed");
+            counters[4 + index * 3] = AtomicRegistry::remove_global(prefix + "available");
+        }
     }
 public:
     /** ------------------------------------------------------------------------------------------- Deleted Copy/Move

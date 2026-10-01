@@ -1,7 +1,7 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- EasyMetal
  * @file easymetal.hpp
- * @brief Header file for the EasyMetal utility functions and classes.
+ * @brief Exposes registered shared Metal storage while native shader execution remains private.
  */
 #if defined(BUFFETALLIGATOR_HAS_METAL)
 #include <alligator.hpp>
@@ -22,7 +22,7 @@ private:
     uint64_t address_ = 0;      ///< The buffer's gpuAddress.
     size_t size_ = 0;           ///< Size in bytes.
     /** ------------------------------------------------------------------------------------------- release
-     * @brief Drops the retained MTLBuffer; defined in metal_allocator.mm.
+     * @brief Removes the retired allocation from residency and clears its native address and size.
      */
     void release();
 public:

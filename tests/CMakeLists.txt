@@ -82,6 +82,24 @@ set_tests_properties(buffetalligator_slice_region_test PROPERTIES TIMEOUT 120
     LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
 set_tests_properties(buffetalligator_slice_core_regression_test PROPERTIES TIMEOUT 120
     LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
+set_tests_properties(buffetalligator_global_slice_startup_test PROPERTIES TIMEOUT 30
+    LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
+set_tests_properties(buffetalligator_global_slice_lifetime_test PROPERTIES TIMEOUT 30
+    LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
+add_test(NAME buffetalligator_global_vulkan_lifetime
+    COMMAND buffetalligator_global_slice_lifetime_test translated)
+set_tests_properties(buffetalligator_global_vulkan_lifetime PROPERTIES TIMEOUT 60
+    LABELS "gpu;functional" SKIP_RETURN_CODE 77
+    ENVIRONMENT "ALLIGATOR_GPU_BACKEND=${BUFFETALLIGATOR_TEST_VULKAN_BACKEND}")
+if(BUFFETALLIGATOR_METAL_ENABLED AND NOT BUFFETALLIGATOR_TEST_VULKAN_BACKEND STREQUAL cpu)
+    foreach(mode IN ITEMS native late-vulkan)
+        add_test(NAME buffetalligator_global_metal_${mode}_lifetime
+            COMMAND buffetalligator_global_slice_lifetime_test ${mode})
+        set_tests_properties(buffetalligator_global_metal_${mode}_lifetime PROPERTIES
+            TIMEOUT 60 LABELS "gpu;functional" SKIP_RETURN_CODE 77
+            ENVIRONMENT "ALLIGATOR_GPU_BACKEND=auto;MTL_DEBUG_LAYER=1;MTL_SHADER_VALIDATION=1")
+    endforeach()
+endif()
 set_tests_properties(buffetalligator_network_exit_test PROPERTIES TIMEOUT 30
     LABELS "network;functional")
 add_test(NAME buffetalligator_installed_consumer

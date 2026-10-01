@@ -4,6 +4,7 @@
  */
 #include <metal/context.hpp>
 #include <metal/metal.hpp>
+#include <memory/lifetime.hpp>
 #include <algorithm>
 #include <thread>
 
@@ -24,8 +25,8 @@ MetalContext::~MetalContext() {
  * @brief Returns context storage without recursively selecting a backend.
  */
 MetalContext& metal_context() {
-    static MetalContext context;
-    return context;
+    static RuntimeFinalizer lifetime(new MetalContext, &RuntimeFinalizer::delete_owner<MetalContext>);
+    return *static_cast<MetalContext*>(lifetime.object);
 }
 /** --------------------------------------------------------------------------------------------------------- Initialize
  * @brief Probes the pointer ABI requirements and prepares the queue and supported residency mechanism.
@@ -45,13 +46,15 @@ bool MetalContext::initialize(id<MTLDevice> selected) {
     if (!selected_queue) ALLIGATOR_GPU_THROW("Metal command queue allocation failed");
     id<MTLResidencySet> selected_residency = nil;
     if (@available(macOS 15.0, *)) {
-        MTLResidencySetDescriptor* settings = [MTLResidencySetDescriptor new];
-        settings.label = @"alligator indirect allocations";
-        NSError* error = nil;
-        selected_residency = [selected newResidencySetWithDescriptor:settings error:&error];
-        if (!selected_residency) ALLIGATOR_GPU_THROW(std::string("Metal residency set: ")
-            + (error ? error.description.UTF8String : "allocation failed"));
-        [selected_queue addResidencySet:selected_residency];
+        if ([selected supportsFamily:MTLGPUFamilyApple6]) {
+            MTLResidencySetDescriptor* settings = [MTLResidencySetDescriptor new];
+            settings.label = @"alligator indirect allocations";
+            NSError* error = nil;
+            selected_residency = [selected newResidencySetWithDescriptor:settings error:&error];
+            if (!selected_residency) ALLIGATOR_GPU_THROW(std::string("Metal residency set: ")
+                + (error ? error.description.UTF8String : "allocation failed"));
+            [selected_queue addResidencySet:selected_residency];
+        }
     }
     const BuffetDescriptor* placement =
         BuffetDescriptors::descriptor_for(static_cast<MetalBuffer*>(nullptr));

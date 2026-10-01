@@ -9,6 +9,7 @@
 #include <alligator/easyvulkan.hpp>
 #include <vulkan/shader_state.hpp>
 #include <memory/tracker.hpp>
+#include <memory/lifetime.hpp>
 #include <condition_variable>
 #include <mutex>
 #include <exception>
@@ -20,7 +21,13 @@
 #include <vector>
 
 namespace buffetalligator {
-
+/** --------------------------------------------------------------------------------------------------------- Context Instance
+ * @brief Retains the lazily probed context until static owners and arena storage have retired.
+ */
+VulkanContext& VulkanContext::instance() {
+    static RuntimeFinalizer lifetime(new VulkanContext, &RuntimeFinalizer::delete_owner<VulkanContext>);
+    return *static_cast<VulkanContext*>(lifetime.object);
+}
 /** --------------------------------------------------------------------------------------------------------- unified_from_memory_properties
  * @brief Detects shared device-local host access separately from physical device topology.
  * @param properties The queried memory properties.
@@ -362,7 +369,6 @@ uint64_t VulkanContext::poll_budget_headroom() const {
  * already be destroyed.
  */
 VulkanContext::~VulkanContext() {
-    ShaderState::drain();
     alive_.store(false, std::memory_order_release);
     if (!device_) {
         return;
@@ -762,6 +768,9 @@ struct VulkanPreparedOps {
  */
 std::unique_ptr<ShaderProgram> vulkan_prepare(const ShaderPrepareInfo& info) {
     if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("No compatible Vulkan compute device");
+    if (info.capacity == 0) ALLIGATOR_GPU_THROW("Shader preparation requires nonzero parameter capacity");
+    if (info.stages.empty() && info.words.empty() && info.source.glsl.empty())
+        ALLIGATOR_GPU_THROW("Vulkan Shader preparation requires GLSL or SPIR-V source");
     const auto& properties = VulkanContext::device_properties();
     std::unique_ptr<VulkanShaderResources> native;
     if (!info.stages.empty()) {

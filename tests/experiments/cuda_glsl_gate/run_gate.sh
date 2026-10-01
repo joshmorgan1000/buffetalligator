@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+gate_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 gate_artifacts="${1:-${gate_root}/build/cuda-glsl-gate}"
 gate_compiler="${SLANGC:-slangc}"
 mkdir -p "${gate_artifacts}"
@@ -33,8 +33,8 @@ perl -0777 -e '
             "void main() { alligator_main($format->[3]); }\n";
     }
 ' "${gate_artifacts}" "${gate_root}/include/alligator/easyvulkan.hpp" \
-    "${gate_root}/src/vulkan/vulkan.cpp" \
-    "${gate_root}/experiments/metal_glsl_gate/metal_glsl_gate.mm"
+    "${gate_root}/src/gpu/shader_source.cpp" \
+    "${gate_root}/tests/experiments/metal_glsl_gate/metal_glsl_gate.mm"
 printf '#version 450\nlayout(local_size_x=16,local_size_y=4,local_size_z=1) in;\nvoid main() {}\n' \
     > "${gate_artifacts}/language-probe.glsl"
 gate_failed=0

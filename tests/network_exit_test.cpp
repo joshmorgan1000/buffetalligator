@@ -4,6 +4,7 @@
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
+#include <memory/lifetime.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <atomic>
@@ -82,7 +83,7 @@ void release_at_exit() { release_receive.release(); }
 /** --------------------------------------------------------------------------------------------------------- Verify Exit
  * @brief Checks that arena destruction itself drained callbacks before older exit handlers run.
  */
-void verify_exit() {
+void verify_exit(void*) {
     require(receive_finished.load(std::memory_order_acquire),
         "arena teardown completed before its active receive callback retired");
     require(cancellations.load(std::memory_order_acquire) == 1,
@@ -127,13 +128,13 @@ int main(int count, char** arguments) {
     LOG_INFO_STREAM << "Starting network exit scenario: " << arguments[1];
     std::optional<Slice> source;
     if (allocate_first) {
-        require(std::atexit(verify_exit) == 0, "network exit verification registration failed");
+        static RuntimeFinalizer verification(nullptr, &verify_exit);
         source.emplace(size_t(64));
     }
     const uint16_t port = listener_port();
     SliceChannel::listen(port, SliceChannel::Protocol::UDP, receive);
     if (!allocate_first) {
-        require(std::atexit(verify_exit) == 0, "network exit verification registration failed");
+        static RuntimeFinalizer verification(nullptr, &verify_exit);
         source.emplace(size_t(64));
     }
     source->get_as<uint64_t>() = 42;

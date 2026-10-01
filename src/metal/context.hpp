@@ -16,7 +16,7 @@ namespace buffetalligator {
 struct MetalContext {
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
-    id<MTLResidencySet> residency = nil;
+    id residency = nil;
     std::mutex initialization;
     std::mutex allocations;
     std::vector<id<MTLResource>> resources;

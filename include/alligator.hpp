@@ -65,6 +65,14 @@
 #include <moodycamel/blockingconcurrentqueue.h>
 
 namespace buffetalligator {
+/** --------------------------------------------------------------------------------------------------------- Alligator Initializer
+ * @brief Keeps lazy runtime owners alive through static Slice and Shader destruction.
+ */
+struct AlligatorInitializer {
+    AlligatorInitializer();
+    ~AlligatorInitializer();
+};
+static AlligatorInitializer alligator_initializer;
 /** --------------------------------------------------------------------------------------------------------- AlligatorException
  * @class AlligatorException
  * @brief Exception class for Alligator-related errors.
@@ -1234,6 +1242,7 @@ private:
     friend class Slice; friend class Memory;
     friend class VulkanKernel; friend struct SliceEntry;
     friend struct AlligatorInitializer;
+    friend struct RuntimeFinalizer;
     friend class ChainBuffet; friend class Kitchen;
     friend class ChainBuffetToken;
     friend class ShaderState;

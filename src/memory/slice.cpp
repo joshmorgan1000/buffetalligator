@@ -273,11 +273,11 @@ size_t SliceEntry::offset() const {
     return uint64_t(source.gpu_slots[index].offset) << 6;
 }
 /** --------------------------------------------------------------------------------------------------------- Entry Host Pointer
- * @brief Resolves this entry's exact byte offset through its retained backing.
+ * @brief Resolves this entry's represented byte offset through its retained backing.
  */
 void* SliceEntry::host_ptr() { return token()->raw(offset()); }
 /** --------------------------------------------------------------------------------------------------------- Constant Entry Host Pointer
- * @brief Resolves this entry's exact byte offset for constant access.
+ * @brief Resolves this entry's represented byte offset for constant access.
  */
 const void* SliceEntry::host_ptr() const { return token()->raw(offset()); }
 /** --------------------------------------------------------------------------------------------------------- Entry GPU Record

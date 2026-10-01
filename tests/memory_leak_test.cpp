@@ -4,7 +4,7 @@
  */
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
-#include <alligator/easyvulkan.hpp>
+#include <gpu/runtime.hpp>
 #include <memory/tracker.hpp>
 #include <algorithm>
 #include <array>
@@ -183,6 +183,7 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
     const size_t allocated_before = Memory::placement_allocations(*placement);
     size_t resident_before = 0;
     std::optional<size_t> malloc_before;
+    DeviceMemoryUsage device_before;
     for (size_t round = 0; round <= rounds; ++round) {
         LOG_INFO_STREAM << placement->type_name << ": ownership churn round "
             << (round + 1) << '/' << (rounds + 1);
@@ -190,6 +191,7 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
             require(settle(*placement, usage_before), "warmup round leaked");
             resident_before = settled_residency();  // The warmup round has touched the live chain.
             malloc_before = malloc_in_use();
+            if (device_memory) device_before = GPU::memory_usage();
         }
         std::vector<std::thread> team;
         for (size_t thread = 0; thread < threads; ++thread) {
@@ -216,6 +218,19 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
         LOG_INFO_STREAM << placement->type_name << ": application-owned heap change "
             << malloc_growth << " bytes";
         require(malloc_growth < (1ll << 20), "the application heap kept memory the churn released");
+    }
+    if (device_memory) {
+        const DeviceMemoryUsage device_after = GPU::memory_usage();
+        if (device_before.process_bytes && device_after.process_bytes) {
+            const long long device_growth = static_cast<long long>(*device_after.process_bytes)
+                - static_cast<long long>(*device_before.process_bytes);
+            LOG_INFO_STREAM << placement->type_name << ": native process allocation change "
+                << device_growth << " bytes";
+            require(device_growth < static_cast<long long>(slab_bytes),
+                "native device allocation usage grew past the live chain");
+        } else {
+            LOG_INFO_STREAM << placement->type_name << ": native process allocation usage unavailable";
+        }
     }
 #if defined(ALLIGATOR_TEST_ASAN)
     static_cast<void>(device_memory);
@@ -258,7 +273,7 @@ int main() {
     static_cast<void>(Slice::default_placement());
     exercise(BuffetDescriptors::get(0), live_budget, churn_budget, false);
     if (GPU::exists()) {
-        exercise(VulkanContext::buffer_placement(), live_budget, churn_budget, true);
+        exercise(gpu_device().placement, live_budget, churn_budget, true);
     }
     std::printf("memory leak test passed\n");
     return 0;
