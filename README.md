@@ -101,6 +101,84 @@ cache.resize(64); // Evicts key 3 and retains key 1.
 
 The function receives a nonempty `[first, last)` range in most-to-least-recently-used order, exposing immutable key and Slice pairs. It must be `noexcept`, return an iterator inside that range, and never reenter or mutate the cache. Each call selects one victim; the cache releases it and repeats until its byte budget holds. During `set`, the new or replaced entry is excluded from the range and an oversized entry stays alone; during `resize`, every entry is eligible. The function is invoked directly through its compile-time template argument. Omit it to retain default LRU eviction.
 
+## Kitchen and Orders
+
+`Order` binds a concrete function to variadic arguments held in the Slice arena. Arguments are
+decayed and owned; use `std::ref` for an explicit borrow. Orders are move-only, and callbacks can
+own their own variadic arguments through `add_callback`. `OrderCompletion::wait()` observes
+handler writes, argument destruction, and callbacks, then rethrows the first exception.
+
+```cpp
+OrderCompletion complete;
+Order order(&process_request, request_id, std::move(request_slice));
+order.complete_with(complete);
+Kitchen::inst().submit(std::move(order));
+complete.wait();
+```
+
+Use `submit_waiting` for blocking storage work. `submit_slice` schedules a handler returning a
+`Slice` and moves that result into a caller-owned destination without copying its payload:
+
+```cpp
+Slice destination;
+OrderCompletion loaded;
+Kitchen::inst().submit_slice(&read_block, destination, loaded, descriptor, offset, bytes);
+loaded.wait();
+```
+
+The destination, completion, and explicitly borrowed arguments must outlive completion.
+Replacing the destination does not retarget previously copied Slice handles. Completion objects
+are one-shot: construct a fresh completion or latch for each invocation.
+
+Register a reusable fanout handler with signature
+`void(size_t rank, size_t count, const Arguments&...)`:
+
+```cpp
+auto fanout = Kitchen::inst().register_fanout(Kitchen::inst().max_threads(), &process_partition);
+std::latch processed{1};
+fanout.invoke(processed, input_slice);
+processed.wait();
+```
+
+Chain a single-threaded preparation Order into a prepared fanout invocation:
+
+```cpp
+std::latch finished{1};
+Order preparation(&prepare_input, &shared_state);
+preparation.then(fanout.order(finished, &shared_state));
+Kitchen::inst().submit(std::move(preparation));
+finished.wait();
+```
+
+`then` (also available as `add_callback(Order&&)`) owns the next Order and submits it after its
+predecessor succeeds. A failure skips the remaining handlers and reaches their terminal completion.
+The registered fanout must outlive prepared invocations and chains that reference it. A caller's
+`std::latch` receives one arrival per completed invocation after all ranks and callbacks finish;
+use `OrderCompletion` when the caller also needs exception propagation. Completion objects and
+latches attached to the same Order must both remain alive until both signals have been observed.
+
+Each registration owns exactly the requested number of persistent threads and a separate bounded
+queue. Every rank runs once per invocation; queued invocations execute one team-wide round at a
+time, with `std::latch` joining its ranks and atomic wait/notify waking the team between rounds.
+Arguments are shared as const values, while pointers and `std::ref` still require the
+handler to synchronize any shared mutations. Registration destruction drains and joins its team.
+
+Thread creation, producer registration, and queue provisioning happen during setup. Call
+`Kitchen::prepare_producer()` on each submitting thread to register its tokens and reserve reusable
+storage for each producer lane before its submission hot path. Queue submissions never grow queue
+storage: `try_submit`,
+`try_submit_waiting`, and `try_submit_bulk` leave rejected Orders untouched, while `submit`
+variants throw `KitchenException` on exhaustion. Bulk submission accepts ordinary compute Orders
+only. Fanout capacity is configurable at registration and counts queued invocations separately
+from the active invocation; `try_invoke` returns false
+when full and destroys its newly constructed arguments without signaling completion.
+
+Order arguments use arena claims rather than separate heap objects; arena provisioning and
+allocations performed by application argument types remain their owners' responsibility.
+`Kitchen::drain()`, fanout drain/destruction, and `set_max_threads()` require quiescent external
+producers and must run outside the work they are waiting for. Resizing drains and restarts the
+compute team; the default compute and waiting teams each use the reported hardware thread count.
+
 ## Networking
 
 `SliceChannel` provides TCP, UDP, and libfabric message transports, with encrypted variants of each. Both peers must register matching placement names. Sends capture the Slice's bytes before returning; responses arrive asynchronously on the shared network thread.

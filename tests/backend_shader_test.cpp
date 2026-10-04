@@ -120,9 +120,9 @@ void typed_io(bool native, const BuffetDescriptor* placement) {
     std::string body(native ? "#define uvec4 uint4\n#define ivec4 int4\n#define vec4 float4\n" : "");
     body += typed_body;
     Shader shader(source(body, native), "backend_typed_io");
-    TaskCountdown complete;
+    OrderCountdown complete;
     ShaderResult result;
-    shader(payload, result, &TaskCountdown::arrive, &complete);
+    shader(payload, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     require(values.unsigned_word == 0xB791F3DDu && values.signed_word == -117,
@@ -155,7 +155,7 @@ void typed_io(bool native, const BuffetDescriptor* placement) {
     values.packed_bytes = 0x1728394Au;
     values.packed_halfwords = 0x2468ABCDu;
     complete.rearm(1);
-    shader(payload, result, &TaskCountdown::arrive, &complete);
+    shader(payload, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     require(values.unsigned_word == 0xA4A7A6A1u && values.signed_word == 2147483630,
@@ -257,7 +257,7 @@ void packed_io(bool native, const BuffetDescriptor* placement) {
     storage.data<uint32_t>()[144] = 0x2468ACE0u;
     const bool half = native || gpu_device().kind == GPUBackend::Metal
         || VulkanContext::device_properties().supports_float16;
-    TaskCountdown complete;
+    OrderCountdown complete;
     ShaderResult result;
     for (size_t round = 0; round < cases.size(); ++round) {
         const PackedCase& expected = cases[round];
@@ -271,7 +271,7 @@ void packed_io(bool native, const BuffetDescriptor* placement) {
         words[96] = 0xD4C3B2A1u;
         words[97] = 0x98761234u;
         if (round != 0) complete.rearm(1);
-        shader(payload, result, &TaskCountdown::arrive, &complete);
+        shader(payload, result, &OrderCountdown::arrive, &complete);
         complete.wait();
         result.rethrow();
         for (size_t index = 4; index < 14; ++index)
@@ -333,8 +333,8 @@ void optimized_noop(bool native, const BuffetDescriptor* placement) {
     Slice payload(64, placement);
     payload.get_as<uint32_t>() = 73;
     ShaderResult result;
-    TaskCountdown finished;
-    shader(payload, result, &TaskCountdown::arrive, &finished);
+    OrderCountdown finished;
+    shader(payload, result, &OrderCountdown::arrive, &finished);
     finished.wait();
     result.rethrow();
     require(payload.get_as<uint32_t>() == 73, "An optimized no-op shader changed its payload");
@@ -355,8 +355,8 @@ void identity_and_placement(bool native, const BuffetDescriptor* placement) {
     for (size_t index = 0; index < streams.size(); ++index)
         streams[index].get_as<uint32_t>() = uint32_t(100 + index);
     ShaderResult result;
-    TaskCountdown finished;
-    shader(streams.data(), streams.size(), result, &TaskCountdown::arrive, &finished);
+    OrderCountdown finished;
+    shader(streams.data(), streams.size(), result, &OrderCountdown::arrive, &finished);
     backing.free();
     finished.wait();
     result.rethrow();
@@ -386,11 +386,11 @@ void alligator_main(Slice invocation) {
     Slice invocation(64, placement);
     invocation.data<uint32_t>()[0] = dependencies[0].id();
     invocation.data<uint32_t>()[1] = dependencies[1].id();
-    TaskCountdown finished;
+    OrderCountdown finished;
     ShaderResult result;
     {
         Shader shader(source(body, native), "backend_embedded");
-        shader(invocation, result, &TaskCountdown::arrive, &finished, 1, dependencies);
+        shader(invocation, result, &OrderCountdown::arrive, &finished, 1, dependencies);
     }
     invocation.free();
     for (Slice& dependency : dependencies) dependency.free();
@@ -423,7 +423,7 @@ void dispatch_rounds(bool native, const BuffetDescriptor* placement) {
     prepared.dispatch(streams.data(), 1, 1);
     require(streams[0].data<uint32_t>()[3] == 1, "A shorter dispatch retained an earlier round count");
 }
-/** --------------------------------------------------------------------------------------------------------- Coroutine Task
+/** --------------------------------------------------------------------------------------------------------- Coroutine Order
  * @brief Keeps an external cancellation owner until its suspended frame is safe to destroy.
  */
 struct CoroutineTask {
@@ -446,7 +446,7 @@ struct CoroutineTask {
  * @brief Publishes resumed state and terminal exceptions outside the coroutine frame.
  */
 struct CoroutineContext {
-    TaskCountdown finished;
+    OrderCountdown finished;
     bool resumed = false;
     std::exception_ptr error;
 };
@@ -456,7 +456,7 @@ struct CoroutineContext {
 CoroutineTask await_completion(ShaderAwaiter awaiter, CoroutineContext* context) {
     try { co_await std::move(awaiter); context->resumed = true; }
     catch (...) { context->error = std::current_exception(); }
-    TaskCountdown::arrive(&context->finished);
+    OrderCountdown::arrive(&context->finished);
 }
 /** --------------------------------------------------------------------------------------------------------- Coroutine Ownership
  * @brief Verifies real resumption, zero-count completion, and managed frame cancellation.
@@ -486,9 +486,9 @@ void coroutine_ownership(bool native, const BuffetDescriptor* placement) {
         pending_task.frame.resume();
         cancellation.cancel();
     }
-    TaskCountdown zero_finished;
+    OrderCountdown zero_finished;
     ShaderResult zero;
-    shader(nullptr, 0, zero, &TaskCountdown::arrive, &zero_finished);
+    shader(nullptr, 0, zero, &OrderCountdown::arrive, &zero_finished);
     zero_finished.wait();
     zero.rethrow();
 }
@@ -499,10 +499,10 @@ struct ConcurrentContext {
     Shader* shader;
     Slice stream;
     ShaderResult result;
-    TaskCountdown finished;
+    OrderCountdown finished;
     static void submit(ConcurrentContext* context) {
         (*context->shader)(context->stream, context->result,
-            &TaskCountdown::arrive, &context->finished);
+            &OrderCountdown::arrive, &context->finished);
         context->finished.wait();
         context->result.rethrow();
     }
@@ -540,15 +540,15 @@ void program_roundtrip(bool native, const BuffetDescriptor* placement) {
     Shader second = GPU::decode(encoded);
     Slice payload(64, placement);
     payload.get_as<uint32_t>() = 1234;
-    TaskCountdown finished;
+    OrderCountdown finished;
     ShaderResult result;
-    first(payload, result, &TaskCountdown::arrive, &finished);
+    first(payload, result, &OrderCountdown::arrive, &finished);
     finished.wait();
     result.rethrow();
     check_identity(payload);
     payload.data<uint32_t>()[1] = 0;
     finished.rearm(1);
-    second(payload, result, &TaskCountdown::arrive, &finished);
+    second(payload, result, &OrderCountdown::arrive, &finished);
     encoded.free();
     finished.wait();
     result.rethrow();
@@ -565,8 +565,8 @@ void translated_jobs(const BuffetDescriptor* placement) {
     for (Slice& stream : streams) stream.data<uint32_t>()[1] = 4;
     Slice encoded = GPU::compile_glsl(VULKAN_GLSL_L2_EXAMPLE);
     ShaderResult result;
-    TaskCountdown finished;
-    GPU::run(encoded, streams.data(), streams.size(), result, &TaskCountdown::arrive, &finished);
+    OrderCountdown finished;
+    GPU::run(encoded, streams.data(), streams.size(), result, &OrderCountdown::arrive, &finished);
     encoded.free();
     finished.wait();
     result.rethrow();
@@ -656,8 +656,8 @@ void region_directory(bool native, const BuffetDescriptor* placement) {
     original.free();
     Shader shader(source(identity_body, native), "backend_region");
     ShaderResult result;
-    TaskCountdown finished;
-    shader(retained, result, &TaskCountdown::arrive, &finished);
+    OrderCountdown finished;
+    shader(retained, result, &OrderCountdown::arrive, &finished);
     finished.wait();
     result.rethrow();
     check_identity(retained);

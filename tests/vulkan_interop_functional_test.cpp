@@ -85,9 +85,9 @@ static void vulkan_typed_io() {
     require(VulkanKernel::device_address(payload) % alignof(TypedPayload) == 0,
         "typed shader payload is not aligned for vector4 helpers");
     Shader shader(TYPED_SHADER, "vulkan_typed_io");
-    TaskCountdown complete;
+    OrderCountdown complete;
     ShaderResult result;
-    shader(payload, result, &TaskCountdown::arrive, &complete);
+    shader(payload, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     require(values.unsigned_word == 0xB791F3DDu && values.signed_word == -117,
@@ -120,7 +120,7 @@ static void vulkan_typed_io() {
     values.packed_bytes = 0x1728394Au;
     values.packed_halfwords = 0x2468ABCDu;
     complete.rearm(1);
-    shader(payload, result, &TaskCountdown::arrive, &complete);
+    shader(payload, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     require(values.unsigned_word == 0xA4A7A6A1u && values.signed_word == 2147483630,

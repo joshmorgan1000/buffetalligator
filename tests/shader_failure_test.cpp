@@ -57,15 +57,15 @@ static void rejected_admission() {
     auto shader = std::make_unique<Shader>(INCREMENT_BODY, "rejected_admission");
     Slice payload(64, true, VulkanContext::buffer_placement());
     SliceEntry* entry = SliceEntry::from_slice(payload);
-    TaskCountdown unexpected;
+    OrderCountdown unexpected;
     shader_test_fail_admission.store(true, std::memory_order_release);
     bool rejected = false;
-    try { (*shader)(payload, result, &TaskCountdown::arrive, &unexpected); }
+    try { (*shader)(payload, result, &OrderCountdown::arrive, &unexpected); }
     catch (const std::bad_alloc&) { rejected = true; }
     require(rejected && !result.ready(), "Rejected admission published a completed result");
     require(entry->owners.load(std::memory_order_acquire) == 1,
         "Rejected admission left a captured Slice identity in its result");
-    require(unexpected.pending.load(std::memory_order_acquire) == 1,
+    require(!unexpected.ready(),
         "Rejected admission invoked a completion callback");
     shader.reset();
     require(shader_test_live_slots.load() == 0,
@@ -79,7 +79,7 @@ static void rejected_admission() {
  */
 struct CompletionObservation {
     ShaderResult result;
-    TaskCountdown complete;
+    OrderCountdown complete;
     std::atomic<uint32_t> callbacks{0};
     SliceEntry* entry = nullptr;
     uint32_t* payload = nullptr;
@@ -96,7 +96,7 @@ struct CompletionObservation {
             && *state.payload == state.expected_value,
             "Completion lost its retained identity or observed an unsubmitted write");
         state.callbacks.fetch_add(1, std::memory_order_relaxed);
-        TaskCountdown::arrive(&state.complete);
+        OrderCountdown::arrive(&state.complete);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Submission Failure
@@ -141,10 +141,10 @@ static void submission_failure() {
  * @brief Holds coroutine completion evidence outside the suspended frame.
  */
 struct CoroutineObservation {
-    TaskCountdown complete;
+    OrderCountdown complete;
     std::atomic<uint32_t> failures{0};
 };
-/** --------------------------------------------------------------------------------------------------------- Failure Task
+/** --------------------------------------------------------------------------------------------------------- Failure Order
  * @brief Cancels through retained operation state before destroying a managed coroutine frame.
  */
 struct FailureTask {
@@ -169,7 +169,7 @@ struct FailureTask {
 static FailureTask await_failure(ShaderAwaiter awaiter, CoroutineObservation* context) {
     try { co_await std::move(awaiter); }
     catch (const GPUException&) { context->failures.fetch_add(1, std::memory_order_relaxed); }
-    TaskCountdown::arrive(&context->complete);
+    OrderCountdown::arrive(&context->complete);
 }
 /** --------------------------------------------------------------------------------------------------------- Coroutine Failure
  * @brief Delivers a failed submission to one resumed coroutine after public Shader destruction.
@@ -211,8 +211,8 @@ static void cache_retry() {
     Slice payload(64, VulkanContext::buffer_placement());
     payload.get_as<uint32_t>() = 123;
     ShaderResult result;
-    TaskCountdown complete;
-    recovered(payload, result, &TaskCountdown::arrive, &complete);
+    OrderCountdown complete;
+    recovered(payload, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     require(payload.get_as<uint32_t>() == 124, "A failed cache insertion prevented later preparation");

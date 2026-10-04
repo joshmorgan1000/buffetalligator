@@ -13,6 +13,9 @@ foreach(source IN LISTS test_sources)
 endforeach()
 set_tests_properties(buffetalligator_memory_tracker_test PROPERTIES TIMEOUT 30)
 set_tests_properties(buffetalligator_worker_pool_idle_test PROPERTIES TIMEOUT 15 LABELS functional)
+set_tests_properties(buffetalligator_kitchen_order_test buffetalligator_kitchen_allocation_test
+    buffetalligator_kitchen_producer_capacity_test
+    PROPERTIES TIMEOUT 45 LABELS "kitchen;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
 foreach(case IN ITEMS vulkan_shader_identity vulkan_reference_dispatch vulkan_job_dispatch
     vulkan_embedded_slices vulkan_dispatch_rounds vulkan_async_completion
     vulkan_program_roundtrip vulkan_coroutine_completion vulkan_region_spread)

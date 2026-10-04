@@ -61,6 +61,8 @@ add_library(alligator STATIC
     src/memory/registry.cpp
     src/memory/chainbuffet.cpp
     src/kitchen/kitchen.cpp
+    src/kitchen/order.cpp
+    src/kitchen/fanout.cpp
     src/memory/mmap_allocator.cpp
     src/containers/slicequeue.cpp
     src/containers/slicemap.cpp

@@ -24,19 +24,11 @@ find_package(OpenMP COMPONENTS CXX)
 if(NOT OpenMP_CXX_FOUND)
     message(STATUS "Experiments: OpenMP not found, OpenMP variants skipped (brew install libomp)")
 endif()
-# Experiments link the Kitchen's source directly so they build even while the library does not.
-add_library(buffetalligator_experiment_kitchen OBJECT ${PROJECT_SOURCE_DIR}/src/kitchen/kitchen.cpp)
-target_include_directories(buffetalligator_experiment_kitchen PUBLIC
-    ${PROJECT_SOURCE_DIR}/include
-    ${BUFFETALLIGATOR_DEPS_DIR}/concurrentqueue/include
-)
-target_compile_features(buffetalligator_experiment_kitchen PUBLIC cxx_std_20)
-target_link_libraries(buffetalligator_experiment_kitchen PUBLIC logging::logging Threads::Threads)
 foreach(source IN LISTS experiment_sources)
     get_filename_component(name "${source}" NAME_WE)
     set(target buffetalligator_${name})
     add_executable(${target} "${source}")
-    target_link_libraries(${target} PRIVATE buffetalligator_experiment_kitchen)
+    target_link_libraries(${target} PRIVATE alligator::alligator)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     if(NOT APPLE AND BUFFETALLIGATOR_DISPATCH_INCLUDE AND BUFFETALLIGATOR_DISPATCH_LIBRARY)
         target_include_directories(${target} PRIVATE ${BUFFETALLIGATOR_DISPATCH_INCLUDE})

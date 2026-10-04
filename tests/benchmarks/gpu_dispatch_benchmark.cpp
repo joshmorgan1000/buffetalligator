@@ -92,7 +92,7 @@ void alligator_main(Slice stream) {
     slice_store_u32(stream, 3u, uint(slice_size(stream)));
 }
 )glsl";
-/** --------------------------------------------------------------------------------------------------------- Coroutine Task
+/** --------------------------------------------------------------------------------------------------------- Coroutine Order
  * @brief Cancels retained suspension before the benchmark destroys its owned coroutine frame.
  */
 struct CoroutineTask {
@@ -120,7 +120,7 @@ struct CoroutineTask {
  */
 struct Dispatch {
     std::vector<Slice> streams;
-    TaskCountdown finished{1};
+    OrderCountdown finished{1};
     ShaderResult result;
     std::optional<CoroutineTask> coroutine;
     std::exception_ptr error;
@@ -137,7 +137,7 @@ struct Dispatch {
             dispatch.nanoseconds = std::chrono::duration<double, std::nano>(
                 Clock::now() - dispatch.started).count();
         }
-        TaskCountdown::arrive(&dispatch.finished);
+        OrderCountdown::arrive(&dispatch.finished);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Await Dispatch

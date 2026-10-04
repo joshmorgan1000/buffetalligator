@@ -12,8 +12,8 @@
 namespace {
 using namespace benchmarks;
 using buffetalligator::Kitchen;
-using buffetalligator::Task;
-using buffetalligator::TaskCountdown;
+using buffetalligator::Order;
+using buffetalligator::OrderCountdown;
 /** --------------------------------------------------------------------------------------------------------- Configuration
  * @brief Keeps task and latency work sizes alongside shared sample-reporting options.
  */
@@ -31,6 +31,9 @@ struct Configuration {
 };
 /** --------------------------------------------------------------------------------------------------------- Configuration Parser
  * @brief Preserves task controls while adding explicit warmup, progress, and CSV output options.
+ * @param count The number of command-line arguments.
+ * @param arguments The command-line arguments.
+ * @return The validated benchmark configuration.
  */
 Configuration configuration(int count, char** arguments) {
     Configuration result;
@@ -63,43 +66,68 @@ Configuration configuration(int count, char** arguments) {
         "Latency sample count overflow.");
     return result;
 }
-/** --------------------------------------------------------------------------------------------------------- Empty Task
+/** --------------------------------------------------------------------------------------------------------- Empty Order
  * @brief Leaves the measured work entirely in task submission and completion scheduling.
  */
 void empty_task(void*) {}
 /** --------------------------------------------------------------------------------------------------------- Throughput Workload
+ * @struct ThroughputWorkload
  * @brief Reuses batch storage while every producer waits for the final completed task.
  */
 struct ThroughputWorkload {
     size_t tasks;
     size_t producers;
     bool bulk;
-    TaskCountdown finished;
-    Task task;
-    std::vector<Task> batch;
+    size_t batch_size;
+    OrderCountdown finished;
+    std::vector<Order> batch;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Prepares disjoint producer batches and their shared completion latch.
+     * @param config The benchmark configuration.
+     * @param workers The number of submitting threads.
+     * @param batched Whether submissions use the bulk endpoint.
+     */
     ThroughputWorkload(const Configuration& config, size_t workers, bool batched)
-        : tasks(config.common.items), producers(workers), bulk(batched),
+        : tasks(config.common.items),
+          producers(workers),
+          bulk(batched),
+          batch_size(config.common.batch),
           finished(static_cast<uint32_t>(tasks)),
-          task{&empty_task, nullptr, &TaskCountdown::arrive, &finished},
-          batch(config.common.batch, task) {}
+          batch(workers * batch_size) {}
     /** ------------------------------------------------------------------------------------------- Prepare
      * @brief Rearms completion after the persistent producer team has finished its previous sample.
      */
-    void prepare() { finished.rearm(static_cast<uint32_t>(tasks)); }
+    void prepare() {
+        Kitchen::inst().drain();
+        finished.rearm(static_cast<uint32_t>(tasks));
+    }
     /** ------------------------------------------------------------------------------------------- Run
      * @brief Submits an exact partition and includes completion observation in the measured interval.
+     * @param producer The submitting thread's partition index.
      */
     void run(size_t producer) {
         const size_t first = partition(tasks, producer, producers);
         const size_t last = partition(tasks, producer + 1, producers);
         if (bulk) {
+            Order* records = batch.data() + producer * batch_size;
             for (size_t index = first; index < last;) {
-                const size_t count = std::min(batch.size(), last - index);
-                Kitchen::inst().submit_bulk(batch.data(), count);
+                const size_t count = std::min(batch_size, last - index);
+                for (size_t record = 0; record < count; ++record) {
+                    records[record] = Order{&empty_task, nullptr,
+                        &OrderCountdown::arrive, &finished};
+                }
+                while (!Kitchen::inst().try_submit_bulk(records, count)) {
+                    std::this_thread::yield();
+                }
                 index += count;
             }
         } else {
-            for (size_t index = first; index < last; ++index) Kitchen::inst().submit(task);
+            for (size_t index = first; index < last; ++index) {
+                Order order{&empty_task, nullptr, &OrderCountdown::arrive, &finished};
+                while (!Kitchen::inst().try_submit(std::move(order))) {
+                    std::this_thread::yield();
+                }
+            }
         }
         finished.wait();
     }
@@ -124,6 +152,7 @@ void throughput(const Configuration& config, size_t producers, bool bulk, Report
         const double elapsed = team.measure();
         if (sample >= options.warmup) seconds.push_back(elapsed);
     }
+    Kitchen::inst().drain();
     reporter.report("Kitchen", workload, shape, options, options.items, std::move(seconds));
 }
 /** --------------------------------------------------------------------------------------------------------- Latency
@@ -136,7 +165,7 @@ void latency(const Configuration& config, bool parked, std::ofstream& csv, size_
     LOG_INFO_STREAM << "Timing Kitchen " << label << " latency; " << count
         << " round trips per repetition; parking=" << (parked ? 2 : 0) << " ms";
     Progress progress("Kitchen " + label + " submit-to-completion", config.common.timeout);
-    TaskCountdown finished(1);
+    OrderCountdown finished(1);
     std::vector<double> sample(count);
     std::vector<double> measured;
     measured.reserve(count * config.common.repetitions);
@@ -144,9 +173,13 @@ void latency(const Configuration& config, bool parked, std::ofstream& csv, size_
         repetition < config.common.warmup + config.common.repetitions; ++repetition) {
         for (size_t index = 0; index < count; ++index) {
             if (parked) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            Kitchen::inst().drain();
             finished.rearm(1);
             const Clock::time_point started = Clock::now();
-            Kitchen::inst().submit(&empty_task, nullptr, &TaskCountdown::arrive, &finished);
+            Order order{&empty_task, nullptr, &OrderCountdown::arrive, &finished};
+            while (!Kitchen::inst().try_submit(std::move(order))) {
+                std::this_thread::yield();
+            }
             finished.wait();
             sample[index] = std::chrono::duration<double, std::nano>(Clock::now() - started).count();
         }
@@ -160,6 +193,7 @@ void latency(const Configuration& config, bool parked, std::ofstream& csv, size_
         csv.flush();
         require(csv.good(), "Failed to write Kitchen latency samples.");
     }
+    Kitchen::inst().drain();
     std::sort(measured.begin(), measured.end());
     LOG_INFO_STREAM << "Kitchen " << label << " submit-to-completion: p50="
         << measured[(measured.size() - 1) / 2] << " ns, p95="

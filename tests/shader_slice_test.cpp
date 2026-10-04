@@ -89,8 +89,8 @@ static void region_spread() {
     invocation.data<uint32_t>()[1] = dependencies[1].id();
     Shader shader(IDENTITY_BODY, "region_spread");
     ShaderResult result;
-    TaskCountdown complete;
-    shader(invocation, result, &TaskCountdown::arrive, &complete, 1, dependencies);
+    OrderCountdown complete;
+    shader(invocation, result, &OrderCountdown::arrive, &complete, 1, dependencies);
     dependencies[0].free();
     dependencies[1].free();
     storage.free();
@@ -142,9 +142,9 @@ static void job_dispatch() {
         stream.data<float>()[11] = values[7];
     }
     Slice encoded = GPU::compile_glsl(VULKAN_GLSL_L2_EXAMPLE);
-    TaskCountdown complete;
+    OrderCountdown complete;
     ShaderResult result;
-    GPU::run(encoded, streams.data(), streams.size(), result, &TaskCountdown::arrive, &complete);
+    GPU::run(encoded, streams.data(), streams.size(), result, &OrderCountdown::arrive, &complete);
     encoded.free();
     complete.wait();
     result.rethrow();
@@ -175,9 +175,9 @@ void alligator_main(Slice invocation) {
     slice_store_u32(destination, 0u, slice_load_u32(source, 0u) + 1u);
 }
 )glsl", "embedded_handles");
-    TaskCountdown complete;
+    OrderCountdown complete;
     ShaderResult result;
-    shader(storage, result, &TaskCountdown::arrive, &complete, 1, embedded->payloads);
+    shader(storage, result, &OrderCountdown::arrive, &complete, 1, embedded->payloads);
     complete.wait();
     result.rethrow();
     require(embedded->payloads[1].get_as<uint32_t>() == 18 && embedded->marker == 123,
@@ -222,7 +222,7 @@ void alligator_main(Slice stream) {
  * @brief Owns completion contexts that may submit again and destroy their Shader from a callback.
  */
 struct ReentrantCompletion {
-    TaskCountdown complete{2};
+    OrderCountdown complete{2};
     ShaderResult first;
     ShaderResult second;
     std::unique_ptr<Shader> shader;
@@ -234,7 +234,7 @@ struct ReentrantCompletion {
         state.second.rethrow();
         require(state.next.get_as<uint32_t>() == 2, "Nested dispatch lost its source");
         state.callbacks.fetch_add(1);
-        TaskCountdown::arrive(&state.complete);
+        OrderCountdown::arrive(&state.complete);
     }
     static void reenter(void* context) {
         auto& state = *static_cast<ReentrantCompletion*>(context);
@@ -243,7 +243,7 @@ struct ReentrantCompletion {
         (*state.shader)(state.next, state.second, &finish, &state);
         state.shader.reset();
         state.callbacks.fetch_add(1);
-        TaskCountdown::arrive(&state.complete);
+        OrderCountdown::arrive(&state.complete);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Concurrent Submission
@@ -253,16 +253,17 @@ struct ConcurrentSubmission {
     Shader* shader;
     Slice stream;
     ShaderResult result;
-    TaskCountdown* complete;
+    OrderCountdown* complete;
     static void run(ConcurrentSubmission* context) {
-        (*context->shader)(context->stream, context->result, &TaskCountdown::arrive, context->complete);
+        (*context->shader)(context->stream, context->result,
+            &OrderCountdown::arrive, context->complete);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Throwing Completion
  * @brief Signals observation before exercising terminal callback exception capture.
  */
 static void throwing_completion(void* context) {
-    TaskCountdown::arrive(context);
+    OrderCountdown::arrive(context);
     ALLIGATOR_GPU_THROW("Expected completion callback failure");
 }
 /** --------------------------------------------------------------------------------------------------------- Async Completion
@@ -283,8 +284,8 @@ static void async_completion() {
     require(state.callbacks.load() == 2 && !state.shader, "Callbacks were duplicated or destruction blocked");
     Shader zero(INCREMENT_BODY, "zero_dispatch");
     ShaderResult result;
-    TaskCountdown complete;
-    zero(nullptr, 0, result, &TaskCountdown::arrive, &complete);
+    OrderCountdown complete;
+    zero(nullptr, 0, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     Slice heap(64, BuffetDescriptors::get(0));
@@ -298,7 +299,7 @@ static void async_completion() {
     try { result.rethrow(); } catch (const GPUException&) { callback_failed = true; }
     require(callback_failed, "A callback exception was not retained in its result");
     const size_t producers = VulkanContext::queue_count() + 2;
-    TaskCountdown concurrent_complete{uint32_t(producers)};
+    OrderCountdown concurrent_complete{uint32_t(producers)};
     std::vector<std::unique_ptr<ConcurrentSubmission>> submissions;
     std::vector<std::thread> threads;
     for (size_t index = 0; index < producers; ++index) {
@@ -333,8 +334,8 @@ static void program_roundtrip() {
     Slice payload(64, VulkanContext::buffer_placement());
     payload.get_as<uint32_t>() = 9;
     ShaderResult result;
-    TaskCountdown complete;
-    decoded(payload, result, &TaskCountdown::arrive, &complete);
+    OrderCountdown complete;
+    decoded(payload, result, &OrderCountdown::arrive, &complete);
     complete.wait();
     result.rethrow();
     require(payload.get_as<uint32_t>() == 10, "Decoded source did not reproduce the prepared program");
@@ -347,10 +348,10 @@ static void program_roundtrip() {
  * @brief Records a managed coroutine's resumed state outside its frame.
  */
 struct CoroutineContext {
-    TaskCountdown complete;
+    OrderCountdown complete;
     std::atomic<bool> resumed{false};
 };
-/** --------------------------------------------------------------------------------------------------------- Coroutine Task
+/** --------------------------------------------------------------------------------------------------------- Coroutine Order
  * @brief Cancels through an externally owned operation handle before destroying its frame.
  */
 struct CoroutineTask {
@@ -375,7 +376,7 @@ struct CoroutineTask {
 static CoroutineTask await_dispatch(ShaderAwaiter awaiter, CoroutineContext* context) {
     co_await std::move(awaiter);
     context->resumed.store(true, std::memory_order_release);
-    TaskCountdown::arrive(&context->complete);
+    OrderCountdown::arrive(&context->complete);
 }
 /** --------------------------------------------------------------------------------------------------------- Coroutine Completion
  * @brief Exercises completion-publication races and cancellation before managed frame destruction.

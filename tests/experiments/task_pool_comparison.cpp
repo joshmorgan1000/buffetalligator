@@ -1,8 +1,6 @@
-/** --------------------------------------------------------------------------------------------------------- Task Pool Comparison
+/** --------------------------------------------------------------------------------------------------------- Order Pool Comparison
  * @file task_pool_comparison.cpp
- * @brief Runs one set of workloads through the Kitchen, a mutex+condvar pool, GCD, and OpenMP so
- * the Kitchen's queue design is settled by measurement. Every approach runs the same 32-byte
- * Task records and completes through the same TaskCountdown unless its native idiom joins itself.
+ * @brief Compares pool implementations using identical move-only Order records and completion.
  */
 #include <alligator/kitchen.hpp>
 #include <logging.hpp>
@@ -13,11 +11,13 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 #if defined(__APPLE__) || defined(TASK_POOL_HAS_DISPATCH)
 #include <dispatch/dispatch.h>
@@ -29,8 +29,8 @@
 
 namespace {
 using buffetalligator::Kitchen;
-using buffetalligator::Task;
-using buffetalligator::TaskCountdown;
+using buffetalligator::Order;
+using buffetalligator::OrderCountdown;
 using Clock = std::chrono::steady_clock;
 /** --------------------------------------------------------------------------------------------------------- Options
  * @struct Options
@@ -62,7 +62,7 @@ Options parse(int count, char** arguments) {
     }
     return options;
 }
-/** --------------------------------------------------------------------------------------------------------- Task Body
+/** --------------------------------------------------------------------------------------------------------- Order Body
  * @brief The measured work: spins for the nanoseconds its context names, or returns at once for 0.
  * @param context A `const size_t` holding the spin length in nanoseconds.
  */
@@ -73,12 +73,12 @@ void task_body(void* context) {
     while (Clock::now() < deadline) {}
 }
 /** --------------------------------------------------------------------------------------------------------- Run Record
- * @brief Runs one Task record the way every pool's worker does: run, then done when set.
- * @param record The Task.
+ * @brief Runs one Order record the way every pool's worker does: run, then done when set.
+ * @param record The Order.
  */
-void run_record(const Task& record) {
-    record.run(record.context);
-    if (record.done != nullptr) record.done(record.done_context);
+void run_record(Order& record) {
+    Order pending(std::move(record));
+    pending.execute();
 }
 /** --------------------------------------------------------------------------------------------------------- Median
  * @brief The median of a sample set, reordering it in place.
@@ -93,10 +93,14 @@ double median(std::vector<double>& samples) {
  */
 struct KitchenApproach {
     static constexpr const char* name = "Kitchen";
-    static void submit(const Task* task) { Kitchen::inst().submit(*task); }
-    static void fork_join(Task* records, size_t count, size_t batch, TaskCountdown* finished) {
+    static void submit(Order* task) {
+        while (!Kitchen::inst().try_submit(std::move(*task))) std::this_thread::yield();
+    }
+    static void fork_join(Order* records, size_t count, size_t batch, OrderCountdown* finished) {
         for (size_t first = 0; first < count; first += batch) {
-            Kitchen::inst().submit_bulk(records + first, std::min(batch, count - first));
+            while (!Kitchen::inst().try_submit_bulk(records + first,
+                std::min(batch, count - first)))
+                std::this_thread::yield();
         }
         finished->wait();
     }
@@ -109,7 +113,7 @@ class MutexPool {
 private:
     std::mutex mutex_;
     std::condition_variable ready_;
-    std::deque<Task> tasks_;
+    std::deque<Order> tasks_;
     bool stopping_ = false;
     std::vector<std::thread> workers_;
     /** ------------------------------------------------------------------------------------------- Work
@@ -120,7 +124,7 @@ private:
         while (true) {
             while (!stopping_ && tasks_.empty()) ready_.wait(lock);
             if (tasks_.empty()) return;
-            const Task task = tasks_.front();
+            Order task = std::move(tasks_.front());
             tasks_.pop_front();
             lock.unlock();
             run_record(task);
@@ -140,17 +144,18 @@ public:
         ready_.notify_all();
         for (std::thread& worker : workers_) worker.join();
     }
-    void push(const Task& task) {
+    void push(Order&& task) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            tasks_.push_back(task);
+            tasks_.push_back(std::move(task));
         }
         ready_.notify_one();
     }
-    void push_bulk(const Task* tasks, size_t count) {
+    void push_bulk(Order* tasks, size_t count) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            tasks_.insert(tasks_.end(), tasks, tasks + count);
+            tasks_.insert(tasks_.end(), std::make_move_iterator(tasks),
+                std::make_move_iterator(tasks + count));
         }
         ready_.notify_all();
     }
@@ -165,8 +170,8 @@ public:
  */
 struct MutexApproach {
     static constexpr const char* name = "Mutex+condvar";
-    static void submit(const Task* task) { MutexPool::inst().push(*task); }
-    static void fork_join(Task* records, size_t count, size_t batch, TaskCountdown* finished) {
+    static void submit(Order* task) { MutexPool::inst().push(std::move(*task)); }
+    static void fork_join(Order* records, size_t count, size_t batch, OrderCountdown* finished) {
         for (size_t first = 0; first < count; first += batch) {
             MutexPool::inst().push_bulk(records + first, std::min(batch, count - first));
         }
@@ -175,13 +180,15 @@ struct MutexApproach {
 };
 #if defined(TASK_POOL_DISPATCH)
 /** --------------------------------------------------------------------------------------------------------- Dispatch Trampoline
- * @brief dispatch_async_f entry: the context is the caller's Task record, which outlives the dispatch.
+ * @brief dispatch_async_f entry: the context is the caller's Order record, which outlives the dispatch.
  */
-void dispatch_trampoline(void* record) { run_record(*static_cast<const Task*>(record)); }
+void dispatch_trampoline(void* record) { run_record(*static_cast<Order*>(record)); }
 /** --------------------------------------------------------------------------------------------------------- Apply Trampoline
- * @brief dispatch_apply_f entry: runs record `index` of the caller's Task array.
+ * @brief dispatch_apply_f entry: runs record `index` of the caller's Order array.
  */
-void apply_trampoline(void* records, size_t index) { run_record(static_cast<const Task*>(records)[index]); }
+void apply_trampoline(void* records, size_t index) {
+    run_record(static_cast<Order*>(records)[index]);
+}
 /** --------------------------------------------------------------------------------------------------------- GCD Approach
  * @struct GcdApproach
  * @brief libdispatch's global high-priority concurrent queue: async_f per task, apply_f for a batch.
@@ -192,10 +199,10 @@ struct GcdApproach {
         static dispatch_queue_t global = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
         return global;
     }
-    static void submit(const Task* task) {
-        dispatch_async_f(queue(), const_cast<Task*>(task), &dispatch_trampoline);
+    static void submit(Order* task) {
+        dispatch_async_f(queue(), task, &dispatch_trampoline);
     }
-    static void fork_join(Task* records, size_t count, size_t, TaskCountdown*) {
+    static void fork_join(Order* records, size_t count, size_t, OrderCountdown*) {
         dispatch_apply_f(count, queue(), records, &apply_trampoline);
     }
 };
@@ -208,7 +215,7 @@ struct GcdApproach {
  */
 struct OpenMpApproach {
     static constexpr const char* name = "OpenMP";
-    static void fork_join(Task* records, size_t count, size_t, TaskCountdown*) {
+    static void fork_join(Order* records, size_t count, size_t, OrderCountdown*) {
         const long total = static_cast<long>(count);
 #pragma omp parallel for schedule(static)
         for (long index = 0; index < total; ++index) run_record(records[index]);
@@ -219,9 +226,9 @@ struct OpenMpApproach {
  * @brief One producer thread's share of a single-submit repetition.
  */
 template<typename Approach>
-void produce(const Task* task, std::barrier<>* start, size_t count) {
+void produce(Order* records, std::barrier<>* start, size_t count) {
     start->arrive_and_wait();
-    for (size_t index = 0; index < count; ++index) Approach::submit(task);
+    for (size_t index = 0; index < count; ++index) Approach::submit(records + index);
 }
 /** --------------------------------------------------------------------------------------------------------- Single Submit
  * @brief Splits `tasks` single submits across `producers` threads; first submit to last completion.
@@ -230,14 +237,18 @@ void produce(const Task* task, std::barrier<>* start, size_t count) {
 template<typename Approach>
 double single_submit(const Options& options, size_t producers, const size_t* work) {
     std::vector<double> samples;
+    std::vector<Order> records(options.tasks);
     for (size_t repetition = 0; repetition <= options.repetitions; ++repetition) {
-        TaskCountdown finished(static_cast<uint32_t>(options.tasks));
-        const Task task{&task_body, const_cast<size_t*>(work), &TaskCountdown::arrive, &finished};
+        OrderCountdown finished(static_cast<uint32_t>(options.tasks));
+        for (Order& record : records)
+            record = Order{&task_body, const_cast<size_t*>(work),
+                &OrderCountdown::arrive, &finished};
         std::barrier start(static_cast<std::ptrdiff_t>(producers + 1));
         std::vector<std::thread> threads;
         for (size_t producer = 0; producer < producers; ++producer) {
-            const size_t share = options.tasks * (producer + 1) / producers - options.tasks * producer / producers;
-            threads.emplace_back(&produce<Approach>, &task, &start, share);
+            const size_t first = options.tasks * producer / producers;
+            const size_t share = options.tasks * (producer + 1) / producers - first;
+            threads.emplace_back(&produce<Approach>, records.data() + first, &start, share);
         }
         start.arrive_and_wait();
         const Clock::time_point began = Clock::now();
@@ -255,11 +266,12 @@ double single_submit(const Options& options, size_t producers, const size_t* wor
 template<typename Approach>
 double fork_join(const Options& options, const size_t* work) {
     std::vector<double> samples;
-    std::vector<Task> records(options.tasks);
+    std::vector<Order> records(options.tasks);
     for (size_t repetition = 0; repetition <= options.repetitions; ++repetition) {
-        TaskCountdown finished(static_cast<uint32_t>(options.tasks));
-        std::fill(records.begin(), records.end(),
-            Task{&task_body, const_cast<size_t*>(work), &TaskCountdown::arrive, &finished});
+        OrderCountdown finished(static_cast<uint32_t>(options.tasks));
+        for (Order& record : records)
+            record = Order{&task_body, const_cast<size_t*>(work),
+                &OrderCountdown::arrive, &finished};
         const Clock::time_point began = Clock::now();
         Approach::fork_join(records.data(), records.size(), options.batch, &finished);
         const double elapsed = std::chrono::duration<double, std::nano>(Clock::now() - began).count();
@@ -276,11 +288,10 @@ template<typename Approach>
 double latency(size_t samples, bool idle_first, const size_t* work, double& p99) {
     std::vector<double> round_trips;
     round_trips.reserve(samples);
-    TaskCountdown finished(1);
-    const Task task{&task_body, const_cast<size_t*>(work), &TaskCountdown::arrive, &finished};
     for (size_t sample = 0; sample < samples; ++sample) {
         if (idle_first) std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        finished.rearm(1);
+        OrderCountdown finished(1);
+        Order task{&task_body, const_cast<size_t*>(work), &OrderCountdown::arrive, &finished};
         const Clock::time_point began = Clock::now();
         Approach::submit(&task);
         finished.wait();
@@ -349,7 +360,7 @@ int main(int count, char** arguments) {
 #if defined(_OPENMP)
         header.push_back("OpenMP");
 #endif
-        LOG_INFO_STREAM << "Task pool comparison: " << options.tasks << " tasks x " << options.repetitions
+        LOG_INFO_STREAM << "Order pool comparison: " << options.tasks << " tasks x " << options.repetitions
             << " repetitions on " << cores << " hardware threads";
         for (const size_t work : {size_t{0}, size_t{1000}}) {
             LOG_INFO_STREAM << "Workloads at " << work << " ns of work per task:";
@@ -402,7 +413,7 @@ int main(int count, char** arguments) {
         }
         return 0;
     } catch (const std::exception& error) {
-        LOG_ERROR_STREAM << "Task pool comparison failed: " << error.what();
+        LOG_ERROR_STREAM << "Order pool comparison failed: " << error.what();
         return 1;
     }
 }
