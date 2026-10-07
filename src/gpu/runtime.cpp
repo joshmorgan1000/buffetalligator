@@ -78,4 +78,18 @@ DeviceMemoryUsage gpu_memory_usage() {
     }
     return {};
 }
+/** --------------------------------------------------------------------------------------------------------- GPU Placement Headroom
+ * @brief Reports the live headroom of the frozen device placement's backing heap.
+ */
+uint64_t gpu_placement_headroom() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) {
+        const DeviceMemoryUsage usage = MetalBuffer::memory_usage();
+        return usage.available_bytes.value_or(UINT64_MAX);
+    }
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::buffer_heap_headroom();
+    return UINT64_MAX;
+}
 } // namespace buffetalligator

@@ -247,6 +247,10 @@ public:
     ~VulkanContext();
     /** ------------------------------------------------------------------------------------------- device_properties */
     static const DeviceProperties& device_properties() { return instance().device_props_; }
+    /** ------------------------------------------------------------------------------------------- buffer_heap_headroom
+     * @brief Live budget headroom of the heap backing the chosen buffer memory type.
+     */
+    static uint64_t buffer_heap_headroom();
     /** ------------------------------------------------------------------------------------------- device
      * @brief The logical device, for teardown and object creation outside the friend set
      * (the job-table engine's state lives in an anonymous namespace and cannot be friended).

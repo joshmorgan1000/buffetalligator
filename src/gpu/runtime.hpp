@@ -32,4 +32,8 @@ const GPUDevice& gpu_device();
  * @brief Returns available native memory counters for the selected backend.
  */
 DeviceMemoryUsage gpu_memory_usage();
+/** --------------------------------------------------------------------------------------------------------- GPU Placement Headroom
+ * @brief Live budget headroom of the device placement's backing heap, SIZE_MAX when unbounded.
+ */
+uint64_t gpu_placement_headroom();
 } // namespace buffetalligator

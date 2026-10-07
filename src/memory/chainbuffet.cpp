@@ -248,8 +248,9 @@ Slice ChainBuffet::chain(const BuffetDescriptor* placement, size_t size, bool no
     if (!size) return Slice();
     (void)Alligator::inst();
     const GPUDevice& device = gpu_device();
-    // Novel buffers past the device placement's probed allocation ceiling land on the host heap.
-    if (novel_buffer && placement == device.placement && size > device.placement_max_bytes) {
+    // Novel buffers past the probed ceiling or the live device budget headroom land on the host heap.
+    if (novel_buffer && placement == device.placement
+        && (size > device.placement_max_bytes || size > gpu_placement_headroom())) {
         placement = BuffetDescriptors::get(AlignedHeapBuffer::type_idx());
     }
     auto& current = current_for(placement->type_idx);

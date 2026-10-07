@@ -367,6 +367,24 @@ uint64_t VulkanContext::poll_budget_headroom() const {
     }
     return free_bytes;
 }
+/** --------------------------------------------------------------------------------------------------------- Buffer Heap Headroom
+ * @brief Reports the live budget headroom of the heap backing the chosen buffer memory type.
+ * @return Budget minus usage for the buffer heap, or UINT64_MAX without the budget extension.
+ */
+uint64_t VulkanContext::buffer_heap_headroom() {
+    const VulkanContext& context = instance();
+    if (!context.device_props_.supports_memory_budget) {
+        return UINT64_MAX;
+    }
+    vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    vk::PhysicalDeviceMemoryProperties2 memory2{};
+    memory2.pNext = &budget;
+    context.physical_device_.getMemoryProperties2(&memory2);
+    const uint32_t heap =
+        context.memory_properties_.memoryTypes[context.buffer_memory_type_index_].heapIndex;
+    return budget.heapBudget[heap] > budget.heapUsage[heap]
+        ? budget.heapBudget[heap] - budget.heapUsage[heap] : 0ull;
+}
 /** --------------------------------------------------------------------------------------------------------- destructor
  * @brief Drain the device and tear down. Caller-owned buffers, rigs, and pipelines must
  * already be destroyed.
@@ -510,7 +528,11 @@ VulkanBuffer::VulkanBuffer(size_t size_bytes, uint32_t memory_type_index)
             const uint64_t headroom = budget.heapBudget[heap] > budget.heapUsage[heap]
                 ? budget.heapBudget[heap] - budget.heapUsage[heap] : 0;
             if (requirements.size > headroom)
-                ALLIGATOR_GPU_THROW("VulkanBuffer allocation exceeds the current heap budget");
+                ALLIGATOR_GPU_THROW("VulkanBuffer allocation exceeds the current heap budget (heap "
+                    + std::to_string(heap) + ": " + std::to_string(requirements.size)
+                    + " requested, " + std::to_string(headroom) + " of "
+                    + std::to_string(budget.heapBudget[heap]) + " budget left after "
+                    + std::to_string(budget.heapUsage[heap]) + " in use)");
         }
         vk::MemoryAllocateInfo allocate_info(requirements.size, memory_type_index);
         allocate_info.pNext = &context.allocate_flags_;
