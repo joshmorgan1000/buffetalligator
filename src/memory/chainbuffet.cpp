@@ -60,11 +60,11 @@ size_t BuffetDescriptors::register_descriptor(const BuffetDescriptor* descriptor
     return index;
 }
 /** --------------------------------------------------------------------------------------------------------- Default Placement
- * @brief Selects the frozen unified GPU placement or registered host memory at startup.
+ * @brief Selects the frozen placement of the active compute device at startup: its host-visible
+ * buffers whenever a GPU exists, unified or discrete, and registered host memory without one.
  */
 const BuffetDescriptor*& BuffetDescriptors::default_placement() {
-    static const BuffetDescriptor* placement =
-        gpu_device().unified ? gpu_device().placement : list()[AlignedHeapBuffer::type_idx()];
+    static const BuffetDescriptor* placement = gpu_device().placement;
     return placement;
 }
 /** --------------------------------------------------------------------------------------------------------- Descriptor Count
