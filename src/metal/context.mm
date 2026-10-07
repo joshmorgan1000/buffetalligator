@@ -98,4 +98,15 @@ bool metal_unified() { return metal_context().device.hasUnifiedMemory; }
  * @brief Returns the selected native device name.
  */
 std::string metal_device_name() { return metal_context().device.name.UTF8String; }
+/** --------------------------------------------------------------------------------------------------------- Max Buffer Bytes
+ * @brief Returns the native per-buffer allocation ceiling.
+ */
+uint64_t metal_max_buffer_bytes() { return metal_context().maximum_length; }
+/** --------------------------------------------------------------------------------------------------------- Capacity Bytes
+ * @brief Returns the native working-set budget the placement domain holds.
+ */
+uint64_t metal_capacity_bytes() {
+    const uint64_t working_set = metal_context().device.recommendedMaxWorkingSetSize;
+    return working_set != 0 ? working_set : UINT64_MAX;
+}
 } // namespace buffetalligator

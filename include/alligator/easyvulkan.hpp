@@ -39,6 +39,8 @@ struct DeviceProperties {
     uint64_t device_local_memory_bytes;        ///< Total device-local heap size.
     uint64_t host_visible_memory_bytes;        ///< Device-local heap size reachable from the host.
     uint64_t max_storage_buffer_range;         ///< Max storage buffer range.
+    uint64_t max_allocation_bytes;             ///< Probed ceiling for one device memory allocation.
+    uint32_t max_allocation_count;             ///< Probed ceiling for live device memory allocations.
     uint32_t max_push_constants;               ///< Max push constant bytes.
     bool supports_subgroup_arithmetic;         ///< Subgroup arithmetic ops available.
     bool supports_subgroup_shuffle;            ///< Subgroup shuffle ops available.

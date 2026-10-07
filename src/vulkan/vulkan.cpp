@@ -261,6 +261,9 @@ VulkanContext::VulkanContext() {
     device_props_.max_shared_memory = limits.maxComputeSharedMemorySize;
     device_props_.subgroup_size = subgroup.subgroupSize;
     device_props_.max_storage_buffer_range = limits.maxStorageBufferRange;
+    device_props_.max_allocation_bytes = std::min(max_allocation_size_,
+        static_cast<vk::DeviceSize>(limits.maxStorageBufferRange));
+    device_props_.max_allocation_count = max_allocation_count_;
     device_props_.max_push_constants = limits.maxPushConstantsSize;
     device_props_.supports_subgroup_arithmetic =
         (subgroup.supportedOperations & vk::SubgroupFeatureFlagBits::eArithmetic)
@@ -486,7 +489,10 @@ VulkanBuffer::VulkanBuffer(size_t size_bytes, uint32_t memory_type_index)
     const uint32_t heap = context.memory_properties_.memoryTypes[memory_type_index].heapIndex;
     if (size_bytes > context.max_allocation_size_
         || size_bytes > context.memory_properties_.memoryHeaps[heap].size)
-        ALLIGATOR_GPU_THROW("VulkanBuffer exceeds the device allocation-size limit");
+        ALLIGATOR_GPU_THROW("VulkanBuffer exceeds the device allocation-size limit ("
+            + std::to_string(size_bytes) + " requested, "
+            + std::to_string(std::min<uint64_t>(context.max_allocation_size_,
+                context.memory_properties_.memoryHeaps[heap].size)) + " probed)");
     try {
         buffer_ = context.device_.createBuffer(
             context.shared_buffer_info(size_bytes, context.buffer_usage_));

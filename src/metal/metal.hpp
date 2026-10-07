@@ -10,5 +10,7 @@ bool metal_available();
 const BuffetDescriptor* metal_placement();
 bool metal_unified();
 std::string metal_device_name();
+uint64_t metal_max_buffer_bytes();
+uint64_t metal_capacity_bytes();
 std::unique_ptr<ShaderProgram> metal_prepare(const ShaderPrepareInfo& info);
 } // namespace buffetalligator

@@ -247,6 +247,11 @@ void ChainBuffet::release_chains() {
 Slice ChainBuffet::chain(const BuffetDescriptor* placement, size_t size, bool novel_buffer) {
     if (!size) return Slice();
     (void)Alligator::inst();
+    const GPUDevice& device = gpu_device();
+    // Novel buffers past the device placement's probed allocation ceiling land on the host heap.
+    if (novel_buffer && placement == device.placement && size > device.placement_max_bytes) {
+        placement = BuffetDescriptors::get(AlignedHeapBuffer::type_idx());
+    }
     auto& current = current_for(placement->type_idx);
     ChainBuffet* const pending = reinterpret_cast<ChainBuffet*>(-1);
     ChainBuffet* node = current.load(std::memory_order_acquire);

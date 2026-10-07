@@ -36,7 +36,7 @@ struct GPUSelection {
 #if defined(BUFFETALLIGATOR_HAS_METAL)
         if ((choice == "auto" || choice == "metal") && metal_available()) {
             device = {GPUBackend::Metal, metal_placement(), metal_unified(),
-                metal_device_name(), &metal_prepare};
+                metal_device_name(), &metal_prepare, metal_max_buffer_bytes(), metal_capacity_bytes()};
             LOG_INFO_STREAM << "GPU backend=metal; device=" << device.name;
             return;
         }
@@ -45,9 +45,15 @@ struct GPUSelection {
             ALLIGATOR_GPU_THROW("No compatible native Metal compute device is available");
         }
         if (VulkanContext::device_present()) {
+            const DeviceProperties& properties = VulkanContext::device_properties();
             device = {GPUBackend::Vulkan, VulkanContext::buffer_placement(),
-                VulkanContext::device_unified(), VulkanKernel::device_name(), &vulkan_prepare};
-            LOG_INFO_STREAM << "GPU backend=vulkan; device=" << device.name;
+                VulkanContext::device_unified(), VulkanKernel::device_name(), &vulkan_prepare,
+                properties.max_allocation_bytes,
+                properties.unified_memory ? properties.host_visible_memory_bytes
+                    : properties.device_local_memory_bytes};
+            LOG_INFO_STREAM << "GPU backend=vulkan; device=" << device.name
+                << "; max single allocation=" << device.placement_max_bytes << " bytes"
+                << "; placement capacity=" << device.placement_capacity_bytes << " bytes";
         } else if (choice == "vulkan") {
             ALLIGATOR_GPU_THROW("No compatible Vulkan compute device is available");
         }
