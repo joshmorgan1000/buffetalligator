@@ -94,6 +94,30 @@ public:
      * @return The device's memory usage.
      */
     static DeviceMemoryUsage memory_usage();
+    /** ------------------------------------------------------------------------------------------- Thread Limit X
+     * @brief Returns the maximum number of threads per block along the X dimension.
+     */
+    static uint32_t thread_limit_x();
+    /** ------------------------------------------------------------------------------------------- Thread Limit Y
+     * @brief Returns the maximum number of threads per block along the Y dimension.
+     */
+    static uint32_t thread_limit_y();
+    /** ------------------------------------------------------------------------------------------- Thread Limit Z
+     * @brief Returns the maximum number of threads per block along the Z dimension.
+     */
+    static uint32_t thread_limit_z();
+    /** ------------------------------------------------------------------------------------------- Workgroup Limit X
+     * @brief Returns the maximum number of blocks per grid along the X dimension.
+     */
+    static uint32_t workgroup_limit_x();
+    /** ------------------------------------------------------------------------------------------- Workgroup Limit Y
+     * @brief Returns the maximum number of blocks per grid along the Y dimension.
+     */
+    static uint32_t workgroup_limit_y();
+    /** ------------------------------------------------------------------------------------------- Workgroup Limit Z
+     * @brief Returns the maximum number of blocks per grid along the Z dimension.
+     */
+    static uint32_t workgroup_limit_z();
 };
 static_assert(IsABuffetType<CudaBuffer>, "CudaBuffer must satisfy IsABuffetType");
 } // namespace buffetalligator

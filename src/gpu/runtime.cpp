@@ -9,6 +9,9 @@
 #if defined(BUFFETALLIGATOR_HAS_METAL)
 #include <alligator/easymetal.hpp>
 #include <metal/metal.hpp>
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#include <alligator/easycuda.hpp>
+#include <cuda_runtime.h>
 #endif
 #include <cstdlib>
 #include <string_view>
@@ -77,6 +80,84 @@ DeviceMemoryUsage gpu_memory_usage() {
             std::nullopt, std::nullopt};
     }
     return {};
+}
+/** --------------------------------------------------------------------------------------------------------- GPU Thread Limit X
+ * @brief Returns the maximum number of threads per workgroup along the X dimension for the selected backend.
+ */
+uint32_t gpu_thread_limit_x() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) return metal_thread_limit_x();
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+    if (device.kind == GPUBackend::CUDA) return CudaBuffer::thread_limit_x();
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_size[0];
+    return 1;
+}
+/** --------------------------------------------------------------------------------------------------------- GPU Thread Limit Y
+ * @brief Returns the maximum number of threads per workgroup along the Y dimension for the selected backend.
+ */
+uint32_t gpu_thread_limit_y() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) return metal_thread_limit_y();
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+    if (device.kind == GPUBackend::CUDA) return CudaBuffer::thread_limit_y();
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_size[1];
+    return 1;
+}
+/** --------------------------------------------------------------------------------------------------------- GPU Thread Limit Z
+ * @brief Returns the maximum number of threads per workgroup along the Z dimension for the selected backend.
+ */
+uint32_t gpu_thread_limit_z() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) return metal_thread_limit_z();
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+    if (device.kind == GPUBackend::CUDA) return CudaBuffer::thread_limit_z();
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_size[2];
+    return 1;
+}
+/** --------------------------------------------------------------------------------------------------------- GPU Workgroup Limit X
+ * @brief Returns the maximum number of workgroups per dispatch along the X dimension for the selected backend.
+ */
+uint32_t gpu_workgroup_limit_x() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) return metal_workgroup_limit_x();
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+    if (device.kind == GPUBackend::CUDA) return CudaBuffer::workgroup_limit_x();
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_count[0];
+    return 1;
+}
+/** --------------------------------------------------------------------------------------------------------- GPU Workgroup Limit Y
+ * @brief Returns the maximum number of workgroups per dispatch along the Y dimension for the selected backend.
+ */
+uint32_t gpu_workgroup_limit_y() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) return metal_workgroup_limit_y();
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+    if (device.kind == GPUBackend::CUDA) return CudaBuffer::workgroup_limit_y();
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_count[1];
+    return 1;
+}
+/** --------------------------------------------------------------------------------------------------------- GPU Workgroup Limit Z
+ * @brief Returns the maximum number of workgroups per dispatch along the Z dimension for the selected backend.
+ */
+uint32_t gpu_workgroup_limit_z() {
+    const auto& device = gpu_device();
+#if defined(BUFFETALLIGATOR_HAS_METAL)
+    if (device.kind == GPUBackend::Metal) return metal_workgroup_limit_z();
+#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+    if (device.kind == GPUBackend::CUDA) return CudaBuffer::workgroup_limit_z();
+#endif
+    if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_count[2];
+    return 1;
 }
 /** --------------------------------------------------------------------------------------------------------- GPU Placement Headroom
  * @brief Reports the live headroom of the frozen device placement's backing heap.

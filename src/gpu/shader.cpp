@@ -21,6 +21,12 @@ bool GPU::exists() { return gpu_device().kind != GPUBackend::CPU; }
 bool GPU::unified_memory() { return gpu_device().unified; }
 std::string GPU::device_name() { return gpu_device().name; }
 DeviceMemoryUsage GPU::memory_usage() { return gpu_memory_usage(); }
+uint32_t GPU::thread_limit_x() { return gpu_thread_limit_x(); }
+uint32_t GPU::thread_limit_y() { return gpu_thread_limit_y(); }
+uint32_t GPU::thread_limit_z() { return gpu_thread_limit_z(); }
+uint32_t GPU::workgroup_limit_x() { return gpu_workgroup_limit_x(); }
+uint32_t GPU::workgroup_limit_y() { return gpu_workgroup_limit_y(); }
+uint32_t GPU::workgroup_limit_z() { return gpu_workgroup_limit_z(); }
 /** --------------------------------------------------------------------------------------------------------- Shader Runtime
  * @brief Tracks accepted operations and immutable cached programs through arena teardown.
  */

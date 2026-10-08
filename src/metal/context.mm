@@ -109,4 +109,11 @@ uint64_t metal_capacity_bytes() {
     const uint64_t working_set = metal_context().device.recommendedMaxWorkingSetSize;
     return working_set != 0 ? working_set : UINT64_MAX;
 }
+uint32_t metal_thread_limit_x() { return metal_context().device.maxThreadsPerThreadgroup.width; }
+uint32_t metal_thread_limit_y() { return metal_context().device.maxThreadsPerThreadgroup.height; }
+uint32_t metal_thread_limit_z() { return metal_context().device.maxThreadsPerThreadgroup.depth; }
+/// Metal does not cap threadgroups per dispatch, so the grid limits report unbounded.
+uint32_t metal_workgroup_limit_x() { return UINT32_MAX; }
+uint32_t metal_workgroup_limit_y() { return UINT32_MAX; }
+uint32_t metal_workgroup_limit_z() { return UINT32_MAX; }
 } // namespace buffetalligator

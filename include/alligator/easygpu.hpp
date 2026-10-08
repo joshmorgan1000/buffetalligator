@@ -141,6 +141,12 @@ struct GPU {
     static bool unified_memory();
     static std::string device_name();
     static DeviceMemoryUsage memory_usage();
+    static uint32_t thread_limit_x();
+    static uint32_t thread_limit_y();
+    static uint32_t thread_limit_z();
+    static uint32_t workgroup_limit_x();
+    static uint32_t workgroup_limit_y();
+    static uint32_t workgroup_limit_z();
     /** ------------------------------------------------------------------------------------------- Encode
      * @brief Serializes versioned little-endian BAGP source fields with eight-byte payload alignment.
      */

@@ -36,4 +36,28 @@ DeviceMemoryUsage gpu_memory_usage();
  * @brief Live budget headroom of the device placement's backing heap, SIZE_MAX when unbounded.
  */
 uint64_t gpu_placement_headroom();
+/** --------------------------------------------------------------------------------------------------------- GPU Thread Limits
+ * @brief Returns the maximum number of threads per workgroup along each dimension for the selected backend.
+ */
+uint32_t gpu_thread_limit_x();
+/** --------------------------------------------------------------------------------------------------------- GPU Thread Limit Y
+ * @brief Returns the maximum number of threads per workgroup along the Y dimension for the selected backend.
+ */
+uint32_t gpu_thread_limit_y();
+/** --------------------------------------------------------------------------------------------------------- GPU Thread Limit Z
+ * @brief Returns the maximum number of threads per workgroup along the Z dimension for the selected backend.
+ */
+uint32_t gpu_thread_limit_z();
+/** --------------------------------------------------------------------------------------------------------- GPU Workgroup Limits
+ * @brief Returns the maximum number of workgroups per dispatch along each dimension for the selected backend.
+ */
+uint32_t gpu_workgroup_limit_x();
+/** --------------------------------------------------------------------------------------------------------- GPU Workgroup Limit Y
+ * @brief Returns the maximum number of workgroups per dispatch along the Y dimension for the selected backend.
+ */
+uint32_t gpu_workgroup_limit_y();
+/** --------------------------------------------------------------------------------------------------------- GPU Workgroup Limit Z
+ * @brief Returns the maximum number of workgroups per dispatch along the Z dimension for the selected backend.
+ */
+uint32_t gpu_workgroup_limit_z();
 } // namespace buffetalligator

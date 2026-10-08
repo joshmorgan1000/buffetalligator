@@ -129,5 +129,62 @@ DeviceMemoryUsage CudaBuffer::memory_usage() {
     check_cuda(cuMemGetInfo(&available, &capacity), "Querying CUDA memory");
     return {capacity, available, std::nullopt, std::nullopt};
 }
+/** --------------------------------------------------------------------------------------------------------- Registered Device
+ * @brief Resolves the device of the registered context, the handle every attribute query takes.
+ */
+static CUdevice registered_device() {
+    ContextScope scope;
+    CUdevice device;
+    check_cuda(cuCtxGetDevice(&device), "Querying CUDA device");
+    return device;
+}
+/** --------------------------------------------------------------------------------------------------------- Thread Limit X
+ * @brief Queries the maximum number of threads per block along the X dimension.
+ */
+uint32_t CudaBuffer::thread_limit_x() {
+    int value = 0;
+    check_cuda(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, registered_device()), "Querying thread limit X");
+    return static_cast<uint32_t>(value);
+}
+/** --------------------------------------------------------------------------------------------------------- Thread Limit Y
+ * @brief Queries the maximum number of threads per block along the Y dimension.
+ */
+uint32_t CudaBuffer::thread_limit_y() {
+    int value = 0;
+    check_cuda(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, registered_device()), "Querying thread limit Y");
+    return static_cast<uint32_t>(value);
+}
+/** --------------------------------------------------------------------------------------------------------- Thread Limit Z
+ * @brief Queries the maximum number of threads per block along the Z dimension.
+ */
+uint32_t CudaBuffer::thread_limit_z() {
+    int value = 0;
+    check_cuda(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, registered_device()), "Querying thread limit Z");
+    return static_cast<uint32_t>(value);
+}
+/** --------------------------------------------------------------------------------------------------------- Workgroup Limit X
+ * @brief Queries the maximum number of blocks per grid along the X dimension.
+ */
+uint32_t CudaBuffer::workgroup_limit_x() {
+    int value = 0;
+    check_cuda(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, registered_device()), "Querying workgroup limit X");
+    return static_cast<uint32_t>(value);
+}
+/** --------------------------------------------------------------------------------------------------------- Workgroup Limit Y
+ * @brief Queries the maximum number of blocks per grid along the Y dimension.
+ */
+uint32_t CudaBuffer::workgroup_limit_y() {
+    int value = 0;
+    check_cuda(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, registered_device()), "Querying workgroup limit Y");
+    return static_cast<uint32_t>(value);
+}
+/** --------------------------------------------------------------------------------------------------------- Workgroup Limit Z
+ * @brief Queries the maximum number of blocks per grid along the Z dimension.
+ */
+uint32_t CudaBuffer::workgroup_limit_z() {
+    int value = 0;
+    check_cuda(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, registered_device()), "Querying workgroup limit Z");
+    return static_cast<uint32_t>(value);
+}
 } // namespace buffetalligator
 #endif // defined(BUFFETALLIGATOR_HAS_CUDA)
