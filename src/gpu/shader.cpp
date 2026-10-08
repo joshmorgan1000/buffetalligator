@@ -204,7 +204,6 @@ struct ShaderOperation {
     void* context = nullptr;
     std::recursive_mutex gate;
     std::atomic<bool> retired{false};
-    bool accepted = false;
     bool cancelled = false;
     std::exception_ptr error;
     std::coroutine_handle<> continuation{};
@@ -220,7 +219,7 @@ struct ShaderOperation {
         return Slice(Slice::AdoptId{}, slice.id());
     }
     /** ------------------------------------------------------------------------------------------- Execute
-     * @brief Retires all rounds on a Kitchen waiter and publishes the terminal result.
+     * @brief Retires all rounds on a Kitchen worker and publishes the terminal result.
      */
     static void execute(void* context) noexcept {
         auto& operation = *static_cast<ShaderOperation*>(context);
@@ -251,25 +250,22 @@ struct ShaderOperation {
         operation.retired.notify_all();
     }
     /** ------------------------------------------------------------------------------------------- Complete
-     * @brief Runs accepted callbacks and continuations on a worker after waiter-owned retirement.
+     * @brief Runs callbacks and continuations after the Order retires device work.
      */
     static void complete(void* context) noexcept {
         auto& operation = *static_cast<ShaderOperation*>(context);
-        operation.retired.wait(false, std::memory_order_acquire);
         std::shared_ptr<ShaderOperation> retained = std::move(operation.self);
         {
             std::lock_guard lock(operation.gate);
-            if (operation.accepted) {
-                if (operation.done) {
-                    try { operation.done(operation.context); }
-                    catch (...) { operation.error = std::current_exception(); }
-                }
-                const std::coroutine_handle<> continuation = operation.continuation;
-                operation.continuation = {};
-                if (continuation && !operation.cancelled) {
-                    try { continuation.resume(); }
-                    catch (...) { operation.error = std::current_exception(); }
-                }
+            if (operation.done) {
+                try { operation.done(operation.context); }
+                catch (...) { operation.error = std::current_exception(); }
+            }
+            const std::coroutine_handle<> continuation = operation.continuation;
+            operation.continuation = {};
+            if (continuation && !operation.cancelled) {
+                try { continuation.resume(); }
+                catch (...) { operation.error = std::current_exception(); }
             }
             operation.streams.clear();
             operation.dependencies.clear();
@@ -280,7 +276,7 @@ struct ShaderOperation {
         shader_runtime().idle.notify_all();
     }
     /** ------------------------------------------------------------------------------------------- Accept
-     * @brief Queues completion ownership before execution so no retirement-time allocation is required.
+     * @brief Queues device work and completion together in one borrowed Order.
      */
     static void accept(const std::shared_ptr<ShaderOperation>& operation) {
         {
@@ -298,7 +294,12 @@ struct ShaderOperation {
             if (shader_test_fail_admission.exchange(false, std::memory_order_acq_rel))
                 throw std::bad_alloc();
 #endif
-            Kitchen::inst().submit(&ShaderOperation::complete, operation.get());
+            Kitchen::submit(Order(
+                &ShaderOperation::execute,
+                operation.get(),
+                &ShaderOperation::complete,
+                operation.get()
+            ));
         } catch (...) {
             operation->self.reset();
             operation->prepared->retire(operation->slot);
@@ -306,21 +307,6 @@ struct ShaderOperation {
             std::lock_guard lock(shader_runtime().mutex);
             --shader_runtime().active;
             shader_runtime().idle.notify_all();
-            throw;
-        }
-        try {
-            operation->accepted = true;
-            Kitchen::inst().submit_waiting(&ShaderOperation::execute, operation.get());
-        } catch (...) {
-            {
-                std::lock_guard lock(operation->gate);
-                operation->accepted = false;
-                operation->error = std::current_exception();
-            }
-            operation->prepared->retire(operation->slot);
-            operation->slot = nullptr;
-            operation->retired.store(true, std::memory_order_release);
-            operation->retired.notify_all();
             throw;
         }
     }

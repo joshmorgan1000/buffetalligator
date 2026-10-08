@@ -27,7 +27,7 @@
 
 namespace kitchen_dispatch {
 using Clock = std::chrono::steady_clock;
-using buffetalligator::Order;
+using kitchen_dispatch::Order;
 /** --------------------------------------------------------------------------------------------------------- Options
  * @brief Selects one executor and one blocking-read placement for a complete experiment process.
  */

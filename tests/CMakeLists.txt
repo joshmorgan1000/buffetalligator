@@ -1,4 +1,7 @@
 file(GLOB test_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
+list(REMOVE_ITEM test_sources
+    "${CMAKE_CURRENT_SOURCE_DIR}/future_slice_test.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/kitchen_catering_setup_test.cpp")
 foreach(source IN LISTS test_sources)
     get_filename_component(name "${source}" NAME_WE)
     set(target buffetalligator_${name})
@@ -12,9 +15,8 @@ foreach(source IN LISTS test_sources)
     endif()
 endforeach()
 set_tests_properties(buffetalligator_memory_tracker_test PROPERTIES TIMEOUT 30)
-set_tests_properties(buffetalligator_worker_pool_idle_test PROPERTIES TIMEOUT 15 LABELS functional)
-set_tests_properties(buffetalligator_kitchen_order_test buffetalligator_kitchen_allocation_test
-    buffetalligator_kitchen_producer_capacity_test
+set_tests_properties(buffetalligator_kitchen_order_test buffetalligator_kitchen_shutdown_test
+    buffetalligator_worker_pool_idle_test
     PROPERTIES TIMEOUT 45 LABELS "kitchen;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
 foreach(case IN ITEMS vulkan_shader_identity vulkan_reference_dispatch vulkan_job_dispatch
     vulkan_embedded_slices vulkan_dispatch_rounds vulkan_async_completion

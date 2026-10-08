@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <deque>
 #include <iterator>
+#include <latch>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -30,7 +31,6 @@
 namespace {
 using buffetalligator::Kitchen;
 using buffetalligator::Order;
-using buffetalligator::OrderCountdown;
 using Clock = std::chrono::steady_clock;
 /** --------------------------------------------------------------------------------------------------------- Options
  * @struct Options
@@ -72,8 +72,12 @@ void task_body(void* context) {
     const Clock::time_point deadline = Clock::now() + std::chrono::nanoseconds(work_nanoseconds);
     while (Clock::now() < deadline) {}
 }
+/** --------------------------------------------------------------------------------------------------------- Complete Task
+ * @brief Publishes a task's completion through its caller-owned latch.
+ */
+void complete_task(void* context) { static_cast<std::latch*>(context)->count_down(); }
 /** --------------------------------------------------------------------------------------------------------- Run Record
- * @brief Runs one Order record the way every pool's worker does: run, then done when set.
+ * @brief Runs one Order record through its handler and completion callback.
  * @param record The Order.
  */
 void run_record(Order& record) {
@@ -89,18 +93,16 @@ double median(std::vector<double>& samples) {
 }
 /** --------------------------------------------------------------------------------------------------------- Kitchen Approach
  * @struct KitchenApproach
- * @brief The Kitchen as it stands: moodycamel blocking queue, producer and consumer tokens.
+ * @brief The production Kitchen uses one hardware-sized team and a blocking queue.
  */
 struct KitchenApproach {
     static constexpr const char* name = "Kitchen";
     static void submit(Order* task) {
-        while (!Kitchen::inst().try_submit(std::move(*task))) std::this_thread::yield();
+        Kitchen::submit(std::move(*task));
     }
-    static void fork_join(Order* records, size_t count, size_t batch, OrderCountdown* finished) {
+    static void fork_join(Order* records, size_t count, size_t batch, std::latch* finished) {
         for (size_t first = 0; first < count; first += batch) {
-            while (!Kitchen::inst().try_submit_bulk(records + first,
-                std::min(batch, count - first)))
-                std::this_thread::yield();
+            Kitchen::submit_bulk(records + first, std::min(batch, count - first));
         }
         finished->wait();
     }
@@ -171,7 +173,7 @@ public:
 struct MutexApproach {
     static constexpr const char* name = "Mutex+condvar";
     static void submit(Order* task) { MutexPool::inst().push(std::move(*task)); }
-    static void fork_join(Order* records, size_t count, size_t batch, OrderCountdown* finished) {
+    static void fork_join(Order* records, size_t count, size_t batch, std::latch* finished) {
         for (size_t first = 0; first < count; first += batch) {
             MutexPool::inst().push_bulk(records + first, std::min(batch, count - first));
         }
@@ -202,7 +204,7 @@ struct GcdApproach {
     static void submit(Order* task) {
         dispatch_async_f(queue(), task, &dispatch_trampoline);
     }
-    static void fork_join(Order* records, size_t count, size_t, OrderCountdown*) {
+    static void fork_join(Order* records, size_t count, size_t, std::latch*) {
         dispatch_apply_f(count, queue(), records, &apply_trampoline);
     }
 };
@@ -215,7 +217,7 @@ struct GcdApproach {
  */
 struct OpenMpApproach {
     static constexpr const char* name = "OpenMP";
-    static void fork_join(Order* records, size_t count, size_t, OrderCountdown*) {
+    static void fork_join(Order* records, size_t count, size_t, std::latch*) {
         const long total = static_cast<long>(count);
 #pragma omp parallel for schedule(static)
         for (long index = 0; index < total; ++index) run_record(records[index]);
@@ -239,10 +241,10 @@ double single_submit(const Options& options, size_t producers, const size_t* wor
     std::vector<double> samples;
     std::vector<Order> records(options.tasks);
     for (size_t repetition = 0; repetition <= options.repetitions; ++repetition) {
-        OrderCountdown finished(static_cast<uint32_t>(options.tasks));
+        std::latch finished(static_cast<uint32_t>(options.tasks));
         for (Order& record : records)
             record = Order{&task_body, const_cast<size_t*>(work),
-                &OrderCountdown::arrive, &finished};
+                &complete_task, &finished};
         std::barrier start(static_cast<std::ptrdiff_t>(producers + 1));
         std::vector<std::thread> threads;
         for (size_t producer = 0; producer < producers; ++producer) {
@@ -268,10 +270,10 @@ double fork_join(const Options& options, const size_t* work) {
     std::vector<double> samples;
     std::vector<Order> records(options.tasks);
     for (size_t repetition = 0; repetition <= options.repetitions; ++repetition) {
-        OrderCountdown finished(static_cast<uint32_t>(options.tasks));
+        std::latch finished(static_cast<uint32_t>(options.tasks));
         for (Order& record : records)
             record = Order{&task_body, const_cast<size_t*>(work),
-                &OrderCountdown::arrive, &finished};
+                &complete_task, &finished};
         const Clock::time_point began = Clock::now();
         Approach::fork_join(records.data(), records.size(), options.batch, &finished);
         const double elapsed = std::chrono::duration<double, std::nano>(Clock::now() - began).count();
@@ -290,8 +292,8 @@ double latency(size_t samples, bool idle_first, const size_t* work, double& p99)
     round_trips.reserve(samples);
     for (size_t sample = 0; sample < samples; ++sample) {
         if (idle_first) std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        OrderCountdown finished(1);
-        Order task{&task_body, const_cast<size_t*>(work), &OrderCountdown::arrive, &finished};
+        std::latch finished(1);
+        Order task{&task_body, const_cast<size_t*>(work), &complete_task, &finished};
         const Clock::time_point began = Clock::now();
         Approach::submit(&task);
         finished.wait();

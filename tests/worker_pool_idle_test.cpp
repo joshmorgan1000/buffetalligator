@@ -5,6 +5,7 @@
  */
 #include <alligator/kitchen.hpp>
 #include "functional_support.hpp"
+#include "kitchen_test_support.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -16,7 +17,6 @@
 namespace {
 using buffetalligator::Kitchen;
 using buffetalligator::Order;
-using buffetalligator::OrderCountdown;
 using functional::require;
 constexpr size_t producer_count = 4;
 constexpr size_t tasks_per_producer = 64;
@@ -25,9 +25,9 @@ using CompletionCounts = std::array<std::atomic<unsigned>, producer_count * task
  * @brief Requires queued work to finish within two seconds without another submission waking the pool.
  * @param countdown The countdown armed for that work.
  */
-void await(OrderCountdown& countdown) {
+void await(std::latch& countdown) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (!countdown.ready()) {
+    while (!countdown.try_wait()) {
         require(std::chrono::steady_clock::now() < deadline, "queued task did not wake a worker");
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -54,12 +54,12 @@ void advance(void* context) {
 }
 /** --------------------------------------------------------------------------------------------------------- Chain
  * @struct Chain
- * @brief A waiter-pool stage whose completion queues a worker stage, whose completion queues a final one.
+ * @brief A worker stage whose completion queues a worker stage, whose completion queues a final one.
  */
 struct Chain {
     std::atomic<size_t> completed{0};
     std::array<Stage, 3> stages{Stage{&completed, 0}, Stage{&completed, 1}, Stage{&completed, 2}};
-    OrderCountdown finished{1};
+    std::latch finished{1};
 };
 /** --------------------------------------------------------------------------------------------------------- Worker Stage Done
  * @brief Continuation of the worker stage: queues the final stage on the worker pool.
@@ -67,10 +67,10 @@ struct Chain {
  */
 void worker_stage_done(void* context) {
     Chain* chain = static_cast<Chain*>(context);
-    Kitchen::inst().submit(&advance, &chain->stages[2], &OrderCountdown::arrive, &chain->finished);
+    Kitchen::inst().submit(&advance, &chain->stages[2], &kitchen_test::latch_arrive, &chain->finished);
 }
 /** --------------------------------------------------------------------------------------------------------- Waiting Stage Done
- * @brief Continuation of the waiter-pool stage: queues the worker stage.
+ * @brief Continuation of the worker stage: queues the worker stage.
  * @param context The Chain.
  */
 void waiting_stage_done(void* context) {
@@ -78,11 +78,11 @@ void waiting_stage_done(void* context) {
     Kitchen::inst().submit(&advance, &chain->stages[1], &worker_stage_done, chain);
 }
 /** --------------------------------------------------------------------------------------------------------- Continuations
- * @brief Starts a cold worker pool from a waiter-pool completion callback before any regular submission.
+ * @brief Starts a cold worker pool from a worker completion callback through ordinary submissions.
  */
 void continuations() {
     Chain chain;
-    Kitchen::inst().submit_waiting(&advance, &chain.stages[0], &waiting_stage_done, &chain);
+    Kitchen::inst().submit(&advance, &chain.stages[0], &waiting_stage_done, &chain);
     await(chain.finished);
     require(chain.stages[0].result == 1 && chain.stages[1].result == 2 && chain.stages[2].result == 3,
         "chained completion callbacks returned the wrong results");
@@ -107,11 +107,11 @@ void hold_batch(void* context) {
  */
 void blocked_backlog() {
     LOG_INFO_STREAM << "Checking parked workers wake while accepted orders are blocked";
-    const size_t count = std::min(size_t(8), Kitchen::inst().max_threads());
+    const size_t count = std::min(size_t(8), size_t(std::thread::hardware_concurrency()));
     BlockedBatch batch;
-    OrderCountdown finished(static_cast<uint32_t>(count));
+    std::latch finished(static_cast<uint32_t>(count));
     for (size_t index = 0; index < count; ++index) {
-        Kitchen::inst().submit(hold_batch, &batch, &OrderCountdown::arrive, &finished);
+        Kitchen::inst().submit(hold_batch, &batch, &kitchen_test::latch_arrive, &finished);
     }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (batch.entered.load(std::memory_order_acquire) != count) {
@@ -122,7 +122,6 @@ void blocked_backlog() {
     batch.release.store(true, std::memory_order_release);
     batch.release.notify_all();
     finished.wait();
-    Kitchen::inst().drain();
 }
 /** --------------------------------------------------------------------------------------------------------- Idle Wakeups
  * @brief Alternates single and bulk submissions after workers have time to park.
@@ -132,14 +131,14 @@ void idle_wakeups() {
     for (size_t round = 0; round < 16; ++round) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         Stage single{&completed, round * 2};
-        OrderCountdown single_done(1);
-        Kitchen::inst().submit(&advance, &single, &OrderCountdown::arrive, &single_done);
+        std::latch single_done(1);
+        Kitchen::inst().submit(&advance, &single, &kitchen_test::latch_arrive, &single_done);
         await(single_done);
         require(single.result == round * 2 + 1, "idle single submission result differs");
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         Stage bulk{&completed, round * 2 + 1};
-        OrderCountdown bulk_done(1);
-        Order batch[1] = {Order{&advance, &bulk, &OrderCountdown::arrive, &bulk_done}};
+        std::latch bulk_done(1);
+        Order batch[1] = {Order{&advance, &bulk, &kitchen_test::latch_arrive, &bulk_done}};
         Kitchen::inst().submit_bulk(batch, 1);
         await(bulk_done);
         require(bulk.result == round * 2 + 2, "idle bulk submission result differs");
@@ -157,11 +156,11 @@ void complete_once(void* context) {
  * @brief Submits and awaits one producer's independent batch of tasks.
  */
 void produce(CompletionCounts* completed, std::barrier<>* start, size_t producer_index) {
-    OrderCountdown finished(static_cast<uint32_t>(tasks_per_producer));
+    std::latch finished(static_cast<uint32_t>(tasks_per_producer));
     start->arrive_and_wait();
     for (size_t task_index = 0; task_index < tasks_per_producer; ++task_index) {
         Kitchen::inst().submit(&complete_once, &(*completed)[producer_index * tasks_per_producer + task_index],
-            &OrderCountdown::arrive, &finished);
+            &kitchen_test::latch_arrive, &finished);
     }
     await(finished);
 }

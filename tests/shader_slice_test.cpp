@@ -6,6 +6,7 @@
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
+#include "kitchen_test_support.hpp"
 #include <vulkan/shader_state.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -89,8 +90,8 @@ static void region_spread() {
     invocation.data<uint32_t>()[1] = dependencies[1].id();
     Shader shader(IDENTITY_BODY, "region_spread");
     ShaderResult result;
-    OrderCountdown complete;
-    shader(invocation, result, &OrderCountdown::arrive, &complete, 1, dependencies);
+    std::latch complete{1};
+    shader(invocation, result, &kitchen_test::latch_arrive, &complete, 1, dependencies);
     dependencies[0].free();
     dependencies[1].free();
     storage.free();
@@ -142,9 +143,9 @@ static void job_dispatch() {
         stream.data<float>()[11] = values[7];
     }
     Slice encoded = GPU::compile_glsl(VULKAN_GLSL_L2_EXAMPLE);
-    OrderCountdown complete;
+    std::latch complete{1};
     ShaderResult result;
-    GPU::run(encoded, streams.data(), streams.size(), result, &OrderCountdown::arrive, &complete);
+    GPU::run(encoded, streams.data(), streams.size(), result, &kitchen_test::latch_arrive, &complete);
     encoded.free();
     complete.wait();
     result.rethrow();
@@ -175,9 +176,9 @@ void alligator_main(Slice invocation) {
     slice_store_u32(destination, 0u, slice_load_u32(source, 0u) + 1u);
 }
 )glsl", "embedded_handles");
-    OrderCountdown complete;
+    std::latch complete{1};
     ShaderResult result;
-    shader(storage, result, &OrderCountdown::arrive, &complete, 1, embedded->payloads);
+    shader(storage, result, &kitchen_test::latch_arrive, &complete, 1, embedded->payloads);
     complete.wait();
     result.rethrow();
     require(embedded->payloads[1].get_as<uint32_t>() == 18 && embedded->marker == 123,
@@ -222,7 +223,7 @@ void alligator_main(Slice stream) {
  * @brief Owns completion contexts that may submit again and destroy their Shader from a callback.
  */
 struct ReentrantCompletion {
-    OrderCountdown complete{2};
+    std::latch complete{2};
     ShaderResult first;
     ShaderResult second;
     std::unique_ptr<Shader> shader;
@@ -234,7 +235,7 @@ struct ReentrantCompletion {
         state.second.rethrow();
         require(state.next.get_as<uint32_t>() == 2, "Nested dispatch lost its source");
         state.callbacks.fetch_add(1);
-        OrderCountdown::arrive(&state.complete);
+        kitchen_test::latch_arrive(&state.complete);
     }
     static void reenter(void* context) {
         auto& state = *static_cast<ReentrantCompletion*>(context);
@@ -243,7 +244,7 @@ struct ReentrantCompletion {
         (*state.shader)(state.next, state.second, &finish, &state);
         state.shader.reset();
         state.callbacks.fetch_add(1);
-        OrderCountdown::arrive(&state.complete);
+        kitchen_test::latch_arrive(&state.complete);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Concurrent Submission
@@ -253,17 +254,17 @@ struct ConcurrentSubmission {
     Shader* shader;
     Slice stream;
     ShaderResult result;
-    OrderCountdown* complete;
+    std::latch* complete;
     static void run(ConcurrentSubmission* context) {
         (*context->shader)(context->stream, context->result,
-            &OrderCountdown::arrive, context->complete);
+            &kitchen_test::latch_arrive, context->complete);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Throwing Completion
  * @brief Signals observation before exercising terminal callback exception capture.
  */
 static void throwing_completion(void* context) {
-    OrderCountdown::arrive(context);
+    kitchen_test::latch_arrive(context);
     ALLIGATOR_GPU_THROW("Expected completion callback failure");
 }
 /** --------------------------------------------------------------------------------------------------------- Async Completion
@@ -284,22 +285,22 @@ static void async_completion() {
     require(state.callbacks.load() == 2 && !state.shader, "Callbacks were duplicated or destruction blocked");
     Shader zero(INCREMENT_BODY, "zero_dispatch");
     ShaderResult result;
-    OrderCountdown complete;
-    zero(nullptr, 0, result, &OrderCountdown::arrive, &complete);
+    std::latch complete{1};
+    zero(nullptr, 0, result, &kitchen_test::latch_arrive, &complete);
     complete.wait();
     result.rethrow();
     Slice heap(64, BuffetDescriptors::get(0));
     bool rejected = false;
     try { zero(heap, result); } catch (const GPUException&) { rejected = true; }
     require(rejected, "A non-device Slice was accepted by GPU admission");
-    complete.rearm(1);
+    kitchen_test::rearm_latch(complete, 1);
     zero(nullptr, 0, result, &throwing_completion, &complete);
     complete.wait();
     bool callback_failed = false;
     try { result.rethrow(); } catch (const GPUException&) { callback_failed = true; }
     require(callback_failed, "A callback exception was not retained in its result");
     const size_t producers = VulkanContext::queue_count() + 2;
-    OrderCountdown concurrent_complete{uint32_t(producers)};
+    std::latch concurrent_complete{uint32_t(producers)};
     std::vector<std::unique_ptr<ConcurrentSubmission>> submissions;
     std::vector<std::thread> threads;
     for (size_t index = 0; index < producers; ++index) {
@@ -334,8 +335,8 @@ static void program_roundtrip() {
     Slice payload(64, VulkanContext::buffer_placement());
     payload.get_as<uint32_t>() = 9;
     ShaderResult result;
-    OrderCountdown complete;
-    decoded(payload, result, &OrderCountdown::arrive, &complete);
+    std::latch complete{1};
+    decoded(payload, result, &kitchen_test::latch_arrive, &complete);
     complete.wait();
     result.rethrow();
     require(payload.get_as<uint32_t>() == 10, "Decoded source did not reproduce the prepared program");
@@ -348,7 +349,7 @@ static void program_roundtrip() {
  * @brief Records a managed coroutine's resumed state outside its frame.
  */
 struct CoroutineContext {
-    OrderCountdown complete;
+    std::latch complete{1};
     std::atomic<bool> resumed{false};
 };
 /** --------------------------------------------------------------------------------------------------------- Coroutine Order
@@ -376,7 +377,7 @@ struct CoroutineTask {
 static CoroutineTask await_dispatch(ShaderAwaiter awaiter, CoroutineContext* context) {
     co_await std::move(awaiter);
     context->resumed.store(true, std::memory_order_release);
-    OrderCountdown::arrive(&context->complete);
+    kitchen_test::latch_arrive(&context->complete);
 }
 /** --------------------------------------------------------------------------------------------------------- Coroutine Completion
  * @brief Exercises completion-publication races and cancellation before managed frame destruction.

@@ -43,12 +43,12 @@ AlligatorInitializer::AlligatorInitializer() {
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Finalizer
- * @brief Quiesces accepted work and destroys lazy owners before releasing the retained executor.
+ * @brief Joins the retained executor before destroying its lazy runtime dependencies.
  */
 AlligatorInitializer::~AlligatorInitializer() {
     if (--initializer_count != 0) return;
     ba_net_shutdown();
-    Kitchen::inst().drain();
+    std::launder(reinterpret_cast<KitchenInitializer*>(executor_storage))->~KitchenInitializer();
     for (const RuntimeFinalizer::Phase phase :
             {RuntimeFinalizer::Phase::TrackerDetach, RuntimeFinalizer::Phase::Registry,
                 RuntimeFinalizer::Phase::Arena, RuntimeFinalizer::Phase::Runtime}) {
@@ -60,6 +60,5 @@ AlligatorInitializer::~AlligatorInitializer() {
             owner->destroy(owner->object);
         }
     }
-    std::launder(reinterpret_cast<KitchenInitializer*>(executor_storage))->~KitchenInitializer();
 }
 } // namespace buffetalligator

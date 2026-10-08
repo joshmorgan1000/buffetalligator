@@ -4,6 +4,7 @@
  */
 #define BUFFETALLIGATOR_SHADER_TESTING 1
 #include "../src/vulkan/vulkan.cpp"
+#include "kitchen_test_support.hpp"
 #include "../src/gpu/shader.cpp"
 #include "functional_support.hpp"
 #include <atomic>
@@ -57,15 +58,15 @@ static void rejected_admission() {
     auto shader = std::make_unique<Shader>(INCREMENT_BODY, "rejected_admission");
     Slice payload(64, true, VulkanContext::buffer_placement());
     SliceEntry* entry = SliceEntry::from_slice(payload);
-    OrderCountdown unexpected;
+    std::latch unexpected{1};
     shader_test_fail_admission.store(true, std::memory_order_release);
     bool rejected = false;
-    try { (*shader)(payload, result, &OrderCountdown::arrive, &unexpected); }
+    try { (*shader)(payload, result, &kitchen_test::latch_arrive, &unexpected); }
     catch (const std::bad_alloc&) { rejected = true; }
     require(rejected && !result.ready(), "Rejected admission published a completed result");
     require(entry->owners.load(std::memory_order_acquire) == 1,
         "Rejected admission left a captured Slice identity in its result");
-    require(!unexpected.ready(),
+    require(!unexpected.try_wait(),
         "Rejected admission invoked a completion callback");
     shader.reset();
     require(shader_test_live_slots.load() == 0,
@@ -79,7 +80,7 @@ static void rejected_admission() {
  */
 struct CompletionObservation {
     ShaderResult result;
-    OrderCountdown complete;
+    std::latch complete{1};
     std::atomic<uint32_t> callbacks{0};
     SliceEntry* entry = nullptr;
     uint32_t* payload = nullptr;
@@ -96,7 +97,7 @@ struct CompletionObservation {
             && *state.payload == state.expected_value,
             "Completion lost its retained identity or observed an unsubmitted write");
         state.callbacks.fetch_add(1, std::memory_order_relaxed);
-        OrderCountdown::arrive(&state.complete);
+        kitchen_test::latch_arrive(&state.complete);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Submission Failure
@@ -141,7 +142,7 @@ static void submission_failure() {
  * @brief Holds coroutine completion evidence outside the suspended frame.
  */
 struct CoroutineObservation {
-    OrderCountdown complete;
+    std::latch complete{1};
     std::atomic<uint32_t> failures{0};
 };
 /** --------------------------------------------------------------------------------------------------------- Failure Order
@@ -169,7 +170,7 @@ struct FailureTask {
 static FailureTask await_failure(ShaderAwaiter awaiter, CoroutineObservation* context) {
     try { co_await std::move(awaiter); }
     catch (const GPUException&) { context->failures.fetch_add(1, std::memory_order_relaxed); }
-    OrderCountdown::arrive(&context->complete);
+    kitchen_test::latch_arrive(&context->complete);
 }
 /** --------------------------------------------------------------------------------------------------------- Coroutine Failure
  * @brief Delivers a failed submission to one resumed coroutine after public Shader destruction.
@@ -211,8 +212,8 @@ static void cache_retry() {
     Slice payload(64, VulkanContext::buffer_placement());
     payload.get_as<uint32_t>() = 123;
     ShaderResult result;
-    OrderCountdown complete;
-    recovered(payload, result, &OrderCountdown::arrive, &complete);
+    std::latch complete{1};
+    recovered(payload, result, &kitchen_test::latch_arrive, &complete);
     complete.wait();
     result.rethrow();
     require(payload.get_as<uint32_t>() == 124, "A failed cache insertion prevented later preparation");
@@ -234,7 +235,6 @@ struct ShutdownAdmission {
  * @brief Prevents arena shutdown from passing an unaccepted operation that already retained Slice ids.
  */
 static void shutdown_capture() {
-    Kitchen::inst().drain();
     ShutdownAdmission pending;
     shader_test_admission_entered.store(false, std::memory_order_release);
     shader_test_hold_admission.store(true, std::memory_order_release);

@@ -33,7 +33,7 @@
 namespace {
 using buffetalligator::AlignedHeapBuffer;
 using buffetalligator::BuffetDescriptors;
-using buffetalligator::Order;
+using kitchen_dispatch::Order;
 using namespace kitchen_dispatch;
 using buffetalligator::Slice;
 using Clock = std::chrono::steady_clock;

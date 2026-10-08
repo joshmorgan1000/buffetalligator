@@ -93,7 +93,7 @@ struct MetalProgram {
         }
     }
     /** ------------------------------------------------------------------------------------------- Wait
-     * @brief Retires the command on a Kitchen waiter and reports terminal native execution errors.
+     * @brief Retires the command on a Kitchen worker and reports terminal native execution errors.
      */
     static void wait(ShaderProgram& program, ShaderSlot& slot) {
         auto& native = *static_cast<MetalSlot*>(slot.native);

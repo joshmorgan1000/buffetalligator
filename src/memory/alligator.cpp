@@ -4,7 +4,6 @@
  * thread pool lives in the Kitchen.
  */
 #include <alligator.hpp>
-#include <alligator/kitchen.hpp>
 #include <gpu/runtime.hpp>
 #include <vulkan/shader_state.hpp>
 #include <loggingutils.hpp>
@@ -138,7 +137,6 @@ Alligator::Alligator() {
  */
 Alligator::~Alligator() {
     ba_net_shutdown();
-    Kitchen::inst().drain();
     ShaderState::drain();
     ChainBuffet::release_chains();
     for (size_t i = 0; i < regions.size(); ++i) {

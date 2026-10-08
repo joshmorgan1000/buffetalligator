@@ -1,12 +1,14 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- Kitchen Dispatch Executors
  * @file executors.hpp
- * @brief Compares persistent queue workers with the actual production Kitchen using its Order record.
+ * @brief Compares borrowed records on experimental executors and the production Kitchen.
  */
 #include <alligator/kitchen.hpp>
+#include "../dispatch_record.hpp"
 #include <barrier>
 #include <cstddef>
 #include <iterator>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -15,7 +17,7 @@
 #include <moodycamel/concurrentqueue.h>
 
 namespace kitchen_dispatch {
-using buffetalligator::Order;
+using Order = experiments::DispatchRecord;
 /** --------------------------------------------------------------------------------------------------------- Strategy
  * @brief Selects default semaphore spinning, immediate semaphore sleeping, or continuous queue polling.
  */
@@ -142,11 +144,12 @@ private:
     buffetalligator::Kitchen& kitchen_;
 public:
     /** ------------------------------------------------------------------------------------------- Producer
-     * @brief Uses the production Kitchen's own per-thread submission tokens.
+     * @brief Submits borrowed experiment records through the production Kitchen.
      */
     class Producer {
     private:
         ProductionAdapter& executor_;
+        std::vector<buffetalligator::Order> orders_;
     public:
         explicit Producer(ProductionAdapter& executor) : executor_(executor) {}
         Producer(const Producer&) = delete;
@@ -159,33 +162,40 @@ public:
          * @brief Sends a task batch through the production Kitchen bulk endpoint.
          */
         void compute_bulk(Order* tasks, size_t count) {
-            while (!executor_.kitchen_.try_submit_bulk(tasks, count)) std::this_thread::yield();
+            orders_.clear();
+            orders_.reserve(count);
+            for (size_t index = 0; index < count; ++index) {
+                orders_.emplace_back(&Order::run, tasks[index]);
+            }
+            executor_.kitchen_.submit_bulk(orders_.data(), count);
         }
         /** ----------------------------------------------------------------------------- Storage
-         * @brief Sends one blocking task through the production waiter endpoint.
+         * @brief Sends one blocking task through the production queue.
          */
         void storage(Order task) { executor_.storage(std::move(task)); }
     };
     /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Selects the same requested compute limit while retaining the production storage team.
+     * @brief Checks the requested worker count matches the production hardware-sized team.
      */
     explicit ProductionAdapter(
         size_t threads = std::thread::hardware_concurrency(), size_t capacity = 4096
     ) : kitchen_(buffetalligator::Kitchen::inst()) {
         static_cast<void>(capacity);
-        kitchen_.set_max_threads(threads);
+        if (threads != std::thread::hardware_concurrency()) {
+            throw std::runtime_error("The production Kitchen uses the reported hardware thread count");
+        }
     }
     /** ------------------------------------------------------------------------------------------- Compute
-     * @brief Enqueues one task on the production compute pool.
+     * @brief Enqueues one task on the production queue.
      */
     void compute(Order task) {
-        while (!kitchen_.try_submit(std::move(task))) std::this_thread::yield();
+        kitchen_.submit(&Order::run, task);
     }
     /** ------------------------------------------------------------------------------------------- Storage
-     * @brief Enqueues one task on the production blocking waiter pool.
+     * @brief Enqueues one blocking task on the production queue.
      */
     void storage(Order task) {
-        while (!kitchen_.try_submit_waiting(std::move(task))) std::this_thread::yield();
+        kitchen_.submit(&Order::run, task);
     }
 };
 } // namespace kitchen_dispatch

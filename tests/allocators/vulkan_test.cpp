@@ -6,6 +6,7 @@
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
+#include "../kitchen_test_support.hpp"
 #include "../functional_support.hpp"
 #include <cstdint>
 #include <utility>
@@ -33,9 +34,9 @@ void alligator_main(Slice addresses) {
     U32Array(slice_load_u64(addresses, 1u)).v[0] = U32Array(slice_load_u64(addresses, 0u)).v[0] + 1u;
 }
 )glsl", "vulkan_buffer");
-    OrderCountdown complete;
+    std::latch complete{1};
     ShaderResult result;
-    shader(addresses, result, &OrderCountdown::arrive, &complete);
+    shader(addresses, result, &kitchen_test::latch_arrive, &complete);
     complete.wait();
     result.rethrow();
     require(output[0] == 42 && output[1] == 0, "GPU writes did not preserve mapped buffer boundaries");

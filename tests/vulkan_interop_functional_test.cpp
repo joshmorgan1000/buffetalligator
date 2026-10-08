@@ -6,6 +6,7 @@
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
+#include "kitchen_test_support.hpp"
 #include <vulkan/shader_state.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -85,9 +86,9 @@ static void vulkan_typed_io() {
     require(VulkanKernel::device_address(payload) % alignof(TypedPayload) == 0,
         "typed shader payload is not aligned for vector4 helpers");
     Shader shader(TYPED_SHADER, "vulkan_typed_io");
-    OrderCountdown complete;
+    std::latch complete{1};
     ShaderResult result;
-    shader(payload, result, &OrderCountdown::arrive, &complete);
+    shader(payload, result, &kitchen_test::latch_arrive, &complete);
     complete.wait();
     result.rethrow();
     require(values.unsigned_word == 0xB791F3DDu && values.signed_word == -117,
@@ -119,8 +120,8 @@ static void vulkan_typed_io() {
     values.float_vector = {-0.5f, 0.25f, -8.0f, 32.0f};
     values.packed_bytes = 0x1728394Au;
     values.packed_halfwords = 0x2468ABCDu;
-    complete.rearm(1);
-    shader(payload, result, &OrderCountdown::arrive, &complete);
+    kitchen_test::rearm_latch(complete, 1);
+    shader(payload, result, &kitchen_test::latch_arrive, &complete);
     complete.wait();
     result.rethrow();
     require(values.unsigned_word == 0xA4A7A6A1u && values.signed_word == 2147483630,

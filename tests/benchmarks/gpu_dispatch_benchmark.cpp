@@ -3,6 +3,7 @@
  * @brief Measures completed native and translated dispatches, owned completions, and program preparation.
  */
 #include "benchmark_support.hpp"
+#include <latch>
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
@@ -120,7 +121,7 @@ struct CoroutineTask {
  */
 struct Dispatch {
     std::vector<Slice> streams;
-    OrderCountdown finished{1};
+    std::latch finished{1};
     ShaderResult result;
     std::optional<CoroutineTask> coroutine;
     std::exception_ptr error;
@@ -137,7 +138,7 @@ struct Dispatch {
             dispatch.nanoseconds = std::chrono::duration<double, std::nano>(
                 Clock::now() - dispatch.started).count();
         }
-        OrderCountdown::arrive(&dispatch.finished);
+        dispatch.finished.count_down();
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Await Dispatch
@@ -180,7 +181,8 @@ struct Workload {
             dispatch->coroutine.reset();
             dispatch->result = ShaderResult();
             dispatch->error = {};
-            dispatch->finished.rearm(1);
+            std::destroy_at(&dispatch->finished);
+            std::construct_at(&dispatch->finished, 1);
             dispatch->instrumented = instrumented;
             dispatch->nanoseconds = -1;
             dispatch->admission_nanoseconds = -1;
