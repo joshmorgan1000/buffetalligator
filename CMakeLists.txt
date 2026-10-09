@@ -34,6 +34,12 @@ if(NOT TARGET logging::logging)
 endif()
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
+if(NOT APPLE)
+    find_package(OpenMP QUIET COMPONENTS CXX)
+    if(NOT OpenMP_CXX_FOUND)
+        message(FATAL_ERROR "Parallel dispatch needs OpenMP: on Ubuntu with Clang, run sudo apt-get install libomp-dev; with GCC, run sudo apt-get install g++, then rerun ./run_build.sh")
+    endif()
+endif()
 include(GNUInstallDirs)
 include(cmake/NetworkDependencies.cmake)
 # Link-time optimization for optimized builds, probed from the toolchain rather than assumed.
@@ -91,6 +97,11 @@ target_compile_definitions(alligator PUBLIC
     BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=$<BOOL:${BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING}>)
 target_link_libraries(alligator PUBLIC logging::logging Threads::Threads OpenSSL::SSL OpenSSL::Crypto
     PRIVATE alligator::uv alligator::sodium alligator::fabric)
+if(APPLE)
+    target_compile_options(alligator PUBLIC -fblocks)
+else()
+    target_link_libraries(alligator PUBLIC OpenMP::OpenMP_CXX)
+endif()
 if(UNIX AND NOT APPLE)
     set_source_files_properties(src/network/ba_network.c src/network/ba_wire.c
         src/network/ba_fabric.c

@@ -4,9 +4,11 @@
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
+#include <alligator/dispatch.hpp>
 #include <simd.hpp>
 #include <array>
 #include <bit>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -16,37 +18,57 @@
 namespace buffetalligator {
 namespace {
 /** --------------------------------------------------------------------------------------------------------- Retired Map Object
+ * @struct RetiredMapObject
  * @brief Couples retired storage with its concrete destructor.
  */
 struct RetiredMapObject {
+    /// @brief The pointer to the retired map object.
     void* pointer;
+    /// @brief The destructor function for the retired map object.
     void (*destroy)(void*);
 };
 /// @brief Hazard slot a lookup leaves armed on the index it searched.
 constexpr size_t kPinnedStateSlot = 2;
 /** --------------------------------------------------------------------------------------------------------- Map Hazard Record
+ * @struct MapHazardRecord
  * @brief Separates independently written thread announcements onto distinct cache lines.
  */
 struct alignas(128) MapHazardRecord {
+    /// @brief Indicates whether this hazard record is currently claimed by a thread.
     std::atomic<bool> claimed{false};
+    /// @brief The array of hazard pointers associated with this record.
     std::array<std::atomic<void*>, SliceMap::kHazardPtrsPerThread> pointers{};
 };
 /** --------------------------------------------------------------------------------------------------------- Map Orphan
+ * @struct MapOrphan
  * @brief Transfers a protected retirement out of an exiting thread.
  */
 struct MapOrphan {
+    /// @brief The retired map object associated with this orphan.
     RetiredMapObject retired;
+    /// @brief The next orphan in the linked list.
     MapOrphan* next;
 };
 /** --------------------------------------------------------------------------------------------------------- Map Hazard Domain
+ * @struct MapHazardDomain
  * @brief Owns reusable thread records and retirements whose originating threads have exited.
  */
 struct MapHazardDomain {
+    /// @brief The array of reusable hazard records for this domain.
     std::array<MapHazardRecord, SliceMap::kHazardMaxThreads> records{};
+    /// @brief The high water mark for claimed hazard records.
     std::atomic<size_t> high_water{0};
+    /// @brief The array of hazard records used for traversals.
+    std::array<MapHazardRecord, SliceMap::kHazardMaxThreads> traversals{};
+    /// @brief The high water mark for claimed traversal records.
+    std::atomic<size_t> traversal_high_water{0};
+    /// @brief The number of active traversals.
+    std::atomic<size_t> active_traversals{0};
+    /// @brief The linked list of orphaned map objects.
     std::atomic<MapOrphan*> orphans{nullptr};
     /** ------------------------------------------------------------------------------------------- Orphan
      * @brief Publishes an orphan without popping or recycling a concurrently observed head.
+     * @param node The orphaned map object to publish.
      */
     void orphan(MapOrphan* node) {
         node->next = orphans.load(std::memory_order_relaxed);
@@ -55,6 +77,29 @@ struct MapHazardDomain {
     }
 };
 constinit MapHazardDomain map_hazards;
+/** --------------------------------------------------------------------------------------------------------- Claim Record
+ * @brief Claims one reusable hazard record and publishes its scan boundary before announcing pointers.
+ * @param records The array of hazard records to claim from.
+ * @param high_water The high water mark for claimed records.
+ * @param exhausted The error message to throw if no records are available.
+ * @return A pointer to the claimed hazard record.
+ */
+MapHazardRecord* claim_record(
+    std::array<MapHazardRecord, SliceMap::kHazardMaxThreads>& records,
+    std::atomic<size_t>& high_water,
+    const char* exhausted
+) {
+    for (size_t index = 0; index < records.size(); ++index) {
+        bool available = false;
+        if (!records[index].claimed.compare_exchange_strong(available, true,
+            std::memory_order_acquire, std::memory_order_relaxed)) continue;
+        size_t previous = high_water.load(std::memory_order_seq_cst);
+        while (previous <= index && !high_water.compare_exchange_weak(
+            previous, index + 1, std::memory_order_seq_cst)) {}
+        return &records[index];
+    }
+    throw std::length_error(exhausted);
+}
 /** --------------------------------------------------------------------------------------------------------- CPU Relax
  * @brief Issues the architecture's pause hint instead of a de-prioritizing yield syscall.
  */
@@ -68,11 +113,15 @@ inline void cpu_relax() {
 #endif
 }
 /** --------------------------------------------------------------------------------------------------------- Map Thread Context
+ * @struct MapThreadContext
  * @brief Reclaims private retirements against globally ordered hazard announcements.
  */
 struct MapThreadContext {
+    /// @brief The hazard record associated with this thread context.
     MapHazardRecord* record = nullptr;
+    /// @brief The list of retired map objects that are pending reclamation.
     std::vector<RetiredMapObject> retired;
+    /// @brief The list of map objects that are ready to be reclaimed.
     std::vector<RetiredMapObject> reclaimable;
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Claims a reusable record before announcing any protected pointer.
@@ -80,17 +129,8 @@ struct MapThreadContext {
     MapThreadContext() {
         retired.reserve(SliceMap::kHazardMaxThreads * SliceMap::kHazardPtrsPerThread
             + SliceMap::kRetireBatch);
-        for (size_t index = 0; index < map_hazards.records.size(); ++index) {
-            bool available = false;
-            if (!map_hazards.records[index].claimed.compare_exchange_strong(available, true,
-                std::memory_order_acquire, std::memory_order_relaxed)) continue;
-            record = &map_hazards.records[index];
-            size_t previous = map_hazards.high_water.load(std::memory_order_seq_cst);
-            while (previous <= index && !map_hazards.high_water.compare_exchange_weak(
-                previous, index + 1, std::memory_order_seq_cst)) {}
-            return;
-        }
-        throw std::length_error("SliceMap hazard domain has 256 simultaneously registered threads");
+        record = claim_record(map_hazards.records, map_hazards.high_water,
+            "SliceMap hazard domain has 256 simultaneously registered threads");
     }
     /** ------------------------------------------------------------------------------------------- Collect
      * @brief Orders removals against announcements before destroying unprotected objects.
@@ -98,22 +138,33 @@ struct MapThreadContext {
     void collect() {
         MapOrphan* orphaned = map_hazards.orphans.exchange(nullptr, std::memory_order_acquire);
         const size_t records = map_hazards.high_water.load(std::memory_order_seq_cst);
+        const size_t traversals = map_hazards.traversal_high_water.load(std::memory_order_seq_cst);
+        const size_t active_traversals = map_hazards.active_traversals.load(std::memory_order_seq_cst);
         const bool pinned =
             record->pointers[kPinnedStateSlot].load(std::memory_order_seq_cst) != nullptr;
-        if (records <= 1 && !pinned && orphaned == nullptr) {
+        if (records <= 1 && active_traversals == 0 && !pinned && orphaned == nullptr) {
             for (const auto& object : retired) object.destroy(object.pointer);
             retired.clear();
             return;
         }
-        std::array<uint64_t, SliceMap::kHazardMaxThreads * SliceMap::kHazardPtrsPerThread> active;
+        std::array<uint64_t, SliceMap::kHazardMaxThreads * (SliceMap::kHazardPtrsPerThread + 2)>
+            active;
         for (size_t index = 0; index < records; ++index) {
             for (size_t slot = 0; slot < SliceMap::kHazardPtrsPerThread; ++slot) {
                 active[index * SliceMap::kHazardPtrsPerThread + slot] = reinterpret_cast<uintptr_t>(
                     map_hazards.records[index].pointers[slot].load(std::memory_order_seq_cst));
             }
         }
-        const size_t scan_count = (records * SliceMap::kHazardPtrsPerThread + 7) & ~size_t(7);
-        std::fill(active.begin() + records * SliceMap::kHazardPtrsPerThread,
+        const size_t thread_count = records * SliceMap::kHazardPtrsPerThread;
+        for (size_t index = 0; index < traversals; ++index) {
+            for (size_t slot = 0; slot < 2; ++slot) {
+                active[thread_count + index * 2 + slot] = reinterpret_cast<uintptr_t>(
+                    map_hazards.traversals[index].pointers[slot].load(std::memory_order_seq_cst));
+            }
+        }
+        const size_t pointer_count = thread_count + traversals * 2;
+        const size_t scan_count = (pointer_count + 7) & ~size_t(7);
+        std::fill(active.begin() + pointer_count,
             active.begin() + scan_count, uint64_t(0));
         size_t remaining = 0;
         reclaimable.clear();
@@ -141,6 +192,9 @@ struct MapThreadContext {
     }
     /** ------------------------------------------------------------------------------------------- Retire
      * @brief Reclaims promptly while alone and batches retirements under concurrent sharers.
+     * @tparam Object The type of the object being retired.
+     * @param pointer A pointer to the object to be retired.
+     * @param eager Whether to attempt eager reclamation.
      */
     template<typename Object>
     void retire(Object* pointer, bool eager) {
@@ -150,11 +204,13 @@ struct MapThreadContext {
     }
     /** ------------------------------------------------------------------------------------------- Destroy
      * @brief Invokes the original object's concrete destructor.
+     * @param pointer A pointer to the object to be destroyed.
      */
     template<typename Object>
     static void destroy(void* pointer) { delete static_cast<Object*>(pointer); }
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Clears announcements before releasing the record and transferring protected retirements.
+     * @brief Clears announcements before releasing the record and transferring protected
+     * retirements.
      */
     ~MapThreadContext() {
         for (auto& pointer : record->pointers) pointer.store(nullptr, std::memory_order_seq_cst);
@@ -165,6 +221,7 @@ struct MapThreadContext {
 };
 /** --------------------------------------------------------------------------------------------------------- Map Thread
  * @brief Registers only threads that actually access a map.
+ * @return The thread-local MapThreadContext instance.
  */
 MapThreadContext& map_thread() {
     thread_local MapThreadContext context;
@@ -172,6 +229,10 @@ MapThreadContext& map_thread() {
 }
 /** --------------------------------------------------------------------------------------------------------- Announce
  * @brief Publishes a source pointer into a hazard slot and revalidates it until the two agree.
+ * @tparam Object The type of the object being protected.
+ * @param slot The announcement slot to use for protection.
+ * @param source The atomic source to protect.
+ * @return A pointer to the protected object.
  */
 template<typename Object>
 Object* announce(std::atomic<void*>& slot, const std::atomic<Object*>& source) {
@@ -183,25 +244,80 @@ Object* announce(std::atomic<void*>& slot, const std::atomic<Object*>& source) {
     return pointer;
 }
 /** --------------------------------------------------------------------------------------------------------- Map Hazard
+ * @struct MapHazard
  * @brief Scoped announcement that retirement cannot miss and that clears when the reader leaves.
  */
 struct MapHazard {
+    /// @brief The announcement slot used to protect the object.
     std::atomic<void*>& announcement;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a new MapHazard and claims an announcement slot.
+     * @param slot The index of the announcement slot to claim.
+    */
     explicit MapHazard(size_t slot) : announcement(map_thread().record->pointers[slot]) {}
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Destroys the MapHazard and clears the announcement slot.
+    */
     ~MapHazard() { clear(); }
+    /** ------------------------------------------------------------------------------------------- Clear
+     * @brief Clears the announcement slot used by this MapHazard.
+    */
     void clear() { announcement.store(nullptr, std::memory_order_seq_cst); }
+    /** ------------------------------------------------------------------------------------------- Protect
+     * @brief Protects the given source by announcing it in the announcement slot.
+     * @tparam Object The type of the object being protected.
+     * @param source The atomic source to protect.
+     * @return A pointer to the protected object.
+    */
     template<typename Object>
     Object* protect(const std::atomic<Object*>& source) { return announce(announcement, source); }
 };
 /** --------------------------------------------------------------------------------------------------------- Map Lookup Pin
+ * @struct MapLookupPin
  * @brief Announcement a lookup leaves armed so its row survives until this thread's next lookup.
  */
 struct MapLookupPin {
+    /// @brief The announcement slot used to protect the lookup's row.
     std::atomic<void*>& announcement;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a new MapLookupPin and claims an announcement slot.
+     * @param slot The index of the announcement slot to claim.
+    */
     explicit MapLookupPin(size_t slot) : announcement(map_thread().record->pointers[slot]) {}
+    /** ------------------------------------------------------------------------------------------- Clear
+     * @brief Clears the announcement slot used by this MapLookupPin.
+    */
     void clear() { announcement.store(nullptr, std::memory_order_seq_cst); }
+    /** ------------------------------------------------------------------------------------------- Protect
+     * @brief Protects the given source by announcing it in the announcement slot.
+     * @tparam Object The type of the object being protected.
+     * @param source The atomic source to protect.
+     * @return A pointer to the protected object.
+    */
     template<typename Object>
     Object* protect(const std::atomic<Object*>& source) { return announce(announcement, source); }
+};
+/** --------------------------------------------------------------------------------------------------------- Map Traversal Hazard
+ * @struct MapTraversalHazard
+ * @brief Keeps callback traversal announcements independent of nested map operations.
+ */
+struct MapTraversalHazard {
+    /// @brief The record used to track this traversal hazard.
+    MapHazardRecord* record = claim_record(map_hazards.traversals,
+        map_hazards.traversal_high_water, "SliceMap has 256 simultaneously active traversals");
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a new MapTraversalHazard and claims a traversal record.
+    */
+    MapTraversalHazard() { map_hazards.active_traversals.fetch_add(1, std::memory_order_seq_cst); }
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Destroys the MapTraversalHazard and releases its traversal record.
+    */
+    ~MapTraversalHazard() {
+        record->pointers[1].store(nullptr, std::memory_order_seq_cst);
+        record->pointers[0].store(nullptr, std::memory_order_seq_cst);
+        map_hazards.active_traversals.fetch_sub(1, std::memory_order_seq_cst);
+        record->claimed.store(false, std::memory_order_release);
+    }
 };
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Slice Map State
@@ -213,55 +329,125 @@ struct SliceMap::State {
     static constexpr uintptr_t kMark = 1;
     static constexpr uint64_t kHashInverse = UINT64_C(17428512612931826493);
     static_assert(kHashInverse * UINT64_C(11400714819323198485) == 1);
-    /** ----------------------------------------------------------------------------------------------------- Payload
+    /** ------------------------------------------------------------------------------------------- Payload
+     * @struct Payload
      * @brief Owns one immutable Slice claim and its optional typed destructor.
      */
     struct Payload {
+        /// @brief The slice owned by this payload.
         Slice slice;
+        /// @brief The finalizer responsible for cleaning up the slice.
         Finalizer finalizer;
+        /** ----------------------------------------------------------------------------- Constructor
+         * @brief Constructs a new Payload with the given slice and finalizer.
+         * @param value The slice to be owned by this payload.
+         * @param destructor The finalizer responsible for cleaning up the slice.
+         */
         Payload(Slice&& value, Finalizer destructor)
         : slice(std::move(value)), finalizer(destructor) {}
+        /** ----------------------------------------------------------------------------- Destructor
+         * @brief Releases the resources held by the payload.
+         */
         ~Payload() { if (finalizer) finalizer(slice.data<void>()); }
+        /** ----------------------------------------------------------------------------- Retain Slice
+         * @brief Retains this protected payload's existing arena entry for a
+         * callback-local handle.
+         * @return A handle to the retained slice.
+         */
+        Slice retain_slice() const {
+            if (!slice.is_null()) {
+                SliceEntry::from_slice(slice)->owners.fetch_add(1, std::memory_order_relaxed);
+            }
+            return SliceHandle::adopt(slice.id());
+        }
     };
-    /** ----------------------------------------------------------------------------------------------------- Node
-     * @brief Chains one identifier into its bucket with a replaceable payload and stable position.
+    /** ------------------------------------------------------------------------------------------- Node
+     * @struct Node
+     * @brief Chains one identifier into its bucket with a replaceable payload and position.
      */
     struct Node {
+        /// @brief The hashed value of the node's identifier.
         const uint64_t hashed;
+        /// @brief Pointer to the next node in the chain.
         std::atomic<Node*> next{nullptr};
+        /// @brief Pointer to the current payload of the node.
         std::atomic<Payload*> current;
+        /// @brief The position of the node within its segment.
         std::atomic<size_t> position{kPending};
+        /// @brief Indicates whether the node has been published.
         std::atomic<bool> published{false};
+        /** ----------------------------------------------------------------------------- Constructor
+         * @brief Constructs a new Node with the specified hash and payload.
+         * @param hash The hashed value of the node's identifier.
+         * @param payload Pointer to the initial payload of the node.
+         */
         Node(uint64_t hash, Payload* payload) : hashed(hash), current(payload) {}
+        /** ----------------------------------------------------------------------------- Destructor
+         * @brief Destroys the Node and releases its current payload.
+         */
         ~Node() { delete current.load(std::memory_order_relaxed); }
-        int64_t identifier() const { return static_cast<int64_t>(hashed * kHashInverse); }
+        /** ----------------------------------------------------------------------------- Identifier
+         * @brief Retrieves the original identifier of the node by reversing the hash.
+         * @return The original identifier of the node.
+         */
+        int64_t identifier() const {
+            return static_cast<int64_t>(hashed * kHashInverse);
+        }
     };
-    /** ----------------------------------------------------------------------------------------------------- Table
+    /** ------------------------------------------------------------------------------------------- Table
+     * @struct Table
      * @brief Maps hash prefixes onto shared chains whose pending splits carry the mark bit.
      */
     struct Table {
+        /// @brief The shift value used for calculating bucket indices.
         const size_t shift;
+        /// @brief The number of buckets in the table.
         const size_t bucket_count;
+        /// @brief The array of atomic bucket pointers representing the table's buckets.
         const std::unique_ptr<std::atomic<uintptr_t>[]> buckets;
+        /// @brief Pointer to the retired table, if any.
         Table* retired;
+        /** ----------------------------------------------------------------------------- Constructor
+         * @brief Constructs a new Table with the specified number of buckets.
+         * @param count The number of buckets in the table.
+         */
         explicit Table(size_t count)
-        : shift(std::numeric_limits<size_t>::digits - std::countr_zero(count)),
-          bucket_count(count), buckets(new std::atomic<uintptr_t>[count]()), retired(nullptr) {}
+        : shift(std::numeric_limits<size_t>::digits - std::countr_zero(count))
+        , bucket_count(count)
+        , buckets(new std::atomic<uintptr_t>[count]())
+        , retired(nullptr) {}
     };
-    /** ----------------------------------------------------------------------------------------------------- Segment
+    /** ------------------------------------------------------------------------------------------- Segment
+     * @struct Segment
      * @brief Reserves stable position cells without relocating previously published cells.
      */
     struct Segment {
+        /// @brief The array of atomic node pointers representing the segment's cells.
         std::unique_ptr<std::atomic<Node*>[]> cells;
+        /** ----------------------------------------------------------------------------- Constructor
+         * @brief Constructs a new Segment with the specified number of cells.
+         * @param count The number of cells in the segment.
+         */
         explicit Segment(size_t count) : cells(new std::atomic<Node*>[count]{}) {}
     };
-    /** ----------------------------------------------------------------------------------------------------- Pointer View
+    /** ------------------------------------------------------------------------------------------- Pointer View
+     * @struct PointerView
      * @brief Publishes immutable pointer metadata for concurrent readers between map mutations.
      */
     struct PointerView {
+        /// @brief The array of slice pointers representing the published rows.
         Slice pointers;
+        /// @brief The revision number of the pointer view.
         size_t revision;
+        /// @brief The number of published rows.
         size_t count;
+        /** ----------------------------------------------------------------------------- Constructor
+         * @brief Constructs a new PointerView with the specified capacity, revision,
+         * and row count.
+         * @param capacity The capacity of the slice array.
+         * @param version The revision number of the pointer view.
+         * @param rows The number of published rows.
+         */
         PointerView(size_t capacity, size_t version, size_t rows)
         : pointers(capacity * sizeof(void*)), revision(version), count(rows) {}
     };
@@ -280,6 +466,7 @@ struct SliceMap::State {
     std::atomic<bool> resizing_{false};
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Prepares the initial table and position directory without imposing a row ceiling.
+     * @param hint The initial hint for the number of rows to reserve.
      */
     explicit State(size_t hint)
     : table_(new Table(std::max(size_t(2), std::bit_ceil(std::max(size_t(1), hint))))) {
@@ -293,12 +480,16 @@ struct SliceMap::State {
     }
     /** ------------------------------------------------------------------------------------------- Hash
      * @brief Permutes the entire signed identifier domain into a collision-free hash order.
+     * @param identifier The signed identifier to hash.
+     * @return A 64-bit hash value corresponding to the identifier.
      */
     static uint64_t hash(int64_t identifier) {
         return static_cast<uint64_t>(identifier) * UINT64_C(11400714819323198485);
     }
     /** ------------------------------------------------------------------------------------------- Cell
      * @brief Installs the exponentially sized segment needed by a new stable position.
+     * @param index The index of the position cell for which to install the segment.
+     * @return A pointer to the atomic node pointer corresponding to the specified index.
      */
     std::atomic<Node*>* cell(size_t index) {
         const size_t segment_index = std::bit_width(index + 1) - 1;
@@ -317,6 +508,8 @@ struct SliceMap::State {
     }
     /** ------------------------------------------------------------------------------------------- Entry At
      * @brief Reads a position cell that stays null until its row finishes publication.
+     * @param index The index of the position cell to read.
+     * @return A pointer to the node at the specified position, or nullptr if not yet published.
      */
     Node* entry_at(size_t index) const {
         const size_t segment_index = std::bit_width(index + 1) - 1;
@@ -326,6 +519,8 @@ struct SliceMap::State {
     }
     /** ------------------------------------------------------------------------------------------- Find
      * @brief Walks one bucket's sorted chain for the exact hash of an identifier.
+     * @param hashed The hash of the identifier to find.
+     * @return A pointer to the node with the matching hash, or nullptr if not found.
      */
     Node* find(uint64_t hashed) const {
         Table* table = table_.load(std::memory_order_acquire);
@@ -357,6 +552,8 @@ struct SliceMap::State {
     }
     /** ------------------------------------------------------------------------------------------- Split
      * @brief Repoints one marked bucket at the first chain node inside its narrower hash range.
+     * @param table The table containing the bucket to split.
+     * @param bucket The index of the bucket to split.
      */
     void split(Table* table, size_t bucket) {
         const uintptr_t value = table->buckets[bucket].load(std::memory_order_acquire);
@@ -368,6 +565,7 @@ struct SliceMap::State {
     }
     /** ------------------------------------------------------------------------------------------- Try Resize
      * @brief Keeps exclusive resize ownership until the doubled table's bucket splits complete.
+     * @param superseded The table being replaced by the resized table.
      */
     void try_resize(Table* superseded) {
         if (table_.load(std::memory_order_acquire) != superseded) return;
@@ -401,6 +599,9 @@ struct SliceMap::State {
     }
     /** ------------------------------------------------------------------------------------------- Upsert
      * @brief Links one distinct node or atomically exchanges an existing node's payload.
+     * @param identifier The unique identifier for the node.
+     * @param payload The payload to be associated with the node.
+     * @return A Publication indicating the position and whether it was newly inserted.
      */
     Publication upsert(int64_t identifier, std::unique_ptr<Payload> payload) {
         const uint64_t hashed = hash(identifier);
@@ -505,17 +706,21 @@ struct SliceMap::State {
 };
 /** --------------------------------------------------------------------------------------------------------- Constructor
  * @brief Allocates the initial state and records the caller's default wait expectation.
+ * @param capacity The initial capacity of the slice map.
  */
 SliceMap::SliceMap(size_t capacity) : state_(new State(capacity)), expected_(capacity) {}
 /** --------------------------------------------------------------------------------------------------------- Move Constructor
  * @brief Transfers the complete index without moving any published payload.
+ * @param other The source SliceMap to move from.
  */
 SliceMap::SliceMap(SliceMap&& other) noexcept
-: state_(other.state_.exchange(nullptr, std::memory_order_relaxed)),
-  expected_(other.expected_.exchange(0, std::memory_order_relaxed)),
-  publish_context_(other.publish_context_), publish_hook_(other.publish_hook_) {}
+: state_(other.state_.exchange(nullptr, std::memory_order_relaxed))
+, expected_(other.expected_.exchange(0, std::memory_order_relaxed))
+, publish_context_(other.publish_context_)
+, publish_hook_(other.publish_hook_) {}
 /** --------------------------------------------------------------------------------------------------------- Move Assignment
  * @brief Reclaims destination ownership and transfers a quiescent source index.
+ * @param other The source SliceMap to move from.
  */
 SliceMap& SliceMap::operator=(SliceMap&& other) noexcept {
     if (this == &other) return *this;
@@ -539,6 +744,9 @@ SliceMap::~SliceMap() {
 }
 /** --------------------------------------------------------------------------------------------------------- Complete Publish
  * @brief Marks a row hook-complete and advances the watermark only from the boundary row.
+ * @param state The state of the slice map.
+ * @param index The index of the row being published.
+ * @param inserted Whether the row was newly inserted.
  */
 void SliceMap::complete_publish(State* state, size_t index, bool inserted) {
     if (!inserted) state->revision_.fetch_add(1, std::memory_order_relaxed);
@@ -604,14 +812,133 @@ int64_t SliceMap::identifier_at(size_t index) const {
     State::Node* entry = state->entry_at(index);
     return entry ? entry->identifier() : -1;
 }
+/** --------------------------------------------------------------------------------------------------------- IDs Internal
+ * @brief Gathers one protected publication prefix directly through its immutable position segments.
+ */
+std::vector<int64_t> SliceMap::ids_internal() const {
+    MapHazard hazard(0);
+    State* state = hazard.protect(state_);
+    std::vector<int64_t> identifiers;
+    if (!state) return identifiers;
+    state->advance_completed();
+    size_t remaining = state->completed_.load(std::memory_order_acquire);
+    identifiers.reserve(remaining);
+    for (size_t segment_index = 0; remaining; ++segment_index) {
+        const size_t count = std::min(remaining, size_t(1) << segment_index);
+        const State::Segment* segment = state->segments_[segment_index]
+            .load(std::memory_order_relaxed);
+        for (size_t index = 0; index < count; ++index) {
+            identifiers.push_back(segment->cells[index].load(std::memory_order_relaxed)
+                ->identifier());
+        }
+        remaining -= count;
+    }
+    return identifiers;
+}
+/** --------------------------------------------------------------------------------------------------------- For Each
+ * @brief Dispatches protected callback ranges across one captured state generation and joins them.
+ * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
+ * @param context Shared callback context whose concurrent accesses must be synchronized.
+ */
+void SliceMap::for_each(
+    void (*callback)(int64_t id, Slice* slice, void* context),
+    void* context
+) const {
+    MapTraversalHazard hazard;
+    State* state = announce(hazard.record->pointers[0], state_);
+    if (!state) return;
+    state->advance_completed();
+    const size_t count = state->completed_.load(std::memory_order_acquire);
+    if (!count) return;
+#if defined(__APPLE__)
+    const size_t available_workers = std::thread::hardware_concurrency();
+    if (!available_workers) throw std::runtime_error("SliceMap cannot probe hardware worker count");
+#else
+    const size_t available_workers = static_cast<size_t>(omp_get_max_threads());
+#endif
+    /** ------------------------------------------------------------------------------------------- Invocation
+     * @struct Invocation
+     * @brief Shares the captured row prefix and the first callback failure until dispatch
+     * completes.
+     */
+    struct Invocation {
+        /// @brief The captured state and callback information for a single invocation.
+        State* state;
+        /// @brief The total number of completed rows to be processed.
+        size_t count;
+        /// @brief The number of worker threads to be used for this invocation.
+        size_t workers;
+        /// @brief The callback function to be invoked for each slice.
+        void (*callback)(int64_t, Slice*, void*);
+        /// @brief The user-defined context passed to the callback.
+        void* context;
+        /// @brief Indicates whether the callback has failed.
+        std::atomic<bool> failed{false};
+        /// @brief Stores the first exception thrown by the callback, if any.
+        std::exception_ptr failure{};
+        /** --------------------------------------------------------------------------------------- Run
+         * @brief Visits one contiguous worker range with independent callback payload protection.
+         * @param worker The index of the worker thread executing this run.
+         */
+        void run(size_t worker) {
+            try {
+                MapTraversalHazard payload_hazard;
+                const size_t stride = count / workers;
+                const size_t extra = count % workers;
+                const size_t first = worker * stride + std::min(worker, extra);
+                size_t remaining = stride + (worker < extra);
+                size_t segment_index = std::bit_width(first + 1) - 1;
+                size_t offset = first - ((size_t(1) << segment_index) - 1);
+                while (remaining) {
+                    const size_t rows = std::min(remaining, (size_t(1) << segment_index) - offset);
+                    const State::Segment* segment = state->segments_[segment_index]
+                        .load(std::memory_order_relaxed);
+                    for (size_t index = offset; index < offset + rows; ++index) {
+                        State::Node* node = segment->cells[index].load(std::memory_order_relaxed);
+                        State::Payload* payload = announce(payload_hazard.record->pointers[1],
+                            node->current);
+                        Slice slice = payload->retain_slice();
+                        callback(node->identifier(), &slice, context);
+                    }
+                    remaining -= rows;
+                    ++segment_index;
+                    offset = 0;
+                }
+            } catch (...) {
+                bool available = false;
+                if (failed.compare_exchange_strong(available, true, std::memory_order_relaxed)) {
+                    failure = std::current_exception();
+                }
+            }
+        }
+    } invocation{state, count, std::min(count, available_workers), callback, context};
+    /** ------------------------------------------------------------------------------------------- Worker
+     * @struct Worker
+     * @brief Borrows the invocation through the platform dispatch callable.
+     */
+    struct Worker {
+        /// @brief The shared invocation containing the state and callback information.
+        Invocation* invocation;
+        /** --------------------------------------------------------------------------------------- Invoke
+         * @brief Runs one borrowed worker range through the shared invocation.
+         * @param index The index of the worker thread executing this run.
+         */
+        void operator()(size_t index) const { invocation->run(index); }
+    };
+    dispatch_for(0, invocation.workers, Worker{&invocation});
+    if (invocation.failure) std::rethrow_exception(invocation.failure);
+}
 /** --------------------------------------------------------------------------------------------------------- Published
  * @brief Tests a position cell that stays null until its row finishes publication.
+ * @param slot The slot to check for publication.
+ * @return True if the slot has been published, false otherwise.
  */
 bool SliceMap::published(const size_t& slot) const {
     return state_.load(std::memory_order_acquire)->entry_at(slot) != nullptr;
 }
 /** --------------------------------------------------------------------------------------------------------- Size
  * @brief Reads the contiguous watermark of hook-completed first publications.
+ * @return The number of completed first publications.
  */
 size_t SliceMap::size() const {
     MapHazard hazard(0);
@@ -622,6 +949,7 @@ size_t SliceMap::size() const {
 }
 /** --------------------------------------------------------------------------------------------------------- Capacity
  * @brief Reads the current reservation while preserving concurrent reset safety.
+ * @return The currently reserved row positions.
  */
 size_t SliceMap::capacity() const noexcept {
     MapHazard hazard(0);
@@ -630,6 +958,7 @@ size_t SliceMap::capacity() const noexcept {
 }
 /** --------------------------------------------------------------------------------------------------------- Pointer View
  * @brief Publishes one cached pointer view for concurrent readers while writers and reset are quiescent.
+ * @return A pointer to the array of published slice pointers.
  */
 void** SliceMap::pointer_view() const {
     MapHazard state_hazard(0), view_hazard(1);
@@ -661,6 +990,7 @@ void** SliceMap::pointer_view() const {
 }
 /** --------------------------------------------------------------------------------------------------------- Wait Until Full
  * @brief Parks on the hook-completed watermark with no semaphore count or missed wakeup window.
+ * @param count The number of completed rows to wait for.
  */
 void SliceMap::wait_until_full(size_t count) {
     State* state = state_.load(std::memory_order_acquire);
@@ -684,6 +1014,7 @@ void SliceMap::reset() {
 }
 /** --------------------------------------------------------------------------------------------------------- Merge
  * @brief Moves rows and finalizers in source order with stable-position replacement for shared keys.
+ * @param other The source SliceMap to merge from.
  */
 SliceMap& SliceMap::merge(SliceMap& other) {
     if (this == &other) return *this;

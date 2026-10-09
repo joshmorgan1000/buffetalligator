@@ -23,6 +23,7 @@
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 
@@ -46,6 +47,7 @@ private:
     void** pointer_view() const;
     void* payload_at(size_t index) const;
     int64_t identifier_at(size_t index) const;
+    std::vector<int64_t> ids_internal() const;
     void complete_publish(State* state, size_t index, bool inserted);
 public:
     inline static constexpr int kHazardPtrsPerThread = 3;
@@ -146,6 +148,32 @@ public:
     template<typename ID>
         requires std::is_convertible_v<int64_t, ID>
     ID id(size_t index) const { return static_cast<ID>(identifier_at(index)); }
+    /** ------------------------------------------------------------------------------------------- IDs
+     * @brief Snapshots the hook-completed identifiers in position order during concurrent publication.
+     * @tparam ID The type to which the identifiers should be converted.
+     * @return A vector containing the identifiers of all published slots.
+     */
+    template<typename ID = int64_t>
+        requires std::is_convertible_v<int64_t, ID>
+    std::vector<ID> ids() const {
+        if constexpr (std::is_same_v<ID, int64_t>) {
+            return ids_internal();
+        } else {
+            auto identifiers = ids_internal();
+            return std::vector<ID>(std::make_move_iterator(identifiers.begin()),
+                std::make_move_iterator(identifiers.end()));
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- For Each
+     * @brief Dispatches one hook-completed prefix concurrently and waits for every worker to finish.
+     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
+     * @param context Shared callback context whose concurrent accesses must be synchronized.
+     * @throws Any callback exception after all dispatched workers have joined.
+     */
+    void for_each(
+        void (*callback)(int64_t id, Slice* slice, void* context),
+        void* context
+    ) const;
     /** ------------------------------------------------------------------------------------------- Published
      * @brief Checks if a specific slot has been published.
      * @param slot The slot to check for publication.
