@@ -114,12 +114,14 @@ struct TeamItem {
 /** --------------------------------------------------------------------------------------------------------- Team Warmup
  * @brief Publishes a non-atomic warmup value through the team's phase barrier.
  */
-void team_warmup(void* item, void*) { ++static_cast<TeamItem*>(item)->warmed; }
+void team_warmup(std::shared_ptr<void> item, std::shared_ptr<void>) {
+    ++static_cast<TeamItem*>(item.get())->warmed;
+}
 /** --------------------------------------------------------------------------------------------------------- Team Task
  * @brief Verifies warmup visibility and records one worker's invocation.
  */
-void team_task(void* item, void*) {
-    TeamItem& record = *static_cast<TeamItem*>(item);
+void team_task(std::shared_ptr<void> item, std::shared_ptr<void>) {
+    TeamItem& record = *static_cast<TeamItem*>(item.get());
     require(record.warmed == 1, "team task preceded its item warmup");
     record.tasks.fetch_add(1, std::memory_order_relaxed);
 }
@@ -129,13 +131,13 @@ void team_task(void* item, void*) {
 void queued_team() {
     constexpr size_t worker_count = 4;
     std::array<TeamItem, 16> items{};
-    std::array<std::future<void*>, 16> futures;
+    std::array<std::future<std::shared_ptr<void>>, 16> futures;
     TaskForce force(worker_count, &team_warmup, &team_task, nullptr);
     for (size_t index = 0; index < items.size(); ++index) {
         futures[index] = force.enqueue(&items[index]);
     }
     for (size_t index = 0; index < items.size(); ++index) {
-        require(futures[index].get() == &items[index], "team future returned another item");
+        require(futures[index].get().get() == &items[index], "team future returned another item");
         require(items[index].warmed == 1 && items[index].tasks.load() == worker_count,
             "team future completed before every worker ran its task");
     }

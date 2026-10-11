@@ -26,6 +26,16 @@ static_assert(false, "Unsupported platform for dispatch or OpenMP not found");
 #endif
 
 namespace buffetalligator {
+namespace dispatch_detail {
+/** --------------------------------------------------------------------------------------------------------- borrow
+ * @brief A non-owning shared pointer to a caller-owned callback context, no control block allocated.
+ * @param context The object that outlives every callback.
+ * @return The type-erased pointer handed to the callbacks.
+ */
+inline static std::shared_ptr<void> borrow(void* context) {
+    return std::shared_ptr<void>(std::shared_ptr<void>(), context);
+}
+} // namespace dispatch_detail
 /** --------------------------------------------------------------------------------------------------------- dispatch_for
  * @brief Parallel for loop abstraction over GCD or OpenMP.
  * @param start The starting index (inclusive).
@@ -189,25 +199,57 @@ inline static void dispatch_parallel(Funcs&&... funcs) {
 class TaskForce {
 private:
     /// @brief The queue that holds tasks to be executed by the thread pool.
-    moodycamel::BlockingConcurrentQueue<std::pair<std::promise<void*>, void*>> queue_;
-    /// @brief The currently executing task item.
-    std::atomic<void*> current_item_{nullptr};
+    moodycamel::BlockingConcurrentQueue<std::pair<std::promise<std::shared_ptr<void>>, std::shared_ptr<void>>> queue_;
+    /// @brief The currently executing task item, published to the workers across the warmup barrier.
+    std::shared_ptr<void> current_item_;
     /// @brief The promise associated with the currently executing task, used to signal its completion.
-    std::atomic<std::promise<void*>*> current_promise_{nullptr};
+    std::atomic<std::promise<std::shared_ptr<void>>*> current_promise_{nullptr};
     /// @brief The warmup function to call before executing the task.
-    void (*warmup_)(void*, void*);
+    void (*warmup_)(std::shared_ptr<void>, std::shared_ptr<void>);
     /// @brief The barrier that synchronizes threads after the warmup function has been called.
     std::barrier<> post_warmup_;
     /// @brief The task function to execute after the warmup.
-    void (*task_)(void*, void*);
-    /// @brief The context to pass to the warmup and task functions.
-    void* context_;
+    void (*task_)(std::shared_ptr<void>, std::shared_ptr<void>);
+    /// @brief The context to pass to the warmup and task functions, held for the pool's lifetime.
+    std::shared_ptr<void> context_;
     /// @brief The barrier that synchronizes threads after the task function has been called.
     std::barrier<> post_task_;
     /// @brief The collection of threads that make up the thread pool.
     std::vector<std::unique_ptr<std::thread>> threads_;
     /// @brief Flag indicating whether the thread pool should stop execution.
     std::atomic<bool> stop_{false};
+    /** ------------------------------------------------------------------------------------------- Start
+     * @brief Launches the follower threads and the leader that drains the queue.
+     * @param num_threads The number of threads to create.
+     */
+    void start(size_t num_threads) {
+        threads_.reserve(num_threads);
+        for (size_t i = 1; i < num_threads; ++i) {
+            threads_.emplace_back(std::make_unique<std::thread>([this] {
+                for (;;) {  // Always meet the leader at post_warmup_, which is where it releases us on stop.
+                    post_warmup_.arrive_and_wait();
+                    if (stop_.load(std::memory_order_acquire)) break;
+                    task_(current_item_, context_);
+                    post_task_.arrive_and_wait();
+                }
+            }));
+        }
+        threads_.emplace_back(std::make_unique<std::thread>([this] {
+            while (!stop_.load(std::memory_order_acquire)) {
+                std::pair<std::promise<std::shared_ptr<void>>, std::shared_ptr<void>> item;
+                if (queue_.wait_dequeue_timed(item, std::chrono::milliseconds(100))) {
+                    current_item_ = item.second;
+                    warmup_(item.second, context_);
+                    post_warmup_.arrive_and_wait();
+                    task_(item.second, context_);
+                    post_task_.arrive_and_wait();
+                    current_item_.reset();
+                    item.first.set_value(std::move(item.second));
+                }
+            }
+            post_warmup_.arrive_and_wait();
+        }));
+    }
 public:
     /** ------------------------------------------------------------------------------------------- TaskForce
      * @brief Constructs a TaskForce with the specified number of threads, warmup and task
@@ -219,41 +261,29 @@ public:
      */
     TaskForce(
         size_t num_threads,
-        void (*warmup)(void*, void*),
-        void (*task)(void*, void*),
-        void* context
+        void (*warmup)(std::shared_ptr<void>, std::shared_ptr<void>),
+        void (*task)(std::shared_ptr<void>, std::shared_ptr<void>),
+        std::shared_ptr<void> context
     ) : warmup_(warmup)
     , post_warmup_(num_threads)
     , task_(task)
-    , context_(context)
+    , context_(std::move(context))
     , post_task_(num_threads) {
-        threads_.reserve(num_threads);
-        for (size_t i = 1; i < num_threads; ++i) {
-            threads_.emplace_back(std::make_unique<std::thread>([this] {
-                for (;;) {  // Always meet the leader at post_warmup_, which is where it releases us on stop.
-                    post_warmup_.arrive_and_wait();
-                    if (stop_.load(std::memory_order_acquire)) break;
-                    void* item = current_item_.load(std::memory_order_acquire);
-                    task_(item, context_);
-                    post_task_.arrive_and_wait();
-                }
-            }));
-        }
-        threads_.emplace_back(std::make_unique<std::thread>([this] {
-            while (!stop_.load(std::memory_order_acquire)) {
-                std::pair<std::promise<void*>, void*> item;
-                if (queue_.wait_dequeue_timed(item, std::chrono::milliseconds(100))) {
-                    current_item_.store(item.second, std::memory_order_release);
-                    warmup_(item.second, context_);
-                    post_warmup_.arrive_and_wait();
-                    task_(item.second, context_);
-                    post_task_.arrive_and_wait();
-                    item.first.set_value(item.second);
-                }
-            }
-            post_warmup_.arrive_and_wait();
-        }));
+        start(num_threads);
     }
+    /** ------------------------------------------------------------------------------------------- TaskForce (borrowed)
+     * @brief The same pool over a caller-owned context that outlives it; no ownership is taken.
+     * @param num_threads The number of threads to create.
+     * @param warmup The warmup function to call before executing the task.
+     * @param task The task function to execute.
+     * @param context Caller-owned context handed to the warmup and task functions.
+     */
+    TaskForce(
+        size_t num_threads,
+        void (*warmup)(std::shared_ptr<void>, std::shared_ptr<void>),
+        void (*task)(std::shared_ptr<void>, std::shared_ptr<void>),
+        void* context
+    ) : TaskForce(num_threads, warmup, task, dispatch_detail::borrow(context)) {}
     /** ------------------------------------------------------------------------------------------- No copy/move */
     TaskForce(const TaskForce&) = delete;
     TaskForce& operator=(const TaskForce&) = delete;
@@ -272,11 +302,18 @@ public:
      * @brief Enqueue an item to be processed by the task force.
      * @param item The item to enqueue.
      */
-    std::future<void*> enqueue(void* item) {
-        std::promise<void*> promise;
+    std::future<std::shared_ptr<void>> enqueue(std::shared_ptr<void> item) {
+        std::promise<std::shared_ptr<void>> promise;
         auto future = promise.get_future();
-        queue_.enqueue(std::make_pair(std::move(promise), item));
+        queue_.enqueue(std::make_pair(std::move(promise), std::move(item)));
         return future;
+    }
+    /** ------------------------------------------------------------------------------------------- Enqueue (borrowed)
+     * @brief Enqueue a caller-owned item that outlives its processing; no ownership is taken.
+     * @param item The item to enqueue.
+     */
+    std::future<std::shared_ptr<void>> enqueue(void* item) {
+        return enqueue(dispatch_detail::borrow(item));
     }
     /** ------------------------------------------------------------------------------------------- Stop
      * @brief Stops the task force by setting the stop flag.

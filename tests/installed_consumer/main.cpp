@@ -24,17 +24,17 @@ uint64_t read_payload(buffetalligator::Slice payload) {
 /** --------------------------------------------------------------------------------------------------------- Verify Identifier
  * @brief Checks installed parallel dispatch and iteration link through the exported target.
  */
-void verify_identifier(int64_t identifier, buffetalligator::Slice* slice, void* context) {
-    *static_cast<bool*>(context) = identifier == 17 && slice->get_as<uint64_t>() == 0xA115A70Full;
+void verify_identifier(int64_t identifier, buffetalligator::Slice* slice, std::shared_ptr<void> context) {
+    *static_cast<bool*>(context.get()) = identifier == 17 && slice->get_as<uint64_t>() == 0xA115A70Full;
 }
 /** --------------------------------------------------------------------------------------------------------- Warmup
  * @brief Leaves the installed task team's borrowed value ready for its task phase.
  */
-void warmup(void*, void*) {}
+void warmup(std::shared_ptr<void>, std::shared_ptr<void>) {}
 /** --------------------------------------------------------------------------------------------------------- Finish Task
  * @brief Records completion of the installed task team's single worker.
  */
-void finish_task(void* item, void*) { *static_cast<bool*>(item) = true; }
+void finish_task(std::shared_ptr<void> item, std::shared_ptr<void>) { *static_cast<bool*>(item.get()) = true; }
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Verifies the relocated library creates and retains a production Slice.
  */
@@ -66,13 +66,14 @@ int main() {
     rows.add_slice(17, retained);
     if (rows.ids() != std::vector<int64_t>{17}) return 1;
     bool visited = false;
-    rows.for_each(&verify_identifier, &visited);
+    rows.for_each(&verify_identifier, &visited, true);
     if (!visited) return 1;
-    buffetalligator::PackagedFunction invocation(&warmup, std::make_tuple(nullptr, nullptr));
+    buffetalligator::PackagedFunction invocation(
+        &warmup, std::make_tuple(std::shared_ptr<void>(), std::shared_ptr<void>()));
     buffetalligator::dispatch_parallel(invocation);
     bool completed = false;
     buffetalligator::TaskForce team(1, &warmup, &finish_task, nullptr);
-    if (team.enqueue(&completed).get() != &completed || !completed) return 1;
+    if (team.enqueue(&completed).get().get() != &completed || !completed) return 1;
     LOG_INFO_STREAM << "The relocated Alligator package passed";
     return 0;
 }

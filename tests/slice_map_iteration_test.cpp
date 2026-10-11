@@ -53,8 +53,8 @@ struct Observations {
 /** --------------------------------------------------------------------------------------------------------- Observe
  * @brief Records callback contents and optionally replaces only the callback's local Slice handle.
  */
-void observe(int64_t identifier, Slice* slice, void* context) {
-    auto& observations = *static_cast<Observations*>(context);
+void observe(int64_t identifier, Slice* slice, std::shared_ptr<void> context) {
+    auto& observations = *static_cast<Observations*>(context.get());
     {
         std::lock_guard lock(observations.mutex);
         require(observations.rows.emplace(identifier,
@@ -72,7 +72,7 @@ void boundaries() {
     Observations empty;
     require(readable.ids().empty() && readable.ids<ConvertedId>().empty(),
         "empty identifier snapshot contained rows");
-    readable.for_each(&observe, &empty);
+    readable.for_each(&observe, &empty, true);
     require(empty.rows.empty(), "empty traversal invoked its callback");
     constexpr std::array<int64_t, 11> special{
         0, -1, INT64_MIN, INT64_MAX, 7, -2, 31, UINT32_MAX, 8, 16, 15
@@ -104,7 +104,7 @@ void boundaries() {
     }
     Observations observations;
     observations.replace_handle = true;
-    readable.for_each(&observe, &observations);
+    readable.for_each(&observe, &observations, true);
     require(observations.rows.size() == expected.size(), "traversal lost published rows");
     for (size_t index = 0; index < count; ++index) {
         const int64_t expected_value = index == 0 ? -999
@@ -152,7 +152,7 @@ void publication_prefix() {
     require(map.ids() == std::vector<int64_t>{10},
         "identifier snapshot included a hook-incomplete prefix");
     Observations observations;
-    map.for_each(&observe, &observations);
+    map.for_each(&observe, &observations, true);
     require(observations.rows.size() == 1 && observations.rows.at(10) == 10,
         "traversal included a row beyond the hook-completed prefix");
     context.phase.arrive_and_wait();
@@ -169,8 +169,8 @@ struct ThrowingContext {
 /** --------------------------------------------------------------------------------------------------------- Throwing Callback
  * @brief Throws from one known row to verify dispatch joins before propagating a callback failure.
  */
-void throwing_callback(int64_t identifier, Slice*, void* context) {
-    static_cast<ThrowingContext*>(context)->visits.fetch_add(1, std::memory_order_relaxed);
+void throwing_callback(int64_t identifier, Slice*, std::shared_ptr<void> context) {
+    static_cast<ThrowingContext*>(context.get())->visits.fetch_add(1, std::memory_order_relaxed);
     if (identifier == 2) {
         throw std::runtime_error("iteration sentinel");
     }
@@ -186,7 +186,7 @@ void exceptions() {
     ThrowingContext context;
     bool caught = false;
     try {
-        map.for_each(&throwing_callback, &context);
+        map.for_each(&throwing_callback, &context, true);
     } catch (const std::runtime_error& error) {
         caught = std::string_view(error.what()) == "iteration sentinel";
     }
@@ -195,7 +195,7 @@ void exceptions() {
     map.reset();
     map.add_slice(9, payload(19));
     Observations observed;
-    map.for_each(&observe, &observed);
+    map.for_each(&observe, &observed, true);
     require(observed.rows.size() == 1 && observed.rows.at(9) == 19,
         "callback exception left a stale traversal state");
     SliceMap::gc();
@@ -213,16 +213,16 @@ struct OwnedValue {
 /** --------------------------------------------------------------------------------------------------------- Count Typed
  * @brief Reads a typed payload from recursive traversal and counts each callback.
  */
-void count_typed(int64_t, Slice* slice, void* context) {
+void count_typed(int64_t, Slice* slice, std::shared_ptr<void> context) {
     require(slice->get_as<OwnedValue>().value >= 10, "nested traversal lost its typed payload");
-    static_cast<std::atomic<size_t>*>(context)->fetch_add(1, std::memory_order_relaxed);
+    static_cast<std::atomic<size_t>*>(context.get())->fetch_add(1, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Count Values
  * @brief Reads a plain payload from recursive dispatch and counts its callback.
  */
-void count_values(int64_t, Slice* slice, void* context) {
+void count_values(int64_t, Slice* slice, std::shared_ptr<void> context) {
     require(slice->get_as<int64_t>() >= 10, "nested traversal lost its payload");
-    static_cast<std::atomic<size_t>*>(context)->fetch_add(1, std::memory_order_relaxed);
+    static_cast<std::atomic<size_t>*>(context.get())->fetch_add(1, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Reentry Context
  * @brief Couples recursive operations to the outer callback's captured row generation.
@@ -236,8 +236,8 @@ struct ReentryContext {
 /** --------------------------------------------------------------------------------------------------------- Reenter
  * @brief Replaces and resets the map while recursively using every hazard-taking read interface.
  */
-void reenter(int64_t identifier, Slice* slice, void* context) {
-    auto& state = *static_cast<ReentryContext*>(context);
+void reenter(int64_t identifier, Slice* slice, std::shared_ptr<void> context) {
+    auto& state = *static_cast<ReentryContext*>(context.get());
     state.visits.fetch_add(1, std::memory_order_relaxed);
     require(slice->get_as<int64_t>() == identifier,
         "outer traversal switched generations after recursive reset");
@@ -250,7 +250,7 @@ void reenter(int64_t identifier, Slice* slice, void* context) {
     require(state.map.ids() == std::vector<int64_t>{10, 20},
         "reentrant identifier snapshot changed order");
     std::atomic<size_t> nested_visits{0};
-    state.map.for_each(&count_values, &nested_visits);
+    state.map.for_each(&count_values, &nested_visits, true);
     require(nested_visits.load() == 2, "recursive traversal lost rows");
     const int64_t* active = slice->data<int64_t>();
     *slice = Slice();
@@ -274,7 +274,7 @@ void reentry(bool throw_after_reset) {
     context.throw_after_reset = throw_after_reset;
     bool caught = false;
     try {
-        map.for_each(&reenter, &context);
+        map.for_each(&reenter, &context, true);
     } catch (const std::runtime_error& error) {
         caught = std::string_view(error.what()) == "typed iteration sentinel";
     }
@@ -309,8 +309,8 @@ void concurrent_writer(ConcurrentContext* state) {
 /** --------------------------------------------------------------------------------------------------------- Concurrent Visit
  * @brief Holds each callback payload across writer actions and reads the new map recursively.
  */
-void concurrent_visit(int64_t identifier, Slice* slice, void* context) {
-    auto& state = *static_cast<ConcurrentContext*>(context);
+void concurrent_visit(int64_t identifier, Slice* slice, std::shared_ptr<void> context) {
+    auto& state = *static_cast<ConcurrentContext*>(context.get());
     require(identifier == 10 || identifier == 20 || identifier == 30,
         "concurrent traversal included a later append or switched reset generations");
     state.visits[static_cast<size_t>(identifier / 10 - 1)]
@@ -327,7 +327,7 @@ void concurrent_visit(int64_t identifier, Slice* slice, void* context) {
             && state.map.ids() == std::vector<int64_t>{90},
             "callback read crossed reset generations");
         std::atomic<size_t> nested_visits{0};
-        state.map.for_each(&count_typed, &nested_visits);
+        state.map.for_each(&count_typed, &nested_visits, true);
         require(nested_visits.load() == 1, "recursive traversal inherited the outer generation");
         state.pin_target.find(-1);
         SliceMap::gc();
@@ -356,7 +356,7 @@ void concurrent_changes() {
     SliceMap pin_target(0);
     ConcurrentContext context{map, destructions, pin_target};
     std::thread writer(&concurrent_writer, &context);
-    map.for_each(&concurrent_visit, &context);
+    map.for_each(&concurrent_visit, &context, true);
     writer.join();
     for (const auto& visits : context.visits) {
         require(visits.load() == 1, "parallel traversal lost or repeated a captured row");
@@ -387,8 +387,8 @@ struct ParallelContext {
 /** --------------------------------------------------------------------------------------------------------- Parallel Visit
  * @brief Blocks an active callback until released while recording exact row coverage.
  */
-void parallel_visit(int64_t identifier, Slice* slice, void* context) {
-    auto& state = *static_cast<ParallelContext*>(context);
+void parallel_visit(int64_t identifier, Slice* slice, std::shared_ptr<void> context) {
+    auto& state = *static_cast<ParallelContext*>(context.get());
     require(identifier >= 0 && static_cast<size_t>(identifier) < ParallelContext::count,
         "parallel dispatch selected an invalid row");
     require(slice->get_as<int64_t>() == identifier, "parallel dispatch selected another payload");
@@ -406,7 +406,7 @@ void parallel_visit(int64_t identifier, Slice* slice, void* context) {
  * @brief Marks caller completion only after every callback returns from the public traversal.
  */
 void parallel_dispatch(ParallelContext* context) {
-    context->map.for_each(&parallel_visit, context);
+    context->map.for_each(&parallel_visit, context, true);
     context->finished.store(true, std::memory_order_release);
 }
 /** --------------------------------------------------------------------------------------------------------- Parallel Completion

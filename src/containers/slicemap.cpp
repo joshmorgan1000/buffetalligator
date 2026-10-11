@@ -839,10 +839,12 @@ std::vector<int64_t> SliceMap::ids_internal() const {
  * @brief Dispatches protected callback ranges across one captured state generation and joins them.
  * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
  * @param context Shared callback context whose concurrent accesses must be synchronized.
+ * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking inline.
  */
 void SliceMap::for_each(
-    void (*callback)(int64_t id, Slice* slice, void* context),
-    void* context
+    void (*callback)(int64_t id, Slice* slice, std::shared_ptr<void> context),
+    std::shared_ptr<void> context,
+    bool use_multithreading
 ) const {
     MapTraversalHazard hazard;
     State* state = announce(hazard.record->pointers[0], state_);
@@ -850,60 +852,35 @@ void SliceMap::for_each(
     state->advance_completed();
     const size_t count = state->completed_.load(std::memory_order_acquire);
     if (!count) return;
-#if defined(__APPLE__)
-    const size_t available_workers = std::thread::hardware_concurrency();
-    if (!available_workers) throw std::runtime_error("SliceMap cannot probe hardware worker count");
-#else
-    const size_t available_workers = static_cast<size_t>(omp_get_max_threads());
-#endif
-    /** ------------------------------------------------------------------------------------------- Invocation
-     * @struct Invocation
-     * @brief Shares the captured row prefix and the first callback failure until dispatch
-     * completes.
+    /** ------------------------------------------------------------------------------------------- Row Visit
+     * @struct RowVisit
+     * @brief One dispatch item per row: protects the payload, retains the slice and calls back.
      */
-    struct Invocation {
-        /// @brief The captured state and callback information for a single invocation.
+    struct RowVisit {
+        /// @brief The captured state generation whose completed prefix is being walked.
         State* state;
-        /// @brief The total number of completed rows to be processed.
-        size_t count;
-        /// @brief The number of worker threads to be used for this invocation.
-        size_t workers;
         /// @brief The callback function to be invoked for each slice.
-        void (*callback)(int64_t, Slice*, void*);
+        void (*callback)(int64_t, Slice*, std::shared_ptr<void>);
         /// @brief The user-defined context passed to the callback.
-        void* context;
-        /// @brief Indicates whether the callback has failed.
+        std::shared_ptr<void> context;
+        /// @brief Indicates whether a callback has failed.
         std::atomic<bool> failed{false};
-        /// @brief Stores the first exception thrown by the callback, if any.
+        /// @brief Stores the first exception thrown by a callback, if any.
         std::exception_ptr failure{};
-        /** --------------------------------------------------------------------------------------- Run
-         * @brief Visits one contiguous worker range with independent callback payload protection.
-         * @param worker The index of the worker thread executing this run.
+        /** --------------------------------------------------------------------------------------- Call Operator
+         * @brief Visits one row by its position in the segmented cell array.
+         * @param row The row's position among the completed rows.
          */
-        void run(size_t worker) {
+        void operator()(size_t row) {
             try {
                 MapTraversalHazard payload_hazard;
-                const size_t stride = count / workers;
-                const size_t extra = count % workers;
-                const size_t first = worker * stride + std::min(worker, extra);
-                size_t remaining = stride + (worker < extra);
-                size_t segment_index = std::bit_width(first + 1) - 1;
-                size_t offset = first - ((size_t(1) << segment_index) - 1);
-                while (remaining) {
-                    const size_t rows = std::min(remaining, (size_t(1) << segment_index) - offset);
-                    const State::Segment* segment = state->segments_[segment_index]
-                        .load(std::memory_order_relaxed);
-                    for (size_t index = offset; index < offset + rows; ++index) {
-                        State::Node* node = segment->cells[index].load(std::memory_order_relaxed);
-                        State::Payload* payload = announce(payload_hazard.record->pointers[1],
-                            node->current);
-                        Slice slice = payload->retain_slice();
-                        callback(node->identifier(), &slice, context);
-                    }
-                    remaining -= rows;
-                    ++segment_index;
-                    offset = 0;
-                }
+                const size_t segment_index = std::bit_width(row + 1) - 1;
+                const size_t offset = row - ((size_t(1) << segment_index) - 1);
+                const State::Segment* segment = state->segments_[segment_index].load(std::memory_order_relaxed);
+                State::Node* node = segment->cells[offset].load(std::memory_order_relaxed);
+                State::Payload* payload = announce(payload_hazard.record->pointers[1], node->current);
+                Slice slice = payload->retain_slice();
+                callback(node->identifier(), &slice, context);
             } catch (...) {
                 bool available = false;
                 if (failed.compare_exchange_strong(available, true, std::memory_order_relaxed)) {
@@ -911,22 +888,13 @@ void SliceMap::for_each(
                 }
             }
         }
-    } invocation{state, count, std::min(count, available_workers), callback, context};
-    /** ------------------------------------------------------------------------------------------- Worker
-     * @struct Worker
-     * @brief Borrows the invocation through the platform dispatch callable.
-     */
-    struct Worker {
-        /// @brief The shared invocation containing the state and callback information.
-        Invocation* invocation;
-        /** --------------------------------------------------------------------------------------- Invoke
-         * @brief Runs one borrowed worker range through the shared invocation.
-         * @param index The index of the worker thread executing this run.
-         */
-        void operator()(size_t index) const { invocation->run(index); }
-    };
-    dispatch_for(0, invocation.workers, Worker{&invocation});
-    if (invocation.failure) std::rethrow_exception(invocation.failure);
+    } visit{state, callback, std::move(context)};
+    if (use_multithreading) {
+        dispatch_for(0, count, visit);
+    } else {
+        for (size_t row = 0; row < count; ++row) visit(row);
+    }
+    if (visit.failure) std::rethrow_exception(visit.failure);
 }
 /** --------------------------------------------------------------------------------------------------------- Published
  * @brief Tests a position cell that stays null until its row finishes publication.

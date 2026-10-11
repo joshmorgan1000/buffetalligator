@@ -19,8 +19,8 @@ struct Visits {
 /** --------------------------------------------------------------------------------------------------------- Visit
  * @brief Uses the same out-of-line callback work for both public traversal implementations.
  */
-__attribute__((noinline)) void visit(int64_t identifier, Slice* slice, void* context) {
-    auto& result = (*static_cast<std::vector<Visits>*>(context))[static_cast<size_t>(identifier)];
+__attribute__((noinline)) void visit(int64_t identifier, Slice* slice, std::shared_ptr<void> context) {
+    auto& result = (*static_cast<std::vector<Visits>*>(context.get()))[static_cast<size_t>(identifier)];
     result.identifiers = static_cast<uint64_t>(identifier);
     result.values = slice->get_as<uint64_t>();
     ++result.count;
@@ -40,9 +40,10 @@ std::vector<int64_t> original_ids(const SliceMap& map) {
  * @brief Reproduces the public accessor loop with a retained Slice matching the callback signature.
  */
 void original_for_each(const SliceMap& map, std::vector<Visits>& result) {
+    const std::shared_ptr<void> context(std::shared_ptr<void>(), &result);
     for (size_t index = 0; index < map.size(); ++index) {
         Slice retained = map.slice_at(index);
-        visit(map.id<int64_t>(index), &retained, &result);
+        visit(map.id<int64_t>(index), &retained, context);
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Measure IDs
@@ -71,7 +72,7 @@ double measure_for_each(const SliceMap& map, size_t sweeps, size_t count) {
     std::vector<Visits> result(count);
     const auto start = Clock::now();
     for (size_t sweep = 0; sweep < sweeps; ++sweep) {
-        if constexpr (Bulk) map.for_each(&visit, &result);
+        if constexpr (Bulk) map.for_each(&visit, &result, true);
         else original_for_each(map, result);
     }
     const double seconds = std::chrono::duration<double>(Clock::now() - start).count();

@@ -4,6 +4,7 @@
  * @brief Container utilities for the Alligator library.
  */
 #include <alligator.hpp>
+#include <alligator/dispatch.hpp>
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -167,13 +168,31 @@ public:
     /** ------------------------------------------------------------------------------------------- For Each
      * @brief Dispatches one hook-completed prefix concurrently and waits for every worker to finish.
      * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
-     * @param context Shared callback context whose concurrent accesses must be synchronized.
+     * @param context Shared callback context whose concurrent accesses must be synchronized; the
+     * workers hold it for the duration of the walk.
+     * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking
+     * the rows on the calling thread.
      * @throws Any callback exception after all dispatched workers have joined.
      */
     void for_each(
-        void (*callback)(int64_t id, Slice* slice, void* context),
-        void* context
+        void (*callback)(int64_t id, Slice* slice, std::shared_ptr<void> context),
+        std::shared_ptr<void> context,
+        bool use_multithreading = false
     ) const;
+    /** ------------------------------------------------------------------------------------------- For Each (borrowed)
+     * @brief The same walk over a caller-owned context that outlives it; no ownership is taken.
+     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
+     * @param context Caller-owned context handed to every callback without a control block.
+     * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking
+     * the rows on the calling thread.
+     */
+    void for_each(
+        void (*callback)(int64_t id, Slice* slice, std::shared_ptr<void> context),
+        void* context,
+        bool use_multithreading = false
+    ) const {
+        for_each(callback, dispatch_detail::borrow(context), use_multithreading);
+    }
     /** ------------------------------------------------------------------------------------------- Published
      * @brief Checks if a specific slot has been published.
      * @param slot The slot to check for publication.
