@@ -206,13 +206,14 @@ static void pipeline() {
     SliceQueue queue(1, 1, SliceQueue::block_size);
     SliceMapT<uint64_t> results(count);
     AtomicRegistry registry;
+    struct alignas(64) TestStruct { uint64_t data; };
     auto* completed = registry.create("completed", uint64_t(0));
     std::thread consumer([&] {
         auto input = queue.consumer(0);
         Slice received;
         while (input.pop(received)) {
-            SliceT<uint64_t> typed(std::move(received));
-            const uint64_t value = typed.get_as();
+            SliceT<TestStruct> typed(std::move(received));
+            const uint64_t value = typed.get_as().data;
             results.emplace(value, value * value);
             completed->fetch_add<uint64_t>(1, std::memory_order_relaxed);
         }
@@ -220,7 +221,8 @@ static void pipeline() {
     {
         auto output = queue.producer(0);
         for (uint64_t value = 0; value < count; ++value) {
-            WeakSlice input(&value, sizeof(value));
+            TestStruct payload{value};
+            WeakSlice input(&payload, sizeof(payload));
             output.push(static_cast<Slice>(input));
         }
     }

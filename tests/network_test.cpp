@@ -370,8 +370,11 @@ int main(int count, char** arguments) {
             std::puts("Remote network contracts passed");
             return 0;
         }
-        SliceT<uint64_t> typed(size_t{19});
-        require(typed.size_bytes() == 192,
+        struct alignas(64) TestStruct {
+            uint64_t data;
+        };
+        SliceT<TestStruct> typed(size_t{19});
+        require(typed.size_bytes() == 19 * sizeof(TestStruct),
                 "SliceT count constructor allocated wrong size");
         wire_validation();
         for (Protocol selected : {Protocol::TCP, Protocol::UDP, Protocol::EncryptedTCP,

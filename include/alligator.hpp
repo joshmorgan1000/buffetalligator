@@ -765,6 +765,20 @@ public:
      * @return The ID of the slice.
      */
     uint32_t id() const { return id_; }
+    /** ------------------------------------------------------------------------------------------- Discharge Unsafely
+     * @brief Releases the underlying ID of the slice without marking the slots as unallocated,
+     * which must be used carefully because it could lead to a memory leak if it is not re-adopted
+     * by another slice object later (e.g. by using `Slice::from_id`).
+     * @return The pool index of the discharged slice.
+     */
+    uint32_t discharge_unsafely();
+    /** ------------------------------------------------------------------------------------------- From ID
+     * @brief Creates a slice from the given previously discharged ID, that will safely release
+     * the claim to memory when the `Slice` object is destroyed.
+     * @param id The ID to create the slice from.
+     * @return A slice corresponding to the given ID.
+     */
+    static Slice from_id(uint32_t id);
 private:
     uint32_t id_ = UINT32_MAX;
     struct AdoptId {};
@@ -912,6 +926,7 @@ public:
  * @tparam T The type of elements in the slice.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 class SliceT {
 private:
     Slice slice_;  ///< The underlying Slice object that this SliceT wraps.
@@ -1129,14 +1144,17 @@ public:
         return pool_index();
     }
 };
-static_assert(sizeof(SliceT<uint8_t>) == sizeof(Slice), "SliceT must be the same size as Slice.");
 /** --------------------------------------------------------------------------------------------------------- SliceT Definitions
  * @brief Out-of-class definitions for SliceT's declared members.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(bool initialize) {
     if (initialize) {
-        slice_ = Slice(sizeof(T));
+        slice_.resize(sizeof(T));
+        if constexpr (std::is_default_constructible_v<T>) {
+            new (slice_.data()) T();
+        }
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Count
@@ -1144,6 +1162,7 @@ SliceT<T>::SliceT(bool initialize) {
  * @param count The number of elements of type T.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(size_t count) {
     if (count > SIZE_MAX / sizeof(T)) ALLIGATOR_THROW("SliceT element count exceeds addressable memory");
     slice_ = Slice(count * sizeof(T));
@@ -1153,9 +1172,10 @@ SliceT<T>::SliceT(size_t count) {
  * @param slice The existing Slice to construct from.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(Slice slice) : slice_(std::move(slice)) {
-    if (slice_.size_bytes() % sizeof(T) != 0) {
-        ALLIGATOR_THROW("SliceT: byte size is not a multiple of sizeof(T)");
+    if (slice_.size_bytes() < sizeof(T)) {
+        ALLIGATOR_THROW("SliceT: slice size is smaller than sizeof(T)");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Copy Constructor
@@ -1163,6 +1183,7 @@ SliceT<T>::SliceT(Slice slice) : slice_(std::move(slice)) {
  * @param other The SliceT object to copy from.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(const SliceT& other) : slice_(other.slice_) {}
 /** --------------------------------------------------------------------------------------------------------- Operator= Copy
  * @brief Copy assignment operator for SliceT.
@@ -1170,6 +1191,7 @@ SliceT<T>::SliceT(const SliceT& other) : slice_(other.slice_) {}
  * @return Reference to the current SliceT object.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(SliceT&& other) noexcept : slice_(std::move(other.slice_)) {}
 /** --------------------------------------------------------------------------------------------------------- Operator= Copy
  * @brief Copy assignment operator for SliceT.
@@ -1177,6 +1199,7 @@ SliceT<T>::SliceT(SliceT&& other) noexcept : slice_(std::move(other.slice_)) {}
  * @return Reference to the current SliceT object.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>& SliceT<T>::operator=(const SliceT& other) {
     if (this != &other) slice_ = other.slice_;
     return *this;
@@ -1187,10 +1210,15 @@ SliceT<T>& SliceT<T>::operator=(const SliceT& other) {
  * @return Reference to the current SliceT object.
  */
 template <typename T>
+    requires (alignof(T) % 64 == 0)
 SliceT<T>& SliceT<T>::operator=(SliceT&& other) noexcept {
     if (this != &other) slice_ = std::move(other.slice_);
     return *this;
 }
+/** --------------------------------------------------------------------------------------------------------- DummyAlignedStructure
+ * @brief A dummy structure aligned to 64 bytes, used for testing alignment requirements.
+ */
+struct alignas(64) DummyAlignedStructure { uint8_t dummy[64]; };
 /** --------------------------------------------------------------------------------------------------------- SliceType Concept
  * @brief Concept to check if a type conforms to the `Slice` conceptual interface, including the conversion
  * operator to other SliceType's.
@@ -1201,8 +1229,8 @@ concept SliceType = requires(T t) {
     { static_cast<Slice>(t) } -> std::same_as<Slice>;
 } || PrimitiveSliceType<T> || std::is_same_v<T, Slice>;
 static_assert(SliceType<Slice>, "Slice must satisfy the SliceType concept.");
-static_assert(SliceType<SliceT<uint8_t>>, "SliceT must satisfy the SliceType concept.");
-
+static_assert(SliceType<SliceT<DummyAlignedStructure>>, "SliceT must satisfy the SliceType concept.");
+static_assert(sizeof(SliceT<DummyAlignedStructure>) == sizeof(Slice), "SliceT must be the same size as Slice.");
 class ConcurrentBitplane;
 /** --------------------------------------------------------------------------------------------------------- Arena
  * @class Alligator

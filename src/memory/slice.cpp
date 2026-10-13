@@ -218,6 +218,28 @@ const void* Slice::raw() const {
 size_t Slice::size_bytes() const {
     return is_null() ? 0 : Alligator::inst().entry(*this).size();
 }
+/** ------------------------------------------------------------------------------------------- Discharge Unsafely
+ * @brief Releases the underlying ID of the slice without marking the slots as unallocated,
+ * which must be used carefully because it could lead to a memory leak if it is not re-adopted
+ * by another slice object later (e.g. by using `Slice::from_id`).
+ * @return The pool index of the discharged slice.
+ */
+uint32_t Slice::discharge_unsafely() {
+    uint32_t to_discharge = id_;
+    id_ = UINT32_MAX;
+    return to_discharge;
+}
+/** ------------------------------------------------------------------------------------------- From ID
+ * @brief Creates a slice from the given previously discharged ID, that will safely release
+ * the claim to memory when the `Slice` object is destroyed.
+ * @param id The ID to create the slice from.
+ * @return A slice corresponding to the given ID.
+ */
+Slice Slice::from_id(uint32_t id) {
+    Slice slice;
+    slice.id_ = id;
+    return slice;
+}
 /** --------------------------------------------------------------------------------------------------------- Entry Token
  * @brief Resolves the aligned, constructed token in an occupied entry.
  */

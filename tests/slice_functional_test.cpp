@@ -13,61 +13,103 @@
 using namespace buffetalligator;
 using functional::require;
 using functional::require_throws;
+/** --------------------------------------------------------------------------------------------------------- Aligned Value
+ * @brief Stores a test value in one aligned slice granule.
+ */
+struct alignas(64) AlignedValue {
+    uint32_t value;
+};
+/** --------------------------------------------------------------------------------------------------------- Aligned Text
+ * @brief Stores character data in one aligned slice granule.
+ */
+struct alignas(64) AlignedText {
+    std::array<char, 64> characters;
+};
+/** --------------------------------------------------------------------------------------------------------- Aligned Numbers
+ * @brief Stores integer data in one aligned slice granule.
+ */
+struct alignas(64) AlignedNumbers {
+    std::array<uint32_t, 16> numbers;
+};
+/** --------------------------------------------------------------------------------------------------------- Slice Element
+ * @brief Checks whether an element type satisfies the typed slice constraint.
+ */
+template<typename Element>
+concept SliceElement = requires { typename SliceT<Element>; };
+static_assert(SliceElement<AlignedValue>);
+static_assert(SliceElement<AlignedText>);
+static_assert(SliceElement<AlignedNumbers>);
+static_assert(!SliceElement<uint32_t>);
+static_assert(!SliceElement<uint64_t>);
+static_assert(!SliceElement<std::string_view>);
+static_assert(!SliceElement<std::span<uint32_t>>);
 /** --------------------------------------------------------------------------------------------------------- Typed Slices
  * @brief Checks element access, byte views, placement, and shared ownership of typed storage.
  */
 static void typed_slices() {
-    SliceT<uint32_t> empty;
+    SliceT<AlignedValue> empty;
     require(empty.is_null() && empty.length() == 0, "typed default is not empty");
-    SliceT<uint32_t> values(size_t(8));
-    require(values.size() == 16 && values.length() == 16, "typed element counts differ");
-    require(values.size_bytes() == 64, "typed byte count is incorrect");
+    SliceT<AlignedValue> values(size_t(8));
+    require(values.size() == 8 && values.length() == 8, "typed element counts differ");
+    require(values.size_bytes() == 8 * sizeof(AlignedValue), "typed byte count is incorrect");
+    require(reinterpret_cast<uintptr_t>(values.data()) % alignof(AlignedValue) == 0,
+        "typed storage is not aligned");
     require(values.root_slice().placement() == Slice::default_placement(),
         "typed placement differs");
-    for (size_t index = 0; index < values.size(); ++index) values.data()[index] = index + 10;
-    require(values.get_as() == 10 && *values == 10, "typed references read the wrong value");
+    for (size_t index = 0; index < values.size(); ++index) values.data()[index].value = index + 10;
+    require(values.get_as().value == 10 && (*values).value == 10,
+        "typed references read the wrong value");
     const auto& constant = values;
-    require(constant.get_as() == 10 && constant.data()[7] == 17, "const access differs");
-    SliceT<uint32_t> copy = values;
-    SliceT<uint32_t> moved = std::move(copy);
+    require(constant.get_as().value == 10 && constant.data()[7].value == 17,
+        "const access differs");
+    SliceT<AlignedValue> copy = values;
+    SliceT<AlignedValue> moved = std::move(copy);
     require(copy.is_null() && copy.size_bytes() == 0, "typed move retained its source");
     Slice subview = values.slice(sizeof(uint32_t), 2 * sizeof(uint32_t));
     values.free();
-    require(moved.data()[7] == 17 && subview.get_as<uint32_t>() == 10 && subview.size_bytes() == 64,
+    require(moved.data()[7].value == 17 && subview.get_as<AlignedValue>().value == 10
+        && subview.size_bytes() == 64,
         "typed shared ownership did not survive free");
     empty = moved;
     copy = std::move(empty);
     require(empty.is_null() && copy.raw() == moved.raw(), "typed assignment lost ownership");
-    struct ThreeBytes { unsigned char bytes[3]; };
+    /** ------------------------------------------------------------------------------------------- Two Granules
+     * @brief Provides an aligned element larger than the undersized adoption fixture.
+     */
+    struct alignas(64) TwoGranules { unsigned char bytes[128]; };
     bool rejected = false;
-    try { SliceT<ThreeBytes> invalid{Slice(3)}; }
+    try { SliceT<TwoGranules> invalid{Slice(64)}; }
     catch (const std::exception&) { rejected = true; }
-    require(rejected, "a granule containing a partial element was accepted");
-    require_throws([] { SliceT<uint64_t> invalid(SIZE_MAX / sizeof(uint64_t) + 1); },
+    require(rejected, "a slice smaller than one aligned element was accepted");
+    require_throws([] { SliceT<AlignedValue> invalid(SIZE_MAX / sizeof(AlignedValue) + 1); },
         "typed element count overflow accepted");
 }
 /** --------------------------------------------------------------------------------------------------------- Typed Views
- * @brief Checks that string and span access return live views of the backing bytes.
+ * @brief Checks that aligned payload references provide live views of the backing bytes.
  */
 static void typed_views() {
     constexpr std::string_view text = "abcdefghijklmnop";
-    SliceT<std::string_view> characters{Slice(text.data(), text.size())};
-    require(characters.get_as().size() == 64
-        && characters.get_as().substr(0, text.size()) == text,
+    SliceT<AlignedText> characters{Slice(text.data(), text.size())};
+    const auto& character_view = characters.get_as().characters;
+    require(character_view.size() == 64 && characters.size_bytes() == character_view.size()
+        && std::string_view(character_view.data(), text.size()) == text,
         "string view does not cover the represented payload");
     const auto& constant_characters = characters;
-    require(constant_characters.get_as().size() == 64
-        && constant_characters.get_as().substr(0, text.size()) == text,
+    const auto& constant_character_view = constant_characters.get_as().characters;
+    require(constant_character_view.size() == 64
+        && constant_characters.size_bytes() == constant_character_view.size()
+        && std::string_view(constant_character_view.data(), text.size()) == text,
         "const string view differs");
     const std::array<uint32_t, 4> input{2, 3, 5, 7};
-    SliceT<std::span<uint32_t>> numbers{Slice(input.data(), sizeof(input))};
-    auto view = numbers.get_as();
-    require(view.size() == 16 && view[3] == 7, "span view does not cover the payload");
+    SliceT<AlignedNumbers> numbers{Slice(input.data(), sizeof(input))};
+    auto& view = numbers.get_as().numbers;
+    require(view.size() == 16 && numbers.size<uint32_t>() == view.size() && view[3] == 7,
+        "array view does not cover the payload");
     view[1] = 11;
     const auto& constant_numbers = numbers;
-    auto constant_view = constant_numbers.get_as();
+    auto& constant_view = constant_numbers.get_as().numbers;
     static_assert(std::is_const_v<std::remove_reference_t<decltype(constant_view[0])>>);
-    require(constant_view[1] == 11, "span view writes did not reach the backing storage");
+    require(constant_view[1] == 11, "array view writes did not reach the backing storage");
 }
 /** --------------------------------------------------------------------------------------------------------- Weak Slices
  * @brief Checks borrowed memory access and deep copies of full and partial byte ranges.
