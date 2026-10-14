@@ -198,37 +198,50 @@ static void shared_ownership() {
     map.reset();
     require(map.size() == 0, "reset retained container ownership");
 }
+/** --------------------------------------------------------------------------------------------------------- Pipeline Stage
+ * @struct PipelineStage
+ * @brief The map and counter the queue handlers write into.
+ */
+struct alignas(64) PipelinePayload { uint64_t data; };
+struct PipelineStage {
+    SliceMapT<uint64_t>* results;
+    AtomicContainer* completed;
+    static void single(void* context, Slice&& received) {
+        PipelineStage& stage = *static_cast<PipelineStage*>(context);
+        SliceT<PipelinePayload> typed(std::move(received));
+        const uint64_t value = typed.get_as().data;
+        stage.results->emplace(value, value * value);
+        stage.completed->fetch_add<uint64_t>(1, std::memory_order_relaxed);
+    }
+    static void bulk(void* context, std::span<Slice> received) {
+        for (Slice& slice : received) single(context, std::move(slice));
+    }
+    static void consume(SliceQueue* queue, PipelineStage* stage) {
+        auto input = queue->consumer(0);
+        input.run(stage);
+    }
+};
 /** --------------------------------------------------------------------------------------------------------- Pipeline
- * @brief Sends borrowed input through owned slices and a bounded queue into a typed result map.
+ * @brief Sends borrowed input through owned slices and the queue into a typed result map.
  */
 static void pipeline() {
     constexpr size_t count = 1027;
-    SliceQueue queue(1, 1, SliceQueue::block_size);
+    SliceQueue queue(1, 1, 256, 64, &PipelineStage::single, &PipelineStage::bulk);
     SliceMapT<uint64_t> results(count);
     AtomicRegistry registry;
-    struct alignas(64) TestStruct { uint64_t data; };
-    auto* completed = registry.create("completed", uint64_t(0));
-    std::thread consumer([&] {
-        auto input = queue.consumer(0);
-        Slice received;
-        while (input.pop(received)) {
-            SliceT<TestStruct> typed(std::move(received));
-            const uint64_t value = typed.get_as().data;
-            results.emplace(value, value * value);
-            completed->fetch_add<uint64_t>(1, std::memory_order_relaxed);
-        }
-    });
+    PipelineStage stage{&results, registry.create("completed", uint64_t(0))};
+    std::thread consumer(&PipelineStage::consume, &queue, &stage);
     {
         auto output = queue.producer(0);
         for (uint64_t value = 0; value < count; ++value) {
-            TestStruct payload{value};
+            PipelinePayload payload{value};
             WeakSlice input(&payload, sizeof(payload));
             output.push(static_cast<Slice>(input));
         }
     }
     queue.close();
     consumer.join();
-    require(completed->load<uint64_t>() == count, "pipeline lost a message");
+    require(stage.completed->load<uint64_t>() == count, "pipeline lost a message");
     for (uint64_t value = 0; value < count; ++value) {
         Slice found = results.get_slice(value);
         require(found && found.get_as<uint64_t>() == value * value,

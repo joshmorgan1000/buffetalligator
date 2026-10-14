@@ -42,6 +42,11 @@ struct Options {
     size_t capacity = 4096;
     size_t lookups = 65536;
     size_t batch = 1;
+    size_t high_water = 1024;  ///< Queue depth where consumers switch to bulk dispatch.
+    size_t max_batch = 256;  ///< Most items in one bulk dispatch.
+    size_t burst = 2048;  ///< Items each producer pushes back to back before trickling.
+    size_t trickle = 2048;  ///< Items each producer pushes spaced by gap_ns after a burst.
+    size_t gap_ns = 2000;  ///< Spacing between trickled pushes.
     size_t timeout = 120;
     bool single_thread = false;
     bool help = false;
@@ -72,9 +77,15 @@ inline Options parse(int count, char** arguments, bool queue) {
         else if (argument == "--timeout") options.timeout = number;
         else if (queue && argument == "--capacity") options.capacity = number;
         else if (queue && argument == "--batch") options.batch = number;
+        else if (queue && argument == "--high-water") options.high_water = number;
+        else if (queue && argument == "--max-batch") options.max_batch = number;
+        else if (queue && argument == "--burst") options.burst = number;
+        else if (queue && argument == "--trickle") options.trickle = number;
+        else if (queue && argument == "--gap-ns") options.gap_ns = number;
         else if (!queue && argument == "--lookups") options.lookups = number;
         else throw std::runtime_error("Unknown option: " + std::string(argument));
-        require(number != 0 || argument == "--warmup", "Only --warmup accepts zero.");
+        require(number != 0 || argument == "--warmup" || argument == "--trickle",
+            "Only --warmup and --trickle accept zero.");
     }
     require((options.producers == 0) == (options.consumers == 0),
         "Specify both --producers and --consumers.");
@@ -84,13 +95,6 @@ inline Options parse(int count, char** arguments, bool queue) {
         "--items exceeds the supported payload size.");
     require(options.repetitions <= SIZE_MAX - options.warmup, "Sample count overflow.");
     require(options.producers <= SIZE_MAX - options.consumers, "Worker count overflow.");
-    if (queue) {
-        require(options.capacity >= buffetalligator::SliceQueue::block_size
-            && options.capacity % buffetalligator::SliceQueue::block_size == 0,
-            "--capacity must be a positive multiple of SliceQueue::block_size (256).");
-        require(options.batch <= buffetalligator::SliceQueue::block_size,
-            "--batch must be between 1 and 256.");
-    }
     return options;
 }
 /** --------------------------------------------------------------------------------------------------------- Help
@@ -100,8 +104,9 @@ inline void help(bool queue) {
     LOG_INFO_STREAM << "Options: --items N --repetitions N (5) --warmup N (1) "
         << "--producers N --consumers N --single-thread --timeout SECONDS (120) --csv PATH";
     if (queue) {
-        LOG_INFO_STREAM << "Queue defaults: --items 1048576 --capacity 4096 --batch 1; "
-            << "capacity is per producer, batch is 1..256; throughput counts delivered messages.";
+        LOG_INFO_STREAM << "Queue defaults: --items 1048576 --high-water 1024 --max-batch 256 "
+            << "--burst 2048 --trickle 2048 --gap-ns 2000; producers alternate a back-to-back "
+            << "burst with a spaced trickle, and --trickle 0 floods.";
     } else {
         LOG_INFO_STREAM << "Map defaults: --items 4096 --lookups 65536; "
             << "insert, successful lookup, and missing lookup are timed separately.";

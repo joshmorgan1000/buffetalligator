@@ -64,6 +64,19 @@
 #include <unordered_set>
 #include <moodycamel/concurrentqueue.h>
 #include <moodycamel/blockingconcurrentqueue.h>
+#ifndef BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+#define BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING 0
+#endif
+// Claim signatures carry the caller site only when code-location tracking is compiled in.
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+#define ALLIGATOR_SITE_PARAMETER , std::source_location location = std::source_location::current()
+#define ALLIGATOR_SITE_DEFINITION , std::source_location location
+#define ALLIGATOR_SITE_ARGUMENT , location
+#else
+#define ALLIGATOR_SITE_PARAMETER
+#define ALLIGATOR_SITE_DEFINITION
+#define ALLIGATOR_SITE_ARGUMENT
+#endif
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Alligator Initializer
@@ -259,8 +272,8 @@ private:
 public:
     SharedBuffet() = default;
     explicit SharedBuffet(
-        size_t size,
-        std::source_location location = std::source_location::current()
+        size_t size
+        ALLIGATOR_SITE_PARAMETER
     );
     template<IsABuffetType T = AlignedHeapBuffer>
     explicit SharedBuffet(T&& buffet) {
@@ -385,27 +398,27 @@ public:
      * @param size Requested bytes.
      * @param novel_buffer Whether the Slice gets a dedicated buffer.
      * @param type Slot type index from SliceTypes, zero for raw bytes.
-     * @param location The caller recorded by allocation location tracking.
+     * @param location The caller, present only when code-location tracking is compiled in.
      * @return The claimed Slice.
      */
     static Slice chain(
         const BuffetDescriptor* placement,
         size_t size,
         bool novel_buffer = false,
-        uint8_t type = 0,
-        std::source_location location = std::source_location::current()
+        uint8_t type = 0
+        ALLIGATOR_SITE_PARAMETER
     );
     /** ------------------------------------------------------------------------------------------- Claim
      * @brief Claims zeroed granules, or a dedicated buffer for novel or slab-sized requests.
      * @param size Requested bytes.
      * @param novel_buffer Whether the Slice gets a dedicated buffer.
-     * @param location The caller recorded by allocation location tracking.
+     * @param location The caller, present only when code-location tracking is compiled in.
      * @return The claimed Slice.
      */
     Slice claim(
         size_t size,
-        bool novel_buffer = false,
-        std::source_location location = std::source_location::current()
+        bool novel_buffer = false
+        ALLIGATOR_SITE_PARAMETER
     );
 };
 static_assert(sizeof(ChainBuffet) == 64, "ChainBuffet must be 64 bytes");
@@ -522,8 +535,8 @@ public:
     Slice() noexcept = default;
     explicit Slice(
         size_t size,
-        const BuffetDescriptor* placement = default_placement(),
-        std::source_location location = std::source_location::current()
+        const BuffetDescriptor* placement = default_placement()
+        ALLIGATOR_SITE_PARAMETER
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
      * @brief Constructs a slice of memory with the specified size. If not a novel buffer, then
@@ -536,8 +549,8 @@ public:
     Slice(
         size_t size,
         bool novel_buffer,
-        const BuffetDescriptor* placement = default_placement(),
-        std::source_location location = std::source_location::current()
+        const BuffetDescriptor* placement = default_placement()
+        ALLIGATOR_SITE_PARAMETER
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
      * @brief Copies data from an external memory location into a new slice of memory in the
@@ -553,8 +566,8 @@ public:
         const void* copy_from,
         size_t size,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = default_placement(),
-        std::source_location location = std::source_location::current()
+        const BuffetDescriptor* placement = default_placement()
+        ALLIGATOR_SITE_PARAMETER
     );
     /** ------------------------------------------------------------------------------------------- Copy/move semantics
      * @brief Copies share the slot id and add one to its 16-bit reference count; moves transfer
@@ -636,14 +649,14 @@ public:
      * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
      * Default is false.
      * @param placement The memory placement strategy to use. Default is `default_placement()`.
-     * @param location The caller recorded by allocation location tracking.
+     * @param location The caller, present only when code-location tracking is compiled in.
      */
     void resize(
         size_t new_size,
         bool preserve_data = true,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = default_placement(),
-        std::source_location location = std::source_location::current()
+        const BuffetDescriptor* placement = default_placement()
+        ALLIGATOR_SITE_PARAMETER
     );
     /** ------------------------------------------------------------------------------------------- Check if slice is null
      * @brief Checks if the slice is null (i.e., has no underlying memory).
@@ -780,7 +793,8 @@ static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
 class PotentialSlice {
 private:
     struct Details;
-    /// @brief Shared pointer to the internal details of the PotentialSlice, created in slice.cpp where Details is complete.
+    /// @brief Shared pointer to the internal details of the PotentialSlice, created in slice.cpp
+    /// where Details is complete.
     std::shared_ptr<Details> details_;
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
@@ -949,14 +963,14 @@ public:
      * @param size The size of the slice in bytes.
      */
     SliceT(
-        bool initialize = false,
-        std::source_location location = std::source_location::current()
+        bool initialize = false
+        ALLIGATOR_SITE_PARAMETER
     );
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT with a specified number of elements of type T.
      * @param count The number of elements of type T.
      */
-    SliceT(size_t count, std::source_location location = std::source_location::current());
+    SliceT(size_t count ALLIGATOR_SITE_PARAMETER);
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT from a Slice. The Slice must have a size that is a multiple of
      * the size of type T.
@@ -1164,10 +1178,10 @@ public:
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>::SliceT(bool initialize, std::source_location location) {
+SliceT<T>::SliceT(bool initialize ALLIGATOR_SITE_DEFINITION) {
     if (!initialize) return;
-    slice_ = ChainBuffet::chain(Slice::default_placement(), sizeof(T), false, type_index(),
-        location);
+    slice_ = ChainBuffet::chain(Slice::default_placement(), sizeof(T), false, type_index()
+        ALLIGATOR_SITE_ARGUMENT);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Count
  * @brief Constructs a SliceT with a specified number of elements of type T.
@@ -1175,10 +1189,10 @@ SliceT<T>::SliceT(bool initialize, std::source_location location) {
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>::SliceT(size_t count, std::source_location location) {
+SliceT<T>::SliceT(size_t count ALLIGATOR_SITE_DEFINITION) {
     if (count > SIZE_MAX / sizeof(T)) ALLIGATOR_THROW("SliceT element count exceeds addressable memory");
     slice_ = ChainBuffet::chain(Slice::default_placement(), count * sizeof(T), false,
-        type_index(), location);
+        type_index() ALLIGATOR_SITE_ARGUMENT);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Slice
  * @brief Constructs a SliceT from an existing Slice.

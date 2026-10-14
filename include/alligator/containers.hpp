@@ -453,25 +453,29 @@ public:
 };
 /** --------------------------------------------------------------------------------------------------------- SliceQueue
  * @class SliceQueue
- * @brief Move-only Slice mailboxes with thread-bound producer and consumer handles, backed by
- * the private C queue's thread-local blocks.
+ * @brief Unbounded multi-producer Slice queue for one or two consumers. Each push is visible at
+ * once; a consumer hands items one at a time to the single handler until the queue depth reaches
+ * the high-water mark, then hands up to max_batch items at a time to the bulk handler.
  */
 class SliceQueue {
-private:
-    void* queue_; ///< Private C queue state.
-    /** ------------------------------------------------------------------------------------------- Release Descriptor
-     * @brief Releases one undelivered descriptor's arena ownership at destruction time.
-     */
-    static void release_descriptor(void* descriptor) noexcept;
 public:
-    static constexpr size_t block_size = 256; ///< Slices per synchronized handoff.
+    /// @brief Receives one item while the depth is below the high-water mark.
+    using Single = void (*)(void* context, Slice&& slice);
+    /// @brief Receives up to max_batch items once the depth reaches the high-water mark.
+    using Bulk = void (*)(void* context, std::span<Slice> slices);
+private:
+    struct Lane;
+    struct State;
+    State* state_;  ///< Lanes, handlers, and wake state, defined in slicequeue.cpp.
+public:
     /** ------------------------------------------------------------------------------------------- Producer
-     * @brief Owns one producer binding on its calling thread and flushes on destruction.
+     * @brief Owns one producer lane; pushes publish immediately with no shared write.
      */
     class Producer {
     private:
-        void* local_; ///< Cached producer TLS address.
-        explicit Producer(void* local) noexcept : local_(local) {}
+        Lane* lane_;  ///< This producer's segment chain.
+        State* state_;  ///< Queue state for sleeping-consumer wakeups.
+        Producer(Lane* lane, State* state) noexcept : lane_(lane), state_(state) {}
         friend class SliceQueue;
     public:
         Producer(const Producer&) = delete;
@@ -480,25 +484,22 @@ public:
         Producer& operator=(Producer&&) = delete;
         ~Producer();
         /** --------------------------------------------------------------------------------------- Push
-         * @brief Moves one Slice into local staging, blocking for capacity and nulling the source.
+         * @brief Moves one Slice into the lane and nulls the source.
          */
-        void push(Slice&& slice) noexcept;
+        void push(Slice&& slice);
         /** --------------------------------------------------------------------------------------- Push Bulk
-         * @brief Moves every Slice in the span into staging and nulls every source.
+         * @brief Moves every Slice in the span into the lane and nulls every source.
          */
-        void push(std::span<Slice> slices) noexcept;
-        /** --------------------------------------------------------------------------------------- Flush
-         * @brief Publishes a partial block at a burst boundary before the producer finishes.
-         */
-        void flush() noexcept;
+        void push(std::span<Slice> slices);
     };
     /** ------------------------------------------------------------------------------------------- Consumer
-     * @brief Owns a thread-bound consumer that must drain its local blocks before destruction.
+     * @brief Owns one consumer index and runs the dispatch loop on its calling thread.
      */
     class Consumer {
     private:
-        void* local_; ///< Cached consumer TLS address.
-        explicit Consumer(void* local) noexcept : local_(local) {}
+        State* state_;  ///< Queue state.
+        size_t index_;  ///< Consumer index, which staggers the lane scan.
+        Consumer(State* state, size_t index) noexcept : state_(state), index_(index) {}
         friend class SliceQueue;
     public:
         Consumer(const Consumer&) = delete;
@@ -506,41 +507,51 @@ public:
         Consumer(Consumer&&) = delete;
         Consumer& operator=(Consumer&&) = delete;
         ~Consumer();
-        /** --------------------------------------------------------------------------------------- Pop
-         * @brief Waits for a Slice and replaces output, returning false unchanged after closure.
+        /** --------------------------------------------------------------------------------------- Run
+         * @brief Dispatches items to the handlers until the queue is closed and drained.
+         * @param context Passed unchanged to every handler call.
          */
-        bool pop(Slice& output) noexcept;
-        /** --------------------------------------------------------------------------------------- Pop Bulk
-         * @brief Replaces up to one block of outputs, returning zero for closure or an empty span.
-         */
-        size_t pop(std::span<Slice> output) noexcept;
+        void run(void* context);
     };
     /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Allocates fixed worker pools with capacity per producer in multiples of block_size.
+     * @brief Creates one lane per producer and fixes the dispatch thresholds and handlers.
+     * @param producers Producer lanes.
+     * @param consumers Consumer threads, one or two.
+     * @param high_water Depth at which consumers switch from single to bulk dispatch.
+     * @param max_batch Most items in one bulk call.
+     * @param single Handler for one item.
+     * @param bulk Handler for a batch.
      */
-    SliceQueue(size_t producers, size_t consumers, size_t capacity = 4096);
+    SliceQueue(
+        size_t producers,
+        size_t consumers,
+        size_t high_water,
+        size_t max_batch,
+        Single single,
+        Bulk bulk
+    );
     SliceQueue(const SliceQueue&) = delete;
     SliceQueue& operator=(const SliceQueue&) = delete;
     SliceQueue(SliceQueue&&) = delete;
     SliceQueue& operator=(SliceQueue&&) = delete;
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Releases undelivered Slices after all worker handles have been destroyed.
+     * @brief Releases undelivered Slices after every producer and consumer handle is gone.
      */
     ~SliceQueue();
     /** ------------------------------------------------------------------------------------------- Bind Producer
-     * @brief Binds a unique producer index with at most one producer binding per calling thread.
+     * @brief Binds a producer index that no live handle holds.
      */
     Producer producer(size_t index);
     /** ------------------------------------------------------------------------------------------- Bind Consumer
-     * @brief Binds a unique consumer index with all configured consumers participating until drain.
+     * @brief Binds a consumer index that no live handle holds.
      */
     Consumer consumer(size_t index);
     /** ------------------------------------------------------------------------------------------- Close
-     * @brief Wakes consumers after all producers have finished and flushed their partial blocks.
+     * @brief Lets consumers return once drained; call after every producer has finished pushing.
      */
     void close() noexcept;
     /** ------------------------------------------------------------------------------------------- Reset
-     * @brief Reopens a fully drained queue while every worker is quiescent.
+     * @brief Reopens a closed, drained queue while no consumer is running.
      */
     void reset() noexcept;
 };

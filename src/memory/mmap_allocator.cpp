@@ -8,7 +8,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <system_error>
+#include <cstring>
 #include <unistd.h>
 
 namespace buffetalligator {
@@ -31,17 +31,17 @@ MmapBuffer::MmapBuffer(size_t size) : size_((size + 63) & ~size_t{63}) {
     std::string pattern = context.directory + "/buffetalligator-XXXXXX";
     descriptor_ = mkstemp(pattern.data());
     if (descriptor_ < 0) {
-        throw std::system_error(errno, std::generic_category(), "Creating scratch file");
+        ALLIGATOR_THROW(std::string("Creating scratch file: ") + std::strerror(errno));
     }
     if (unlink(pattern.c_str()) != 0) {
         const int error = errno;
         release();
-        throw std::system_error(error, std::generic_category(), "Unlinking scratch file");
+        ALLIGATOR_THROW(std::string("Unlinking scratch file: ") + std::strerror(error));
     }
     if (fcntl(descriptor_, F_SETFD, FD_CLOEXEC) < 0) {
         const int error = errno;
         release();
-        throw std::system_error(error, std::generic_category(), "Configuring scratch descriptor");
+        ALLIGATOR_THROW(std::string("Configuring scratch descriptor: ") + std::strerror(error));
     }
 #if defined(__APPLE__)
     fstore_t reservation{};
@@ -51,25 +51,26 @@ MmapBuffer::MmapBuffer(size_t size) : size_((size + 63) & ~size_t{63}) {
     if (fcntl(descriptor_, F_PREALLOCATE, &reservation) < 0) {
         const int error = errno;
         release();
-        throw std::system_error(error, std::generic_category(), "Reserving scratch file storage");
+        ALLIGATOR_THROW(std::string("Reserving scratch file storage: ") + std::strerror(error));
     }
 #else
     const int reservation = posix_fallocate(descriptor_, 0, static_cast<off_t>(size_));
     if (reservation != 0) {
         release();
-        throw std::system_error(reservation, std::generic_category(), "Reserving scratch file storage");
+        ALLIGATOR_THROW(
+            std::string("Reserving scratch file storage: ") + std::strerror(reservation));
     }
 #endif
     if (ftruncate(descriptor_, static_cast<off_t>(size_)) != 0) {
         const int error = errno;
         release();
-        throw std::system_error(error, std::generic_category(), "Sizing scratch file");
+        ALLIGATOR_THROW(std::string("Sizing scratch file: ") + std::strerror(error));
     }
     void* mapping = mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, descriptor_, 0);
     if (mapping == MAP_FAILED) {
         const int error = errno;
         release();
-        throw std::system_error(error, std::generic_category(), "Mapping scratch file");
+        ALLIGATOR_THROW(std::string("Mapping scratch file: ") + std::strerror(error));
     }
     mapping_ = mapping;
 }
@@ -105,7 +106,7 @@ const BuffetDescriptor* MmapBuffer::register_type(const std::string& directory) 
     if (context.descriptor) ALLIGATOR_THROW("The mmap buffet type is already registered");
     struct stat status{};
     if (stat(directory.c_str(), &status) != 0) {
-        throw std::system_error(errno, std::generic_category(), "Opening scratch directory " + directory);
+        ALLIGATOR_THROW("Opening scratch directory " + directory + ": " + std::strerror(errno));
     }
     if (!S_ISDIR(status.st_mode)) ALLIGATOR_THROW("The mmap scratch path must be a directory: " + directory);
     const long page_size = sysconf(_SC_PAGESIZE);
@@ -125,7 +126,7 @@ void MmapBuffer::flush(const Slice& slice) {
     const uintptr_t address = reinterpret_cast<uintptr_t>(slice.raw());
     const uintptr_t aligned = address - address % context.page_size;
     if (msync(reinterpret_cast<void*>(aligned), slice.size_bytes() + address - aligned, MS_SYNC) != 0) {
-        throw std::system_error(errno, std::generic_category(), "Flushing scratch pages");
+        ALLIGATOR_THROW(std::string("Flushing scratch pages: ") + std::strerror(errno));
     }
 }
 /** --------------------------------------------------------------------------------------------------------- File Descriptor

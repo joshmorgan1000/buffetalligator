@@ -125,7 +125,7 @@ Build with `./run_build.sh`, then run from the repository root:
 
 ```sh
 ./build/tests/benchmarks/buffetalligator_slice_map_benchmark
-./build/tests/benchmarks/buffetalligator_slice_queue_benchmark
+./build/tests/benchmarks/buffetalligator_queue_comparison_benchmark --producers 8 --consumers 1
 ```
 
 `BUFFETALLIGATOR_BUILD_BENCHMARKS` defaults on for a standalone build and off when
@@ -135,7 +135,7 @@ machine speed or run the performance sweep. No additional dependencies are neede
 
 ## Workloads
 
-Both executables run an unlocked standard-container baseline on one thread,
+The map benchmark runs an unlocked standard-container baseline on one thread,
 then compare concurrent worker teams against a standard container protected by
 one `std::mutex`. The default sweep includes one producer/one consumer, balanced
 teams at powers of two up to the reported logical CPU count, and asymmetric
@@ -145,7 +145,7 @@ counts replace the sweep and can oversubscribe the machine for stress testing.
 | Benchmark | Work measured | Default size |
 | --- | --- | --- |
 | SliceMap / unordered_map | Insert unique IDs, then successful lookups, then missing lookups | 4,096 rows; 65,536 lookups per phase |
-| SliceQueue / deque | Move each message from its producer to exactly one consumer | 1,048,576 messages |
+| SliceQueue / moodycamel | Watermark dispatch: singles below `--high-water`, bulk calls of up to `--max-batch` at or above it | 1,048,576 messages |
 
 The standalone map benchmark synchronizes producers before starting readers so
 insertion, hit, and miss costs have separate timings. Consumers obtain shared
@@ -153,18 +153,13 @@ Slice claims without removing map entries. The `stream` and `duplicates` cases
 in `slicemapvsvecset.cpp` exercise overlapping producers, readers, and replacement
 with the growing SIMD-bucket SliceMap.
 
-SliceQueue currently uses mutexes and semaphores for block handoffs; it is not
-reported as lock-free. The deque comparison blocks on condition variables and
-has a global bound of `producers * capacity`, matching SliceQueue's total message
-capacity. SliceQueue partitions that capacity into per-producer pools, while
-deque shares it across producers. All consumers remain active until closure and
-drain. Queue throughput counts delivered messages; each message requires a push
-and a pop. It does not count those as two independent delivered messages.
-
-For the one-thread queue case, storage is sized to fit the entire input rounded
-up to a whole SliceQueue block. That thread fills and then drains both queues,
-so it cannot block waiting for itself. Concurrent cases use `--capacity` per
-producer and exercise bounded storage reuse.
+The queue comparison runs one consumer contract on both queues. Every push is
+published immediately, with no producer staging. Each consumer compares the queue
+depth with `--high-water` (default 1024): below it, items go one at a time to the
+single handler; at or above it, up to `--max-batch` (default 256) items go to the
+bulk handler. moodycamel reads `size_approx()` for the depth and uses
+`try_dequeue_bulk` for batches. Consumers are limited to one or two. Pass a
+`--high-water` above `--items` to measure the single-dispatch path alone.
 
 ## Measurement
 
@@ -199,17 +194,13 @@ differences between lookup approaches; no universal winner is assumed.
 ## Examples
 
 ```sh
-# Explicit contention and raw per-sample CSV output.
-./build/tests/benchmarks/buffetalligator_slice_queue_benchmark \
-    --producers 8 --consumers 8 --csv build/queue.csv
+# Fifteen producers into one consumer, with raw per-sample CSV output.
+./build/tests/benchmarks/buffetalligator_queue_comparison_benchmark \
+    --producers 15 --consumers 1 --csv build/queue.csv
 
-# Give both implementations a batch of 256 messages per public call.
-./build/tests/benchmarks/buffetalligator_slice_queue_benchmark \
-    --producers 8 --consumers 8 --batch 256 --capacity 4096
-
-# Exercise partial batches, uneven partitions, and minimal queue capacity.
-./build/tests/benchmarks/buffetalligator_slice_queue_benchmark \
-    --producers 3 --consumers 5 --items 100003 --batch 37 --capacity 256
+# Two consumers, a lower mark, and smaller batches.
+./build/tests/benchmarks/buffetalligator_queue_comparison_benchmark \
+    --producers 8 --consumers 2 --high-water 256 --max-batch 64
 
 # Compare a larger map with concurrent producers followed by concurrent readers.
 ./build/tests/benchmarks/buffetalligator_slice_map_benchmark \

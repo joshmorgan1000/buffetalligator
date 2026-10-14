@@ -10,8 +10,10 @@
 #include <memory/lifetime.hpp>
 #include <optional>
 #include <source_location>
-#ifndef BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
-#define BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING 0
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+#define ALLIGATOR_SITE_GUARD const Memory::Site site(location)  ///< Names this claim's caller.
+#else
+#define ALLIGATOR_SITE_GUARD
 #endif
 
 namespace buffetalligator {
@@ -107,30 +109,21 @@ public:
     Memory(Memory&&) = delete;
     Memory& operator=(Memory&&) = delete;
     ~Memory() = default;
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
     /** ------------------------------------------------------------------------------------------- Site
      * @brief Names the public caller for this thread's allocations until the guard leaves scope.
      */
     class Site {
     private:
-#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
         const std::source_location* previous_;  ///< Outer claim's site, restored on exit.
-#endif
     public:
-        explicit Site(const std::source_location& location) {
-#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
-            previous_ = std::exchange(site_, &location);
-#else
-            (void)location;
-#endif
-        }
-        ~Site() {
-#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
-            site_ = previous_;
-#endif
-        }
+        explicit Site(const std::source_location& location)
+        : previous_(std::exchange(site_, &location)) {}
+        ~Site() { site_ = previous_; }
         Site(const Site&) = delete;
         Site& operator=(const Site&) = delete;
     };
+#endif
     /** ------------------------------------------------------------------------------------------- Record Code Location
      * @brief Records one live allocation under the current public claim's site, or an empty
      * location for allocations made outside a claim.

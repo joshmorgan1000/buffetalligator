@@ -98,7 +98,7 @@ MapHazardRecord* claim_record(
             previous, index + 1, std::memory_order_seq_cst)) {}
         return &records[index];
     }
-    throw std::length_error(exhausted);
+    ALLIGATOR_THROW(exhausted);
 }
 /** --------------------------------------------------------------------------------------------------------- CPU Relax
  * @brief Issues the architecture's pause hint instead of a de-prioritizing yield syscall.

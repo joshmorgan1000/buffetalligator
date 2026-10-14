@@ -15,7 +15,9 @@
 
 namespace buffetalligator {
 namespace {
-constinit std::array<std::atomic<ChainBuffet*>, 8> current_chains{};
+constinit std::array<std::array<std::atomic<ChainBuffet*>, CHAIN_LANES>, 8> current_chains{};
+constinit std::atomic<uint32_t> next_lane{0};  ///< Round-robin lane for each new claiming thread.
+thread_local const uint32_t lane = next_lane.fetch_add(1, std::memory_order_relaxed) % CHAIN_LANES;
 /** --------------------------------------------------------------------------------------------------------- Count Allocation
  * @brief Reports one completed allocation through its registered placement.
  */
@@ -159,22 +161,23 @@ ChainBuffet::~ChainBuffet() {
  * @brief Drops the process-wide chains after the arena drains all asynchronous users.
  */
 void ChainBuffet::release_chains() {
-    for (auto& current : current_chains) {
-        delete current.exchange(nullptr, std::memory_order_acq_rel);
+    for (auto& lanes : current_chains) {
+        for (auto& current : lanes) delete current.exchange(nullptr, std::memory_order_acq_rel);
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Chain
- * @brief Creates the placement's chain once, claims from it, and types the constructed slot.
+ * @brief Creates this thread's lane chain for the placement once, claims from it, and types the
+ * constructed slot.
  */
 Slice ChainBuffet::chain(
     const BuffetDescriptor* placement,
     size_t size,
     bool novel_buffer,
-    uint8_t type,
-    std::source_location location
+    uint8_t type
+    ALLIGATOR_SITE_DEFINITION
 ) {
     if (!size) return Slice();
-    const Memory::Site site(location);
+    ALLIGATOR_SITE_GUARD;
     (void)Alligator::inst();
     const GPUDevice& device = gpu_device();
     // Novel buffers past the probed ceiling or the live device budget headroom land on the host heap.
@@ -184,7 +187,7 @@ Slice ChainBuffet::chain(
     }
     const BuffetDescriptor* selected = BuffetDescriptors::get(placement->type_idx);
     if (!selected) ALLIGATOR_THROW("Cannot claim an unregistered buffet placement");
-    auto& current = current_chains[selected->type_idx];
+    auto& current = current_chains[selected->type_idx][lane];
     ChainBuffet* const pending = reinterpret_cast<ChainBuffet*>(-1);
     ChainBuffet* node = current.load(std::memory_order_acquire);
     while (node == nullptr || node == pending) {
@@ -205,7 +208,7 @@ Slice ChainBuffet::chain(
         current.store(node, std::memory_order_release);
         current.notify_all();
     }
-    Slice claimed = node->claim(size, novel_buffer, location);
+    Slice claimed = node->claim(size, novel_buffer ALLIGATOR_SITE_ARGUMENT);
     if (!type) return claimed;
     const SliceTypeRecord& record = *SliceTypes::records_[type];
     if (record.construct) record.construct(claimed.raw(), claimed.size_bytes() / record.size);
@@ -215,9 +218,9 @@ Slice ChainBuffet::chain(
 /** --------------------------------------------------------------------------------------------------------- Claim
  * @brief One fetch_add bumps the offset and counts the slot; stale or full buffers retry.
  */
-Slice ChainBuffet::claim(size_t size, bool novel_buffer, std::source_location location) {
+Slice ChainBuffet::claim(size_t size, bool novel_buffer ALLIGATOR_SITE_DEFINITION) {
     if (!size) return Slice();
-    const Memory::Site site(location);
+    ALLIGATOR_SITE_GUARD;
     if (size > (uint64_t{UINT32_MAX} << 6))
         ALLIGATOR_THROW("Slice size exceeds the 64-byte granule representation");
     const uint64_t granules = (size + 63) >> 6;

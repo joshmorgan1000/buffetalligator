@@ -20,14 +20,14 @@ AlignedHeapBuffer::AlignedHeapBuffer(size_t size) {
     size_ = (size + 63) & ~size_t{63};
     if (size_ == 0) return;
     buffer_ = std::aligned_alloc(64, size_);
-    if (!buffer_) throw std::bad_alloc();
+    if (!buffer_) ALLIGATOR_THROW("Cannot allocate a 64-byte-aligned heap buffer");
     std::memset(buffer_, 0, size_);
 }
 /** --------------------------------------------------------------------------------------------------------- Shared Buffet
  * @brief Allocates a representable shared heap buffer with one counted owner.
  */
-SharedBuffet::SharedBuffet(size_t size, std::source_location location) {
-    const Memory::Site site(location);
+SharedBuffet::SharedBuffet(size_t size ALLIGATOR_SITE_DEFINITION) {
+    ALLIGATOR_SITE_GUARD;
     if (size > (uint64_t{UINT32_MAX} << 6)) {
         ALLIGATOR_THROW("SharedBuffet exceeds the 64-byte-granule size limit");
     }
@@ -77,8 +77,8 @@ const BuffetDescriptor* Slice::default_placement() {
 /** --------------------------------------------------------------------------------------------------------- Fresh Claim
  * @brief Claims a range rounded up to 64-byte granules from the selected placement.
  */
-Slice::Slice(size_t size, const BuffetDescriptor* placement, std::source_location location) {
-    *this = ChainBuffet::chain(placement, size, false, 0, location);
+Slice::Slice(size_t size, const BuffetDescriptor* placement ALLIGATOR_SITE_DEFINITION) {
+    *this = ChainBuffet::chain(placement, size, false, 0 ALLIGATOR_SITE_ARGUMENT);
 }
 /** --------------------------------------------------------------------------------------------------------- Dedicated Claim
  * @brief Claims 64-byte granules with optional dedicated backing ownership.
@@ -86,10 +86,10 @@ Slice::Slice(size_t size, const BuffetDescriptor* placement, std::source_locatio
 Slice::Slice(
     size_t size,
     bool novel_buffer,
-    const BuffetDescriptor* placement,
-    std::source_location location
+    const BuffetDescriptor* placement
+    ALLIGATOR_SITE_DEFINITION
 ) {
-    *this = ChainBuffet::chain(placement, size, novel_buffer, 0, location);
+    *this = ChainBuffet::chain(placement, size, novel_buffer, 0 ALLIGATOR_SITE_ARGUMENT);
 }
 /** --------------------------------------------------------------------------------------------------------- External Copy
  * @brief Copies an external byte range into a new owned Slice.
@@ -98,25 +98,24 @@ Slice::Slice(
     const void* copy_from,
     size_t size,
     bool novel_buffer,
-    const BuffetDescriptor* placement,
-    std::source_location location
+    const BuffetDescriptor* placement
+    ALLIGATOR_SITE_DEFINITION
 ) {
     if (size == 0) return;
     if (copy_from == nullptr) ALLIGATOR_THROW("Copying a nonempty Slice requires source memory");
-    *this = ChainBuffet::chain(placement, size, novel_buffer, 0, location);
+    *this = ChainBuffet::chain(placement, size, novel_buffer, 0 ALLIGATOR_SITE_ARGUMENT);
     std::memcpy(raw(), copy_from, size);
 }
 /** --------------------------------------------------------------------------------------------------------- Copy Constructor
- * @brief Shares the slot and counts one more handle; a count past 65,535 aborts loudly.
+ * @brief Shares the slot and counts one more handle; a count past 65,535 throws.
  */
 Slice::Slice(const Slice& other) : id_(other.id_) {
     if (is_null()) return;
     SlotState& state = Arena::states[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
     if (std::atomic_ref<uint16_t>(state.references).fetch_add(1, std::memory_order_relaxed)
         == UINT16_MAX) {
-        LOG_ERROR_STREAM << "Slice slot " << id_
-            << " passed 65,535 handles; share it through a novel buffer";
-        std::abort();
+        std::atomic_ref<uint16_t>(state.references).fetch_sub(1, std::memory_order_relaxed);
+        ALLIGATOR_THROW("A Slice slot passed 65,535 handles; share it through a novel buffer");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Copy Assignment
@@ -188,8 +187,8 @@ void Slice::resize(
     size_t new_size,
     bool preserve_data,
     bool novel_buffer,
-    const BuffetDescriptor* placement,
-    std::source_location location
+    const BuffetDescriptor* placement
+    ALLIGATOR_SITE_DEFINITION
 ) {
     if (new_size == 0) {
         free();
@@ -207,7 +206,7 @@ void Slice::resize(
             return;
         }
     }
-    Slice resized(new_size, novel_buffer, placement, location);
+    Slice resized(new_size, novel_buffer, placement ALLIGATOR_SITE_ARGUMENT);
     if (preserve_data && previous != 0) {
         std::memcpy(resized.raw(), raw(), std::min(previous, rounded_size));
     }
@@ -238,7 +237,7 @@ void Slice::free() {
         }
         const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
         const uint32_t buffer = Location::buffer(word);
-        std::atomic_ref<uint64_t>(Arena::occupancy[id_ >> SEGMENT_BITS][(id_ & SEGMENT_MASK) / 64])
+        std::atomic_ref<uint64_t>(Arena::occupancy[id_ >> SEGMENT_BITS][(id_ & SEGMENT_MASK) >> 6])
             .fetch_and(~(uint64_t{1} << (id_ % 64)), std::memory_order_release);
         Arena::retire(buffer);
     }

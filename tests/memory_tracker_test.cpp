@@ -74,6 +74,11 @@ uint64_t device_address(void* handle) {
  * @brief Releases a retained Slice on a thread whose descriptor callback can be paused.
  */
 void release_slice(Slice* slice) { slice->free(); }
+/** --------------------------------------------------------------------------------------------------------- Ignore
+ * @brief Queue handlers for a queue that is destroyed before any consumer runs.
+ */
+void ignore_single(void*, Slice&&) {}
+void ignore_bulk(void*, std::span<Slice>) {}
 /** --------------------------------------------------------------------------------------------------------- Tracking
  * @brief Exercises public descriptor tracking with a paused final-owner release.
  */
@@ -137,7 +142,7 @@ void tracking() {
         && Memory::placement_usage(placement) == initial_allocations,
         "completed deallocation did not update tracker totals");
     {
-        SliceQueue queue(1, 1);
+        SliceQueue queue(1, 1, 64, 64, &ignore_single, &ignore_bulk);
         auto producer = queue.producer(0);
         producer.push(Slice(64, true, &placement));
     }

@@ -8,8 +8,10 @@
 #include <memory/lifetime.hpp>
 #include <gpu/runtime.hpp>
 #include <vulkan/shader_state.hpp>
+#include <algorithm>
 #include <bit>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 extern "C" void ba_net_shutdown(void);
 
@@ -27,41 +29,66 @@ Extent Extent::of(uint64_t granules) {
     return {0, 0, granules};
 }
 /** --------------------------------------------------------------------------------------------------------- Open
- * @brief Allocates a buffer, claims a free index, and waits out claimers undoing a stale count.
+ * @brief Reuses a parked buffer of the same size after zeroing the granules it handed out, or
+ * allocates one into a free index, then waits out claimers undoing a stale count.
  */
 uint32_t Arena::open(const BuffetDescriptor* placement, uint64_t granules, bool novel) {
     static thread_local uint64_t cursor = 0;
-    void* native = placement->factory(granules << 6);
-    for (uint64_t scanned = 0, index = cursor; scanned < BUFFER_COUNT / 64;
-        ++scanned, index = (index + 1) & (BUFFER_COUNT / 64 - 1)) {
-        std::atomic_ref<uint64_t> word(buffer_bits[index]);
-        uint64_t bits = word.load(std::memory_order_relaxed);
-        while (~bits) {
-            const uint64_t bit = uint64_t{1} << std::countr_one(bits);
-            bits = word.fetch_or(bit, std::memory_order_acquire);
-            if (bits & bit) continue;
-            cursor = index;
-            const uint32_t buffer = static_cast<uint32_t>(index * 64 + std::countr_zero(bit));
-            BufferRecord& record = buffers[buffer];
-            record.host_base = static_cast<uint8_t*>(placement->host_ptr(native, 0));
-            record.native = native;
-            record.granules = static_cast<uint32_t>(granules);
-            record.placement = placement->type_idx;
-            record.novel = novel;
-            directory[SEGMENT_COUNT + buffer] = placement->device_address(native);
-            reinterpret_cast<uint32_t*>(directory + DIRECTORY_GRANULES)[buffer] = record.granules;
-            std::atomic_ref<uint32_t>(successors[buffer]).store(BUFFER_NONE, std::memory_order_relaxed);
-            std::atomic_ref<uint64_t> live(record.cursor);
-            uint64_t expected = live.load(std::memory_order_relaxed);
-            do {
-                while (expected >= LIVE_ONE) expected = live.load(std::memory_order_relaxed);
-            } while (!live.compare_exchange_weak(expected, LIVE_ONE, std::memory_order_release,
-                std::memory_order_relaxed));
-            return buffer;
+    uint32_t buffer = BUFFER_NONE;
+    uint64_t dirty = 0;
+    Spares& spare = spares[placement->type_idx];
+    {
+        std::lock_guard lock(spare);
+        for (uint32_t index = spare.count; index-- > 0;) {
+            if (buffers[spare.buffers[index]].granules != granules) continue;
+            buffer = spare.buffers[index];
+            dirty = spare.dirty[index];
+            --spare.count;
+            spare.buffers[index] = spare.buffers[spare.count];
+            spare.dirty[index] = spare.dirty[spare.count];
+            break;
         }
     }
-    placement->deleter(native);
-    ALLIGATOR_THROW("All 65,536 buffer indices are in use");
+    if (buffer != BUFFER_NONE) {
+        std::memset(buffers[buffer].host_base, 0, dirty << 6);
+    } else {
+        void* native = placement->factory(granules << 6);
+        for (uint64_t scanned = 0, index = cursor;
+            buffer == BUFFER_NONE && scanned < BUFFER_COUNT / 64;
+            ++scanned, index = (index + 1) & (BUFFER_COUNT / 64 - 1)) {
+            std::atomic_ref<uint64_t> word(buffer_bits[index]);
+            uint64_t bits = word.load(std::memory_order_relaxed);
+            while (~bits) {
+                const uint64_t bit = uint64_t{1} << std::countr_one(bits);
+                bits = word.fetch_or(bit, std::memory_order_acquire);
+                if (bits & bit) continue;
+                cursor = index;
+                buffer = static_cast<uint32_t>(index * 64 + std::countr_zero(bit));
+                break;
+            }
+        }
+        if (buffer == BUFFER_NONE) {
+            placement->deleter(native);
+            ALLIGATOR_THROW("All 65,536 buffer indices are in use");
+        }
+        BufferRecord& record = buffers[buffer];
+        record.host_base = static_cast<uint8_t*>(placement->host_ptr(native, 0));
+        record.native = native;
+        record.granules = static_cast<uint32_t>(granules);
+        record.placement = placement->type_idx;
+        directory[SEGMENT_COUNT + buffer] = placement->device_address(native);
+        reinterpret_cast<uint32_t*>(directory + DIRECTORY_GRANULES)[buffer] = record.granules;
+    }
+    BufferRecord& record = buffers[buffer];
+    record.novel = novel;
+    std::atomic_ref<uint32_t>(successors[buffer]).store(BUFFER_NONE, std::memory_order_relaxed);
+    std::atomic_ref<uint64_t> live(record.cursor);
+    uint64_t expected = live.load(std::memory_order_relaxed);
+    do {
+        while (expected >= LIVE_ONE) expected = live.load(std::memory_order_relaxed);
+    } while (!live.compare_exchange_weak(expected, LIVE_ONE, std::memory_order_release,
+        std::memory_order_relaxed));
+    return buffer;
 }
 /** --------------------------------------------------------------------------------------------------------- Publish
  * @brief Scans from this thread's last slot word and publishes a segment when all are taken.
@@ -76,7 +103,7 @@ uint32_t Arena::publish(uint64_t word, uint8_t type) {
         for (uint64_t scanned = 0, index = start; scanned < words;
             ++scanned, index = index + 1 == words ? 0 : index + 1) {
             std::atomic_ref<uint64_t> bits(
-                occupancy[index / SEGMENT_WORDS][index % SEGMENT_WORDS]);
+                occupancy[index >> SEGMENT_WORDS_SHIFT][index & (SEGMENT_WORDS - 1)]);
             uint64_t current = bits.load(std::memory_order_relaxed);
             while (~current) {
                 const uint64_t bit = uint64_t{1} << std::countr_one(current);
@@ -97,7 +124,7 @@ uint32_t Arena::publish(uint64_t word, uint8_t type) {
             std::calloc(1, SEGMENT_SLOTS * sizeof(SlotState) + SEGMENT_WORDS * sizeof(uint64_t)));
         if (!host) {
             metadata->deleter(buffet);
-            throw std::bad_alloc();
+            ALLIGATOR_THROW("Cannot allocate host state for a Slice slot segment");
         }
         segment_buffets[count] = buffet;
         locations[count] = static_cast<uint64_t*>(metadata->host_ptr(buffet, 0));
@@ -109,15 +136,43 @@ uint32_t Arena::publish(uint64_t word, uint8_t type) {
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Retire
- * @brief Releases the backing allocation and its index once no slot or chain holds the buffer.
+ * @brief Once no slot or chain holds the buffer, parks a slab-sized one for reuse with its
+ * index, or releases the backing allocation and its index.
  */
 void Arena::retire(uint32_t buffer) {
     BufferRecord& record = buffers[buffer];
-    if (std::atomic_ref<uint64_t>(record.cursor).fetch_sub(LIVE_ONE, std::memory_order_acq_rel)
-        >= 2 * LIVE_ONE) return;
-    BuffetDescriptors::get(record.placement)->deleter(record.native);
+    const uint64_t previous = std::atomic_ref<uint64_t>(record.cursor).fetch_sub(LIVE_ONE,
+        std::memory_order_acq_rel);
+    if (previous >= 2 * LIVE_ONE) return;
+    const BuffetDescriptor* placement = BuffetDescriptors::get(record.placement);
+    if (record.granules == (placement->default_size + 63) >> 6) {
+        Spares& spare = spares[record.placement];
+        std::lock_guard lock(spare);
+        if (spare.count < SPARE_LIMIT) {
+            spare.buffers[spare.count] = buffer;
+            spare.dirty[spare.count++] = record.novel ? record.granules
+                : static_cast<uint32_t>(std::min<uint64_t>(previous & BUMP_MASK, record.granules));
+            return;
+        }
+    }
+    placement->deleter(record.native);
     std::atomic_ref<uint64_t>(buffer_bits[buffer / 64]).fetch_and(~(uint64_t{1} << (buffer % 64)),
         std::memory_order_release);
+}
+/** --------------------------------------------------------------------------------------------------------- Release Spares
+ * @brief Frees each placement's parked buffers and their indices after the chains release.
+ */
+void Arena::release_spares() {
+    for (Spares& spare : spares) {
+        std::lock_guard lock(spare);
+        for (uint32_t index = 0; index < spare.count; ++index) {
+            const uint32_t buffer = spare.buffers[index];
+            BuffetDescriptors::get(buffers[buffer].placement)->deleter(buffers[buffer].native);
+            std::atomic_ref<uint64_t>(buffer_bits[buffer / 64]).fetch_and(
+                ~(uint64_t{1} << (buffer % 64)), std::memory_order_release);
+        }
+        spare.count = 0;
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor
  * @brief Allocates the GPU-visible directory; slot segments are published on first claim.
@@ -136,6 +191,7 @@ Alligator::~Alligator() {
     ba_net_shutdown();
     ShaderState::drain();
     ChainBuffet::release_chains();
+    Arena::release_spares();
     const uint32_t count = Arena::segments.exchange(0, std::memory_order_acq_rel);
     for (uint32_t segment = 0; segment < count; ++segment) {
         Arena::metadata->deleter(Arena::segment_buffets[segment]);

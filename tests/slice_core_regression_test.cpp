@@ -6,10 +6,12 @@
 #include <memory/arena.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <barrier>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <thread>
 #include <vector>
@@ -259,9 +261,18 @@ void dedicated_ownership() {
         original.free();
         require(releases[identity].load(std::memory_order_relaxed) == 0,
             "dedicated backing retired while a copied owner remained");
+        std::memset(retained.raw(), 0xA5, retained.size_bytes());
         retained.free();
-        require(releases[identity].load(std::memory_order_relaxed) == 1,
+        // A slab-sized dedicated buffer parks for reuse instead of releasing.
+        const bool slab_sized = requests[index] == small_placement.default_size;
+        require(releases[identity].load(std::memory_order_relaxed) == (slab_sized ? 0 : 1),
             "dedicated backing retained an abandoned token wrapper");
+        if (!slab_sized) continue;
+        Slice reused(requests[index], false, &small_placement);
+        const auto* bytes = static_cast<const unsigned char*>(reused.raw());
+        require(backing_of(reused) == backing
+            && size_t(std::count(bytes, bytes + reused.size_bytes(), 0)) == reused.size_bytes(),
+            "a parked slab-sized buffer was not reused zeroed");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Factory Retry
@@ -343,8 +354,10 @@ void rollover_ownership() {
     size_t released = 0;
     for (size_t identity = first_allocation; identity < last_allocation; ++identity)
         released += releases[identity].load(std::memory_order_relaxed);
-    require(released + 3 == last_allocation - first_allocation,
-        "retired slabs remain pinned beyond the current buffer and the two ahead");
+    const size_t parked = Arena::spares[rollover_placement.type_idx].count;
+    require(released + parked + 3 * CHAIN_LANES == last_allocation - first_allocation
+        && parked <= SPARE_LIMIT,
+        "retired slabs remain pinned beyond each lane's chain and the parked spares");
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Churn
  * @brief Claims, checks, copies, and frees on small slabs so buffers retire and indices recycle.
@@ -387,8 +400,10 @@ void churn_ownership() {
     size_t released = 0;
     for (size_t identity = first_allocation; identity < last_allocation; ++identity)
         released += releases[identity].load(std::memory_order_relaxed);
-    require(released + 3 == last_allocation - first_allocation,
-        "churned buffers remain pinned beyond the current buffer and the two ahead");
+    const size_t parked = Arena::spares[churn_placement.type_idx].count;
+    require(released + parked + 3 * CHAIN_LANES == last_allocation - first_allocation
+        && parked <= SPARE_LIMIT,
+        "churned buffers remain pinned beyond each lane's chain and the parked spares");
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main

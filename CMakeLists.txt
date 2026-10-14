@@ -72,7 +72,6 @@ add_library(alligator STATIC
     src/containers/slicequeue.cpp
     src/containers/slicemap.cpp
     src/containers/priorityslice.cpp
-    src/core/ba_queue.c
     src/network/ba_wire.c
     src/network/ba_network.c
     src/network/ba_fabric.c
