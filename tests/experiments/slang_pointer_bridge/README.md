@@ -38,7 +38,7 @@ The final PTX probe exits 255 because this host cannot load `nvrtc`. The script 
 The generator changes only the injected prelude and wrapper. Application bodies are appended directly from their current source files; the manifest records their SHA-256 values.
 
 - Physical buffer-reference blocks become native pointer fields with Slang constructors that cast their uint64 address; the Slice reference constructor loads the same four-byte ID.
-- The 64-entry directory lookup, ID decomposition, 16-byte `GPUBufRef`, 64-bit byte-address arithmetic, granule shifts, 4-byte stage IDs, 32-byte job records, reference-ring fields, and typed helper algorithms remain in the extracted production text.
+- The arena directory lookup, 24-bit ID decomposition, 8-byte location words, 64-bit byte-address arithmetic, granule shifts, 4-byte stage IDs, 32-byte job records, reference-ring fields, and typed helper algorithms remain in the extracted production text.
 - Runtime packed stores use `InterlockedAnd` and `InterlockedOr`, which emit CUDA `atomicAnd` and `atomicOr`; the original GLSL intrinsic spellings are rejected for CUDA by this compiler.
 - The runtime reduction uses `GroupMemoryBarrierWithGroupSync`, which emits `__syncthreads`; its scratch array emits shared storage.
 - The runtime half-unpack adapter explicitly converts `unpackHalf2x16` into `f16vec2`; Slang does not recognize the production `unpackFloat2x16` spelling.

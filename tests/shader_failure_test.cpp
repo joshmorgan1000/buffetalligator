@@ -7,6 +7,7 @@
 #include "kitchen_test_support.hpp"
 #include "../src/gpu/shader.cpp"
 #include "functional_support.hpp"
+#include <memory/arena.hpp>
 #include <atomic>
 #include <coroutine>
 #include <exception>
@@ -14,6 +15,13 @@
 
 using namespace buffetalligator;
 using functional::require;
+/** --------------------------------------------------------------------------------------------------------- References
+ * @brief Reads a slot's handle count, which stays readable after the slot is freed.
+ */
+static uint16_t slot_references(uint32_t slot) {
+    SlotState& state = Arena::states[slot >> SEGMENT_BITS][slot & SEGMENT_MASK];
+    return std::atomic_ref<uint16_t>(state.references).load(std::memory_order_acquire);
+}
 /** --------------------------------------------------------------------------------------------------------- Increment Body
  * @brief Changes one mapped word after an admitted submission reaches the GPU.
  */
@@ -57,14 +65,14 @@ static void rejected_admission() {
     ShaderResult result;
     auto shader = std::make_unique<Shader>(INCREMENT_BODY, "rejected_admission");
     Slice payload(64, true, VulkanContext::buffer_placement());
-    SliceEntry* entry = SliceEntry::from_slice(payload);
+    const uint32_t slot = payload.id();
     std::latch unexpected{1};
     shader_test_fail_admission.store(true, std::memory_order_release);
     bool rejected = false;
     try { (*shader)(payload, result, &kitchen_test::latch_arrive, &unexpected); }
     catch (const std::bad_alloc&) { rejected = true; }
     require(rejected && !result.ready(), "Rejected admission published a completed result");
-    require(entry->owners.load(std::memory_order_acquire) == 1,
+    require(slot_references(slot) == 1,
         "Rejected admission left a captured Slice identity in its result");
     require(!unexpected.try_wait(),
         "Rejected admission invoked a completion callback");
@@ -72,7 +80,7 @@ static void rejected_admission() {
     require(shader_test_live_slots.load() == 0,
         "Rejected admission kept its destroyed Shader alive through the caller's result");
     payload.free();
-    require(entry->owners.load(std::memory_order_acquire) == 0,
+    require(slot_references(slot) == 0,
         "Rejected admission prevented the caller's final release");
 }
 /** --------------------------------------------------------------------------------------------------------- Completion Observation
@@ -82,7 +90,7 @@ struct CompletionObservation {
     ShaderResult result;
     std::latch complete{1};
     std::atomic<uint32_t> callbacks{0};
-    SliceEntry* entry = nullptr;
+    uint32_t slot = UINT32_MAX;
     uint32_t* payload = nullptr;
     uint32_t expected_value = 0;
     uint32_t expected_owners = 0;
@@ -93,7 +101,7 @@ struct CompletionObservation {
         bool failed = false;
         try { state.result.rethrow(); } catch (const GPUException&) { failed = true; }
         require(failed == state.expected_failure, "Completion observed an incorrect terminal result");
-        require(state.entry->owners.load(std::memory_order_acquire) == state.expected_owners
+        require(slot_references(state.slot) == state.expected_owners
             && *state.payload == state.expected_value,
             "Completion lost its retained identity or observed an unsubmitted write");
         state.callbacks.fetch_add(1, std::memory_order_relaxed);
@@ -108,7 +116,7 @@ static void submission_failure() {
     Slice payload(64, true, VulkanContext::buffer_placement());
     payload.get_as<uint32_t>() = 41;
     CompletionObservation failure;
-    failure.entry = SliceEntry::from_slice(payload);
+    failure.slot = payload.id();
     failure.payload = payload.data<uint32_t>();
     failure.expected_value = 41;
     failure.expected_owners = 1;
@@ -123,12 +131,12 @@ static void submission_failure() {
     bool failed = false;
     try { failure.result.rethrow(); } catch (const GPUException&) { failed = true; }
     require(failed && failure.callbacks.load() == 1, "Submission failure was lost or completed twice");
-    require(failure.entry->owners.load(std::memory_order_acquire) == 0,
+    require(slot_references(failure.slot) == 0,
         "Failed completion retained the released caller's Slice identity");
     Slice next(64, VulkanContext::buffer_placement());
     next.get_as<uint32_t>() = 91;
     CompletionObservation success;
-    success.entry = SliceEntry::from_slice(next);
+    success.slot = next.id();
     success.payload = next.data<uint32_t>();
     success.expected_value = 92;
     success.expected_owners = 2;
@@ -252,7 +260,7 @@ static void shutdown_capture() {
         if (closed) break;
         std::this_thread::yield();
     }
-    require(SliceEntry::from_slice(pending.payload)->owners.load(std::memory_order_acquire) == 2,
+    require(slot_references(pending.payload.id()) == 2,
         "The held admission did not retain its captured Slice identity");
     shader_test_hold_admission.store(false, std::memory_order_release);
     shader_test_hold_admission.notify_all();
@@ -260,7 +268,7 @@ static void shutdown_capture() {
     shutdown.join();
     require(pending.rejected.load(std::memory_order_acquire) && !pending.result.ready(),
         "An operation crossed final shutdown's closed admission gate");
-    require(SliceEntry::from_slice(pending.payload)->owners.load(std::memory_order_acquire) == 1,
+    require(slot_references(pending.payload.id()) == 1,
         "Shutdown rejection retained the captured Slice after its producer returned");
 }
 /** --------------------------------------------------------------------------------------------------------- Main

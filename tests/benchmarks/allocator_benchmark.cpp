@@ -11,6 +11,7 @@
 namespace {
 using namespace benchmarks;
 using buffetalligator::BuffetDescriptor;
+using buffetalligator::BuffetDescriptors;
 /** --------------------------------------------------------------------------------------------------------- Configuration
  * @brief Keeps allocator-specific worker and latency choices alongside shared benchmark options.
  */
@@ -18,6 +19,7 @@ struct Configuration {
     Options common;
     size_t workers = 0;
     size_t latency_samples = 128;
+    bool untracked = false;  ///< Turns allocation tracking off before the first claim.
 };
 /** --------------------------------------------------------------------------------------------------------- Configuration Parser
  * @brief Parses allocator controls and delegates shared measurement options to benchmark support.
@@ -29,6 +31,10 @@ Configuration configuration(int count, char** arguments) {
     bool specified_repetitions = false;
     for (int index = 1; index < count; ++index) {
         const std::string_view argument(arguments[index]);
+        if (argument == "--untracked") {
+            result.untracked = true;
+            continue;
+        }
         if (argument == "--workers" || argument == "--latency-samples") {
             require(index + 1 < count, "An allocator option is missing its value; use --help.");
             const std::string_view value(arguments[++index]);
@@ -234,7 +240,7 @@ int main(int count, char** arguments) {
         if (config.common.help) {
             LOG_INFO_STREAM << "Options: --items N (4096) --repetitions N (15) --warmup N (2) "
                 << "--workers N --single-thread --latency-samples N (128 per repetition) "
-                << "--timeout SECONDS (120) --csv PATH (allocator_samples.csv)";
+                << "--timeout SECONDS (120) --csv PATH (allocator_samples.csv) --untracked";
             LOG_INFO_STREAM << "Default workers: powers of two through reported CPU concurrency "
                 << "and twice that concurrency; all producer workers perform the same Slice trace.";
             LOG_INFO_STREAM << "Slab boundaries use one retained allocation and one worker; "
@@ -244,6 +250,9 @@ int main(int count, char** arguments) {
 #ifndef NDEBUG
         throw std::runtime_error("Allocator performance runs require a Release build from ./run_build.sh.");
 #endif
+        if (config.untracked) BuffetDescriptors::set_allocation_tracking(false);
+        LOG_INFO_STREAM << "Allocation tracking: "
+            << (BuffetDescriptors::allocation_tracking() ? "on" : "off");
         Reporter reporter(config.common);
         std::ofstream latency_csv(config.common.csv + ".latencies.csv");
         require(latency_csv.is_open(), "Cannot open allocator latency CSV output.");

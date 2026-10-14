@@ -94,8 +94,8 @@ and a 16-by-4-by-1 threadgroup. The generated invocation context owns its push, 
 has no `SLANG_globalParams` constant. This avoids the shared mutable binding found in the first
 bridge attempt and follows Slang's documented
 [entry-point uniforms for compute shaders](https://docs.shader-slang.org/en/stable/parameter-blocks.html).
-The emitted Slice ID is 4 bytes; GPUBuf fields remain a 64-bit address plus two 32-bit granule
-values, with unchanged directory decoding and 64-byte shifts. These are source and reflection
+The emitted Slice ID is 4 bytes; location words keep buffer, granule offset, and granule length
+fields, with unchanged directory decoding and 64-byte shifts. These are source and reflection
 checks, not NVRTC, PTX, or concurrent NVIDIA execution results.
 
 The initial unchanged vector, typed, boundary, and L2 bodies transitively call 27 of the 69

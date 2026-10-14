@@ -1,10 +1,11 @@
 /** --------------------------------------------------------------------------------------------------------- Chain Buffet
  * @file chainbuffet.cpp
- * @brief Owns counted allocation controls and safely publishes claims from chained slabs.
+ * @brief Registers placements and claims Slices from chains of arena buffers.
  */
 #include <alligator.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <gpu/runtime.hpp>
+#include <memory/arena.hpp>
 #include <memory/tracker.hpp>
 #include <atomic>
 #include <cstdint>
@@ -15,6 +16,28 @@
 namespace buffetalligator {
 namespace {
 constinit std::array<std::atomic<ChainBuffet*>, 8> current_chains{};
+/** --------------------------------------------------------------------------------------------------------- Count Allocation
+ * @brief Reports one completed allocation through its registered placement.
+ */
+void count_allocation(size_t type, size_t bytes, const void* buffet) {
+    const BuffetDescriptor& placement = *BuffetDescriptors::get(type);
+    Memory::record_code_location(placement, bytes, buffet);
+    Memory::record_allocation(placement, bytes);
+}
+/** --------------------------------------------------------------------------------------------------------- Count Deallocation
+ * @brief Reports one released allocation through its registered placement.
+ */
+void count_deallocation(size_t type, size_t bytes, const void* buffet) {
+    Memory::record_deallocation(*BuffetDescriptors::get(type), bytes);
+    Memory::forget_code_location(buffet);
+}
+/** --------------------------------------------------------------------------------------------------------- Skip Record
+ * @brief Leaves the tracker untouched while allocation tracking is off.
+ */
+void skip_record(size_t, size_t, const void*) {}
+using Recorder = void (*)(size_t type, size_t bytes, const void* buffet);
+constinit std::atomic<Recorder> allocation_recorder{&count_allocation};
+constinit std::atomic<Recorder> deallocation_recorder{&count_deallocation};
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Next Descriptor Index
  * @brief Tracks the highest registered descriptor index.
@@ -47,7 +70,7 @@ size_t BuffetDescriptors::register_descriptor(const BuffetDescriptor* descriptor
     const size_t index = descriptor->type_idx;
     if (index >= list().size()) {
         ALLIGATOR_THROW(std::string("Buffet type ") + descriptor->type_name + " reports type index "
-            + std::to_string(index) + "; Slice ids carry 3 type bits, so indices stop at 7");
+            + std::to_string(index) + "; placements are numbered 0 through 7");
     }
     if (list()[index] != nullptr && list()[index] != descriptor) {
         ALLIGATOR_THROW(std::string("Buffet type index ") + std::to_string(index) + " already belongs to "
@@ -72,180 +95,86 @@ const BuffetDescriptor*& BuffetDescriptors::default_placement() {
  */
 size_t BuffetDescriptors::count() { return next_index().load(std::memory_order_acquire); }
 /** --------------------------------------------------------------------------------------------------------- Record Allocation
- * @brief Reports one completed allocation through its registered placement.
+ * @brief Reports one completed allocation through the selected recorder.
  */
 void BuffetDescriptors::record_allocation(size_t type, size_t bytes, const void* buffet) {
-    const BuffetDescriptor& placement = *list()[type];
-    Memory::record_code_location(placement, bytes, buffet);
-    Memory::record_allocation(placement, bytes);
+    allocation_recorder.load(std::memory_order_relaxed)(type, bytes, buffet);
 }
 /** --------------------------------------------------------------------------------------------------------- Record Deallocation
- * @brief Reports one released allocation through its registered placement.
+ * @brief Reports one released allocation through the selected recorder.
  */
 void BuffetDescriptors::record_deallocation(size_t type, size_t bytes, const void* buffet) {
-    Memory::record_deallocation(*list()[type], bytes);
-    Memory::forget_code_location(buffet);
+    deallocation_recorder.load(std::memory_order_relaxed)(type, bytes, buffet);
 }
-/** --------------------------------------------------------------------------------------------------------- Allocation Control
- * @brief Keeps allocation ownership independent of a caller-owned ChainBuffet object's lifetime.
+/** --------------------------------------------------------------------------------------------------------- Set Allocation Tracking
+ * @brief Selects counting or no-op recorders; a later change would unbalance the counters.
  */
-struct ChainBuffet::ChainBuffetToken::Control {
-    void* buffer;
-    const BuffetDescriptor* descriptor;
-    std::atomic<size_t> references{1};
-    ChainBuffet* owner;
-    bool novel;
-};
-/** --------------------------------------------------------------------------------------------------------- Add Reference
- * @brief Retains a control whose lifetime is already owned by the caller.
- */
-void ChainBuffet::ChainBuffetToken::add_ref() {
-    if (token_) token_->references.fetch_add(1, std::memory_order_relaxed);
+void BuffetDescriptors::set_allocation_tracking(bool enabled) {
+    if (Arena::directory) ALLIGATOR_THROW("Set allocation tracking before the first Slice");
+    allocation_recorder.store(enabled ? &count_allocation : &skip_record,
+        std::memory_order_relaxed);
+    deallocation_recorder.store(enabled ? &count_deallocation : &skip_record,
+        std::memory_order_relaxed);
 }
-/** --------------------------------------------------------------------------------------------------------- Release Reference
- * @brief Releases the backing allocation and its internally owned node after the last reference.
+/** --------------------------------------------------------------------------------------------------------- Allocation Tracking
+ * @brief Reports whether the counting recorders are selected.
  */
-void ChainBuffet::ChainBuffetToken::free() {
-    Control* released = std::exchange(token_, nullptr);
-    if (released && released->references.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        ChainBuffet* owner = released->owner;
-        released->descriptor->deleter(released->buffer);
-        delete released;
-        delete owner;
+bool BuffetDescriptors::allocation_tracking() {
+    return allocation_recorder.load(std::memory_order_relaxed) == &count_allocation;
+}
+/** --------------------------------------------------------------------------------------------------------- Constructor
+ * @brief Opens the first buffer and links the two buffers ahead of it.
+ */
+ChainBuffet::ChainBuffet(const BuffetDescriptor* descriptor, size_t size)
+: descriptor_(descriptor) {
+    if (size > (OFFSET_LIMIT + 1) << 6) ALLIGATOR_THROW("ChainBuffet buffers hold at most 4 GiB");
+    (void)Alligator::inst();
+    granules_ = (size + 63) >> 6;
+    current_.store(Arena::open(descriptor_, granules_, false), std::memory_order_relaxed);
+    try {
+        (void)next(current_.load(std::memory_order_relaxed), 1);
+    } catch (...) {
+        for (uint32_t buffer = current_.load(std::memory_order_relaxed); buffer < BUFFER_PENDING;) {
+            const uint32_t successor = std::atomic_ref<uint32_t>(Arena::successors[buffer]).load(
+                std::memory_order_acquire);
+            Arena::retire(buffer);
+            buffer = successor;
+        }
+        throw;
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Token Constructor
- * @brief Retains an allocation while its node is protected by existing ownership.
+/** --------------------------------------------------------------------------------------------------------- Destructor
+ * @brief Walks from the current buffer through the buffers ahead, dropping the chain's hold on each;
+ * buffers with live Slices remain until those Slices release.
  */
-ChainBuffet::ChainBuffetToken::ChainBuffetToken(const ChainBuffet* buffer)
-: token_(buffer ? buffer->token_ : nullptr) { add_ref(); }
-/** --------------------------------------------------------------------------------------------------------- Token Copy Constructor
- * @brief Retains another token's allocation.
- */
-ChainBuffet::ChainBuffetToken::ChainBuffetToken(const ChainBuffetToken& other)
-: token_(other.token_) { add_ref(); }
-/** --------------------------------------------------------------------------------------------------------- Token Copy Assignment
- * @brief Replaces this token's ownership with another live allocation.
- */
-ChainBuffet::ChainBuffetToken& ChainBuffet::ChainBuffetToken::operator=(const ChainBuffetToken& other) {
-    if (this != &other) { free(); token_ = other.token_; add_ref(); }
-    return *this;
-}
-/** --------------------------------------------------------------------------------------------------------- Token Move Constructor
- * @brief Transfers a token's counted ownership.
- */
-ChainBuffet::ChainBuffetToken::ChainBuffetToken(ChainBuffetToken&& other) noexcept
-: token_(std::exchange(other.token_, nullptr)) {}
-/** --------------------------------------------------------------------------------------------------------- Token Move Assignment
- * @brief Releases existing ownership before taking the source token.
- */
-ChainBuffet::ChainBuffetToken& ChainBuffet::ChainBuffetToken::operator=(ChainBuffetToken&& other) noexcept {
-    if (this != &other) { free(); token_ = std::exchange(other.token_, nullptr); }
-    return *this;
-}
-/** --------------------------------------------------------------------------------------------------------- Token Destructor
- * @brief Releases this token's allocation reference.
- */
-ChainBuffet::ChainBuffetToken::~ChainBuffetToken() { free(); }
-/** --------------------------------------------------------------------------------------------------------- Token Descriptor
- * @brief Returns the descriptor retained with the allocation.
- */
-const BuffetDescriptor* ChainBuffet::ChainBuffetToken::descriptor() const {
-    return token_->descriptor;
-}
-/** --------------------------------------------------------------------------------------------------------- Token Novel Allocation
- * @brief Reports whether this allocation was dedicated to a single original claim.
- */
-bool ChainBuffet::ChainBuffetToken::is_novel() const { return token_->novel; }
-/** --------------------------------------------------------------------------------------------------------- Token Buffet
- * @brief Returns the live backing handle expected by descriptor operations.
- */
-void* ChainBuffet::ChainBuffetToken::buffet() const { return token_->buffer; }
-/** --------------------------------------------------------------------------------------------------------- Token Raw Pointer
- * @brief Resolves a byte offset within this token's live allocation.
- */
-void* ChainBuffet::ChainBuffetToken::raw(size_t offset) {
-    return token_ ? token_->descriptor->host_ptr(token_->buffer, offset) : nullptr;
-}
-/** --------------------------------------------------------------------------------------------------------- Token Const Raw Pointer
- * @brief Resolves a byte offset within this token's live allocation.
- */
-const void* ChainBuffet::ChainBuffetToken::raw(size_t offset) const {
-    return token_ ? token_->descriptor->host_ptr(token_->buffer, offset) : nullptr;
-}
-/** --------------------------------------------------------------------------------------------------------- Next Chain Buffet
- * @brief Publishes one owned successor and resets failed allocation claims for retry.
- */
-ChainBuffet* ChainBuffet::next(bool allocate_next) {
-    ChainBuffet* const pending = reinterpret_cast<ChainBuffet*>(-1);
-    ChainBuffet* successor = next_.load(std::memory_order_acquire);
-    for (;;) {
-        if (successor == pending) {
-            next_.wait(pending, std::memory_order_acquire);
-            successor = next_.load(std::memory_order_acquire);
-            continue;
-        }
-        if (successor) break;
-        if (!next_.compare_exchange_weak(successor, pending, std::memory_order_acq_rel,
-            std::memory_order_acquire)) continue;
-        try {
-            successor = new ChainBuffet(descriptor, descriptor->size_of(buffer_), true, false);
-        } catch (...) {
-            next_.store(nullptr, std::memory_order_release);
-            next_.notify_all();
-            throw;
-        }
-        next_.store(successor, std::memory_order_release);
-        next_.notify_all();
-        break;
-    }
-    if (allocate_next) (void)successor->next(false);
-    return successor;
-}
-/** --------------------------------------------------------------------------------------------------------- Current Chain Buffet
- * @brief Publishes registered placement roots with retryable initialization failures.
- */
-std::atomic<ChainBuffet*>& ChainBuffet::current_for(size_t index) {
-    const BuffetDescriptor* selected = BuffetDescriptors::get(index);
-    if (!selected) ALLIGATOR_THROW("Cannot claim an unregistered buffet placement");
-    auto& current = current_chains[index];
-    ChainBuffet* const pending = reinterpret_cast<ChainBuffet*>(-1);
-    ChainBuffet* node = current.load(std::memory_order_acquire);
-    for (;;) {
-        if (node == pending) {
-            current.wait(pending, std::memory_order_acquire);
-            node = current.load(std::memory_order_acquire);
-            continue;
-        }
-        if (node) return current;
-        if (!current.compare_exchange_weak(node, pending, std::memory_order_acq_rel,
-            std::memory_order_acquire)) continue;
-        try {
-            node = new ChainBuffet(selected, selected->default_size, true, false);
-        } catch (...) {
-            current.store(nullptr, std::memory_order_release);
-            current.notify_all();
-            throw;
-        }
-        current.store(node, std::memory_order_release);
-        current.notify_all();
-        return current;
+ChainBuffet::~ChainBuffet() {
+    for (uint32_t buffer = current_.load(std::memory_order_acquire); buffer < BUFFER_PENDING;) {
+        const uint32_t successor = std::atomic_ref<uint32_t>(Arena::successors[buffer]).load(
+            std::memory_order_acquire);
+        Arena::retire(buffer);
+        buffer = successor;
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Release Chains
- * @brief Releases current and prepared roots after the arena drains all asynchronous users.
+ * @brief Drops the process-wide chains after the arena drains all asynchronous users.
  */
 void ChainBuffet::release_chains() {
     for (auto& current : current_chains) {
-        ChainBuffet* node = current.exchange(nullptr, std::memory_order_acq_rel);
-        if (node) node->free();
+        delete current.exchange(nullptr, std::memory_order_acq_rel);
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Claim From Chain
- * @brief Acquires counted current-node ownership before allowing another claimant to retire it.
+/** --------------------------------------------------------------------------------------------------------- Chain
+ * @brief Creates the placement's chain once, claims from it, and types the constructed slot.
  */
-Slice ChainBuffet::chain(const BuffetDescriptor* placement, size_t size, bool novel_buffer) {
+Slice ChainBuffet::chain(
+    const BuffetDescriptor* placement,
+    size_t size,
+    bool novel_buffer,
+    uint8_t type,
+    std::source_location location
+) {
     if (!size) return Slice();
+    const Memory::Site site(location);
     (void)Alligator::inst();
     const GPUDevice& device = gpu_device();
     // Novel buffers past the probed ceiling or the live device budget headroom land on the host heap.
@@ -253,10 +182,12 @@ Slice ChainBuffet::chain(const BuffetDescriptor* placement, size_t size, bool no
         && (size > device.placement_max_bytes || size > gpu_placement_headroom())) {
         placement = BuffetDescriptors::get(AlignedHeapBuffer::type_idx());
     }
-    auto& current = current_for(placement->type_idx);
+    const BuffetDescriptor* selected = BuffetDescriptors::get(placement->type_idx);
+    if (!selected) ALLIGATOR_THROW("Cannot claim an unregistered buffet placement");
+    auto& current = current_chains[selected->type_idx];
     ChainBuffet* const pending = reinterpret_cast<ChainBuffet*>(-1);
     ChainBuffet* node = current.load(std::memory_order_acquire);
-    for (;;) {
+    while (node == nullptr || node == pending) {
         if (node == pending) {
             current.wait(pending, std::memory_order_acquire);
             node = current.load(std::memory_order_acquire);
@@ -264,154 +195,117 @@ Slice ChainBuffet::chain(const BuffetDescriptor* placement, size_t size, bool no
         }
         if (!current.compare_exchange_weak(node, pending, std::memory_order_acq_rel,
             std::memory_order_acquire)) continue;
-        ChainBuffetToken retained(node);
+        try {
+            node = new ChainBuffet(selected, selected->default_size);
+        } catch (...) {
+            current.store(nullptr, std::memory_order_release);
+            current.notify_all();
+            throw;
+        }
         current.store(node, std::memory_order_release);
         current.notify_all();
-        return node->claim(size, novel_buffer);
     }
+    Slice claimed = node->claim(size, novel_buffer, location);
+    if (!type) return claimed;
+    const SliceTypeRecord& record = *SliceTypes::records_[type];
+    if (record.construct) record.construct(claimed.raw(), claimed.size_bytes() / record.size);
+    Arena::states[claimed.id_ >> SEGMENT_BITS][claimed.id_ & SEGMENT_MASK].type = type;
+    return claimed;
 }
-/** --------------------------------------------------------------------------------------------------------- Chain Buffet Constructor
- * @brief Allocates one independent control and marks whether final release also owns this node.
+/** --------------------------------------------------------------------------------------------------------- Claim
+ * @brief One fetch_add bumps the offset and counts the slot; stale or full buffers retry.
  */
-ChainBuffet::ChainBuffet(const BuffetDescriptor* selected, size_t size, bool owned, bool novel)
-: descriptor(selected) {
-    if (size > (uint64_t{UINT32_MAX} << 6))
-        ALLIGATOR_THROW("Buffet size exceeds the 64-byte granule representation");
-    buffer_ = descriptor->factory((size + 63) & ~size_t(63));
-    try {
-        token_ = new ChainBuffetToken::Control{buffer_, descriptor, 1, owned ? this : nullptr, novel};
-    } catch (...) {
-        descriptor->deleter(buffer_);
-        buffer_ = nullptr;
-        throw;
-    }
-    owns_token_.store(true, std::memory_order_relaxed);
-}
-/** --------------------------------------------------------------------------------------------------------- Release Chain Ownership
- * @brief Releases prepared successors and this node's root without counting borrowed pointers.
- */
-void ChainBuffet::free() {
-    ChainBuffet* successor = next_.exchange(nullptr, std::memory_order_acq_rel);
-    if (successor) successor->free();
-    if (owns_token_.exchange(false, std::memory_order_acq_rel)) {
-        ChainBuffetToken released;
-        released.token_ = token_;
-    }
-}
-/** --------------------------------------------------------------------------------------------------------- Claim Buffer
- * @brief Publishes a granule view while counted ownership protects allocation and node lifetime.
- */
-Slice ChainBuffet::claim(size_t size, bool novel_buffer) {
+Slice ChainBuffet::claim(size_t size, bool novel_buffer, std::source_location location) {
     if (!size) return Slice();
+    const Memory::Site site(location);
     if (size > (uint64_t{UINT32_MAX} << 6))
         ALLIGATOR_THROW("Slice size exceeds the 64-byte granule representation");
-    const size_t rounded = (size + 63) & ~size_t(63);
-    ChainBuffetToken retained(this);
-    size_t offset = 0;
-    if (novel_buffer || rounded >= descriptor->size_of(buffer_)) {
-        ChainBuffet* dedicated = new ChainBuffet(descriptor, rounded, true, true);
-        retained.free();
-        retained.token_ = dedicated->token_;
-        dedicated->owns_token_.store(false, std::memory_order_relaxed);
-    } else {
-        offset = bump_ptr_.fetch_add(rounded, std::memory_order_relaxed);
-        if (offset > descriptor->size_of(buffer_) - rounded) {
-            auto& current = current_for(descriptor->type_idx);
-            ChainBuffet* const pending = reinterpret_cast<ChainBuffet*>(-1);
-            ChainBuffet* node = current.load(std::memory_order_acquire);
-            for (;;) {
-                if (node == pending) {
-                    current.wait(pending, std::memory_order_acquire);
-                    node = current.load(std::memory_order_acquire);
-                    continue;
-                }
-                if (!current.compare_exchange_weak(node, pending, std::memory_order_acq_rel,
-                    std::memory_order_acquire)) continue;
-                if (node == this) {
-                    ChainBuffet* successor;
-                    try {
-                        successor = next();
-                    } catch (...) {
-                        current.store(node, std::memory_order_release);
-                        current.notify_all();
-                        throw;
-                    }
-                    next_.store(nullptr, std::memory_order_release);
-                    current.store(successor, std::memory_order_release);
-                    current.notify_all();
-                    free();
-                } else {
-                    current.store(node, std::memory_order_release);
-                    current.notify_all();
-                }
-                return chain(descriptor, size, false);
+    const uint64_t granules = (size + 63) >> 6;
+    // Lengths past the 20-bit field take a dedicated buffer whose record holds the exact length.
+    if (novel_buffer || granules >= granules_ || granules > UNITS_LIMIT) {
+        const uint32_t buffer = Arena::open(descriptor_, granules, true);
+        try {
+            return Slice(Slice::AdoptId{}, Arena::publish(
+                Location::pack(buffer, 0, 0, granules > UNITS_LIMIT ? 0 : granules), 0));
+        } catch (...) {
+            Arena::retire(buffer);
+            throw;
+        }
+    }
+    uint32_t refill = BUFFER_NONE;
+    for (;;) {
+        const uint32_t buffer = current_.load(std::memory_order_acquire);
+        BufferRecord& record = Arena::buffers[buffer];
+        std::atomic_ref<uint64_t> cursor(record.cursor);
+        const uint64_t previous = cursor.fetch_add(LIVE_ONE | granules,
+            std::memory_order_acq_rel);
+        // A count added to a retired buffer is undone without release, since nothing holds it.
+        if (previous < LIVE_ONE) {
+            cursor.fetch_sub(LIVE_ONE, std::memory_order_relaxed);
+            continue;
+        }
+        if (current_.load(std::memory_order_acquire) != buffer) {
+            Arena::retire(buffer);
+            continue;
+        }
+        const uint64_t offset = previous & BUMP_MASK;
+        // A full buffer hands over to its allocated successor; the swapper refills after it claims.
+        if (offset + granules > record.granules) {
+            uint32_t successor;
+            try {
+                successor = next(buffer);
+            } catch (...) {
+                Arena::retire(buffer);
+                throw;
             }
-        }
-    }
-    const BuffetDescriptor* selected = retained.descriptor();
-    const uint64_t address = selected->device_address(retained.buffet());
-    Alligator& arena = Alligator::inst();
-    const uint32_t slice_id = arena.next_id(selected);
-    const uint8_t region_id = (slice_id >> 3) & 0x3f;
-    const size_t index = slice_id >> 9;
-    Region* region = arena.regions[region_id].load(std::memory_order_acquire);
-    region->slots[index].set(&retained, region_id);
-    region->gpu_slots[index].set(address, static_cast<uint32_t>(rounded >> 6),
-        static_cast<uint32_t>(offset >> 6));
-    return Slice(Slice::AdoptId{}, slice_id);
-}
-/** ------------------------------------------------------------------------------------------- Slots Available
- * @brief Returns the number of available slots in the entry region.
- */
-size_t Region::slots_available() const {
-    return (POOL_SIZE >> 6) - (claimed.load(std::memory_order_acquire) - freed.load(std::memory_order_acquire));
-}
-/** ------------------------------------------------------------------------------------------- Claim Slice Entry
- * @brief Claims a slice entry from the entry region.
- * @param token The chain buffet token associated with the claim.
- * @param size The size of the slice entry to claim.
- * @param offset The offset of the slice entry to claim.
- * @return A pointer to the claimed slice entry, or nullptr if no slots are available.
- */
-SliceEntry* Region::claim(size_t skip_at_most) {
-    const size_t available = slots_available();
-    if (available == 0) return nullptr;
-    uint64_t idx = last_idx.fetch_add(1, std::memory_order_relaxed) & (REGION_SIZE - 1);
-    size_t loops = 0;
-    while (true) {
-        const uint64_t bit = 1ULL << (idx & 63);
-        uint64_t expected = occupancy[idx >> 6].load(std::memory_order_acquire);
-        // Retry only while the slot is free; a failed CAS from a neighbouring bit is not a collision.
-        while ((expected & bit) == 0) {
-            if (occupancy[idx >> 6].compare_exchange_weak(expected, expected | bit,
-                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-                claimed.fetch_add(1, std::memory_order_acq_rel);
-                return &slots[idx];
+            uint32_t expected = buffer;
+            const bool swapped = current_.compare_exchange_strong(expected, successor,
+                std::memory_order_acq_rel, std::memory_order_acquire);
+            if (swapped) {
+                Arena::retire(buffer);
+                refill = successor;
             }
+            Arena::retire(buffer);
+            continue;
         }
-        // Give up after skip_at_most collisions once the region is half full, or after one full lap.
-        if (++loops > skip_at_most && (available < (REGION_SIZE >> 1) || loops >= REGION_SIZE)) {
-            return nullptr;
+        uint32_t slot;
+        try {
+            slot = Arena::publish(Location::pack(buffer, 0, offset, granules), 0);
+        } catch (...) {
+            Arena::retire(buffer);
+            throw;
         }
-        idx = last_idx.fetch_add(1, std::memory_order_relaxed) & (REGION_SIZE - 1);
+        Slice claimed(Slice::AdoptId{}, slot);
+        if (refill != BUFFER_NONE) (void)next(refill, 1);
+        return claimed;
     }
 }
-/** ------------------------------------------------------------------------------------------- Release Slice Entry
- * @brief Releases a previously claimed slice entry.
- * @param entry Pointer to the slice entry to release.
- * @return True if the release was successful, false otherwise.
+/** --------------------------------------------------------------------------------------------------------- Next
+ * @brief Fills an empty successor link first, then recurses `ahead` times; a claimer that finds
+ * the link mid-allocation waits for that buffer instead of allocating another.
  */
-bool Region::release(SliceEntry* entry) {
-    if (entry == nullptr || entry < &slots[0] || entry >= &slots[0] + slots.size()) {
-        return false;
+uint32_t ChainBuffet::next(uint32_t buffer, size_t ahead) {
+    std::atomic_ref<uint32_t> link(Arena::successors[buffer]);
+    uint32_t successor = link.load(std::memory_order_acquire);
+    while (successor >= BUFFER_PENDING) {
+        if (successor == BUFFER_PENDING) {
+            link.wait(BUFFER_PENDING, std::memory_order_acquire);
+            successor = link.load(std::memory_order_acquire);
+            continue;
+        }
+        if (!link.compare_exchange_weak(successor, BUFFER_PENDING, std::memory_order_acq_rel,
+            std::memory_order_acquire)) continue;
+        try {
+            successor = Arena::open(descriptor_, granules_, false);
+        } catch (...) {
+            link.store(BUFFER_NONE, std::memory_order_release);
+            link.notify_all();
+            throw;
+        }
+        link.store(successor, std::memory_order_release);
+        link.notify_all();
     }
-    const size_t idx = entry - &slots[0];
-    const uint64_t bit = 1ULL << (idx & 63);
-    // fetch_and cannot lose to a neighbouring bit changing the word, which a single CAS could.
-    if (occupancy[idx >> 6].fetch_and(~bit, std::memory_order_acq_rel) & bit) {
-        freed.fetch_add(1, std::memory_order_release);
-        return true;
-    }
-    return false;
+    if (ahead) (void)next(successor, ahead - 1);
+    return successor;
 }
 } // namespace buffetalligator

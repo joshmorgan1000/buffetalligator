@@ -53,6 +53,8 @@ private:
     std::unordered_map<const void*, AllocationInfo> allocations_;
     /// @brief Serializes location records shared by allocating threads and the teardown worker.
     AtomicMutex allocations_mutex_;
+    /// @brief Caller site of the public claim this thread is running, or null outside one.
+    static inline thread_local const std::source_location* site_ = nullptr;
 #endif
     /** ------------------------------------------------------------------------------------------- Constructor - Private
      * @brief Private constructor for singleton pattern.
@@ -105,23 +107,47 @@ public:
     Memory(Memory&&) = delete;
     Memory& operator=(Memory&&) = delete;
     ~Memory() = default;
+    /** ------------------------------------------------------------------------------------------- Site
+     * @brief Names the public caller for this thread's allocations until the guard leaves scope.
+     */
+    class Site {
+    private:
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+        const std::source_location* previous_;  ///< Outer claim's site, restored on exit.
+#endif
+    public:
+        explicit Site(const std::source_location& location) {
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+            previous_ = std::exchange(site_, &location);
+#else
+            (void)location;
+#endif
+        }
+        ~Site() {
+#if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
+            site_ = previous_;
+#endif
+        }
+        Site(const Site&) = delete;
+        Site& operator=(const Site&) = delete;
+    };
     /** ------------------------------------------------------------------------------------------- Record Code Location
-     * @brief Records one live allocation's source location when detailed tracking is enabled.
+     * @brief Records one live allocation under the current public claim's site, or an empty
+     * location for allocations made outside a claim.
      * @param placement The placement owning the backing allocation.
      * @param size The backing allocation size in bytes.
      * @param handle The buffet handle identifying the allocation.
-     * @param location The completed allocation's source location.
      */
     static void record_code_location(
         const BuffetDescriptor& placement,
         size_t size,
-        const void* handle,
-        const std::source_location& location = std::source_location::current()
+        const void* handle
     ) {
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
         Memory& tracker = instance();
         const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
+        const std::source_location location = site_ ? *site_ : std::source_location();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
         tracker.allocations_.emplace(handle, AllocationInfo{
             static_cast<uint64_t>(timestamp), size, placement.type_idx, location
@@ -130,7 +156,6 @@ public:
         (void)placement;
         (void)size;
         (void)handle;
-        (void)location;
 #endif
     }
     /** ------------------------------------------------------------------------------------------- Forget Code Location

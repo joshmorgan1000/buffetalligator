@@ -8,6 +8,7 @@
 #include <alligator/kitchen.hpp>
 #include "kitchen_test_support.hpp"
 #include <gpu/runtime.hpp>
+#include <memory/arena.hpp>
 #include <vulkan/shader_state.hpp>
 #if defined(BUFFETALLIGATOR_HAS_METAL)
 #include <metal/metal.hpp>
@@ -116,7 +117,7 @@ void typed_io(bool native, const BuffetDescriptor* placement) {
         {2u, 3u, 5u, 7u}, {-2, 3, -5, 7}, {1.5f, -2.0f, 8.0f, -16.0f},
         0xD4C3B2A1u, 0x98761234u, 0u, 0u
     };
-    require((Alligator::gpubuf_for(payload)->address + (uint64_t(Alligator::gpubuf_for(payload)->offset) << 6)) % alignof(TypedPayload) == 0,
+    require(Alligator::device_address(payload) % alignof(TypedPayload) == 0,
         "typed shader payload is not aligned for vector4 helpers");
     std::string body(native ? "#define uvec4 uint4\n#define ivec4 int4\n#define vec4 float4\n" : "");
     body += typed_body;
@@ -317,12 +318,10 @@ void packed_io(bool native, const BuffetDescriptor* placement) {
 void check_identity(const Slice& stream) {
     const uint32_t* words = stream.data<uint32_t>();
     const uint64_t* values = stream.data<uint64_t>();
-    const GPUBuf& record = *Alligator::gpubuf_for(stream);
     require(words[1] == (words[0] ^ uint32_t(0x9e3779b9)) && words[2] == stream.id(),
         "The shader changed its marker or Slice identity");
-    require(values[2] == stream.size_bytes() && values[2] == (uint64_t(record.size) << 6),
-        "The shader did not widen length granules to bytes");
-    require(values[3] == record.address + (uint64_t(record.offset) << 6),
+    require(values[2] == stream.size_bytes(), "The shader did not widen length granules to bytes");
+    require(values[3] == Alligator::device_address(stream),
         "The shader resolved the wrong backing address or granule offset");
 }
 /** --------------------------------------------------------------------------------------------------------- Optimized Noop
@@ -637,25 +636,46 @@ void alligator_main(Slice source, Slice destination) {
         }
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Region Directory
- * @brief Resolves a retained cross-region copy after its original id and other owners have retired.
+/** --------------------------------------------------------------------------------------------------------- Whole Buffer Size
+ * @brief Resolves the exact length of a dedicated buffer too long for the 20-bit location field.
  */
-void region_directory(bool native, const BuffetDescriptor* placement) {
-    LOG_INFO_STREAM << "Checking backend region directory lookup and retained copy ownership";
-    Slice original(64, true, placement);
-    original.get_as<uint32_t>() = 707;
-    const uint32_t first_region = (original.id() >> 3) & 63;
-    std::vector<Slice> copies;
-    copies.reserve(REGION_SIZE);
-    for (size_t index = 0; index < REGION_SIZE; ++index) {
-        copies.emplace_back(original);
-        if ((index & 65535) == 65535) LOG_INFO_STREAM << "Retained region copies: " << index + 1;
+void whole_buffer_size(bool native, const BuffetDescriptor* placement) {
+    LOG_INFO_STREAM << "Checking backend whole-buffer length past the location length field";
+    Slice large(size_t{64} * 1024 * 1024 + 64, true, placement);
+    require(large.size_bytes() == size_t{64} * 1024 * 1024 + 64,
+        "A whole-buffer Slice lost its exact length");
+    Shader shader(source(identity_body, native), "backend_whole_buffer");
+    ShaderResult result;
+    std::latch finished{1};
+    shader(large, result, &kitchen_test::latch_arrive, &finished);
+    finished.wait();
+    result.rethrow();
+    check_identity(large);
+}
+/** --------------------------------------------------------------------------------------------------------- Segment Directory
+ * @brief Resolves a view in a later slot segment after its parent and sibling views have retired.
+ */
+void segment_directory(bool native, const BuffetDescriptor* placement) {
+    LOG_INFO_STREAM << "Checking backend segment directory lookup after other owners retire";
+    Slice original(128, true, placement);
+    const uint32_t first_segment = original.id() >> SEGMENT_BITS;
+    std::vector<Slice> views;
+    views.reserve(SEGMENT_SLOTS);
+    Slice retained;
+    while (retained.is_null()) {
+        Slice view = original.slice(64, 64);
+        if ((view.id() >> SEGMENT_BITS) != first_segment) {
+            retained = std::move(view);
+        } else {
+            views.push_back(std::move(view));
+        }
+        if ((views.size() & 65535) == 65535)
+            LOG_INFO_STREAM << "Retained segment views: " << views.size();
     }
-    Slice retained(std::move(copies.back()));
-    require(((retained.id() >> 3) & 63) != first_region, "The region test did not cross a region boundary");
-    copies.clear();
+    retained.get_as<uint32_t>() = 707;
+    views.clear();
     original.free();
-    Shader shader(source(identity_body, native), "backend_region");
+    Shader shader(source(identity_body, native), "backend_segment");
     ShaderResult result;
     std::latch finished{1};
     shader(retained, result, &kitchen_test::latch_arrive, &finished);
@@ -721,7 +741,8 @@ int main(int count, char** arguments) {
             translated_jobs(device.placement);
             translated_reference_stages(device.placement);
         }
-        region_directory(native, device.placement);
+        whole_buffer_size(native, device.placement);
+        segment_directory(native, device.placement);
         require(cpu_first.get_as<uint32_t>() == 41, "GPU execution corrupted an independent CPU allocation");
         LOG_INFO_STREAM << "Backend shader contracts passed";
         return 0;

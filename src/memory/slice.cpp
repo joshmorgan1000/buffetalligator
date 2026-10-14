@@ -4,9 +4,11 @@
  */
 #include <alligator.hpp>
 #include <containers/bitplane.hpp>
+#include <memory/arena.hpp>
 #include <memory/tracker.hpp>
 #include <simd.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace buffetalligator {
@@ -24,7 +26,8 @@ AlignedHeapBuffer::AlignedHeapBuffer(size_t size) {
 /** --------------------------------------------------------------------------------------------------------- Shared Buffet
  * @brief Allocates a representable shared heap buffer with one counted owner.
  */
-SharedBuffet::SharedBuffet(size_t size) {
+SharedBuffet::SharedBuffet(size_t size, std::source_location location) {
+    const Memory::Site site(location);
     if (size > (uint64_t{UINT32_MAX} << 6)) {
         ALLIGATOR_THROW("SharedBuffet exceeds the 64-byte-granule size limit");
     }
@@ -51,6 +54,20 @@ void SharedBuffet::free() {
         delete released;
     }
 }
+/** --------------------------------------------------------------------------------------------------------- Slice Type Records
+ * @brief Registered element types; index zero stays null for raw bytes.
+ */
+const SliceTypeRecord* SliceTypes::records_[256] = {};
+std::atomic<uint32_t> SliceTypes::count_{0};
+/** --------------------------------------------------------------------------------------------------------- Register Type
+ * @brief Assigns the next of the 255 type indices a slot's type byte can carry.
+ */
+uint8_t SliceTypes::register_type(const SliceTypeRecord* record) {
+    const uint32_t index = count_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (index > 255) ALLIGATOR_THROW("SliceT supports at most 255 element types");
+    records_[index] = record;
+    return static_cast<uint8_t>(index);
+}
 /** --------------------------------------------------------------------------------------------------------- Default Placement
  * @brief Resolves the payload placement before the first Slice claim.
  */
@@ -60,14 +77,19 @@ const BuffetDescriptor* Slice::default_placement() {
 /** --------------------------------------------------------------------------------------------------------- Fresh Claim
  * @brief Claims a range rounded up to 64-byte granules from the selected placement.
  */
-Slice::Slice(size_t size, const BuffetDescriptor* placement) {
-    *this = ChainBuffet::chain(placement, size);
+Slice::Slice(size_t size, const BuffetDescriptor* placement, std::source_location location) {
+    *this = ChainBuffet::chain(placement, size, false, 0, location);
 }
 /** --------------------------------------------------------------------------------------------------------- Dedicated Claim
  * @brief Claims 64-byte granules with optional dedicated backing ownership.
  */
-Slice::Slice(size_t size, bool novel_buffer, const BuffetDescriptor* placement) {
-    *this = ChainBuffet::chain(placement, size, novel_buffer);
+Slice::Slice(
+    size_t size,
+    bool novel_buffer,
+    const BuffetDescriptor* placement,
+    std::source_location location
+) {
+    *this = ChainBuffet::chain(placement, size, novel_buffer, 0, location);
 }
 /** --------------------------------------------------------------------------------------------------------- External Copy
  * @brief Copies an external byte range into a new owned Slice.
@@ -76,25 +98,29 @@ Slice::Slice(
     const void* copy_from,
     size_t size,
     bool novel_buffer,
-    const BuffetDescriptor* placement
+    const BuffetDescriptor* placement,
+    std::source_location location
 ) {
     if (size == 0) return;
     if (copy_from == nullptr) ALLIGATOR_THROW("Copying a nonempty Slice requires source memory");
-    *this = ChainBuffet::chain(placement, size, novel_buffer);
+    *this = ChainBuffet::chain(placement, size, novel_buffer, 0, location);
     std::memcpy(raw(), copy_from, size);
 }
 /** --------------------------------------------------------------------------------------------------------- Copy Constructor
- * @brief Publishes a fresh identifier retaining the source byte view and backing allocation.
+ * @brief Shares the slot and counts one more handle; a count past 65,535 aborts loudly.
  */
-Slice::Slice(const Slice& other) {
-    if (other.is_null()) return;
-    Alligator& arena = Alligator::inst();
-    id_ = arena.next_id(other.placement());
-    arena.entry(*this).set(arena.entry(other).token(), static_cast<uint8_t>((id_ >> 3) & 63));
-    *arena.gpubuf(*this) = *arena.gpubuf(other);
+Slice::Slice(const Slice& other) : id_(other.id_) {
+    if (is_null()) return;
+    SlotState& state = Arena::states[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    if (std::atomic_ref<uint16_t>(state.references).fetch_add(1, std::memory_order_relaxed)
+        == UINT16_MAX) {
+        LOG_ERROR_STREAM << "Slice slot " << id_
+            << " passed 65,535 handles; share it through a novel buffer";
+        std::abort();
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- Copy Assignment
- * @brief Replaces this view only after the source's retained view has been published.
+ * @brief Counts the source handle before releasing this one, so self-assignment stays live.
  */
 Slice& Slice::operator=(const Slice& other) {
     if (this != &other) {
@@ -118,13 +144,15 @@ Slice& Slice::operator=(Slice&& other) noexcept {
     return *this;
 }
 /** --------------------------------------------------------------------------------------------------------- Placement
- * @brief Returns the descriptor encoded in a live Slice identifier.
+ * @brief Returns the placement recorded for the slot's buffer.
  */
 const BuffetDescriptor* Slice::placement() const {
-    return is_null() ? nullptr : BuffetDescriptors::get(id_ & 7);
+    if (is_null()) return nullptr;
+    const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    return BuffetDescriptors::get(Arena::buffers[Location::buffer(word)].placement);
 }
 /** --------------------------------------------------------------------------------------------------------- Byte View
- * @brief Retains the 64-byte granules covering a requested range without moving its payload.
+ * @brief Shares this slot for the whole span, or publishes an untyped slot that holds the buffer.
  */
 Slice Slice::slice(size_t offset, size_t length) const {
     if (is_null() || length == 0) return Slice();
@@ -136,12 +164,22 @@ Slice Slice::slice(size_t offset, size_t length) const {
     if (length == 0) return Slice();
     const size_t first = offset >> 6;
     const size_t end = (offset + length + 63) >> 6;
-    Slice view(*this);
-    Alligator& arena = Alligator::inst();
-    GPUBuf& record = *arena.gpubuf(view);
-    record.offset += static_cast<uint32_t>(first);
-    record.size = static_cast<uint32_t>(end - first);
-    return view;
+    if (first == 0 && end << 6 == bytes) return *this;
+    const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    const uint32_t buffer = Location::buffer(word);
+    const uint64_t start = Location::offset(word) + first;
+    const Extent extent = Extent::of(end - first);
+    if (start > OFFSET_LIMIT || extent.units == 0 || first + extent.granules > bytes >> 6)
+        ALLIGATOR_THROW("Slice view does not fit the 26-bit offset or rounds past its parent");
+    std::atomic_ref<uint64_t>(Arena::buffers[buffer].cursor)
+        .fetch_add(LIVE_ONE, std::memory_order_relaxed);
+    try {
+        return Slice(AdoptId{},
+            Arena::publish(Location::pack(buffer, extent.scale, start, extent.units), 0));
+    } catch (...) {
+        Arena::retire(buffer);
+        throw;
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- Resize
  * @brief Resizes to whole 64-byte granules and preserves existing data when requested.
@@ -150,7 +188,8 @@ void Slice::resize(
     size_t new_size,
     bool preserve_data,
     bool novel_buffer,
-    const BuffetDescriptor* placement
+    const BuffetDescriptor* placement,
+    std::source_location location
 ) {
     if (new_size == 0) {
         free();
@@ -168,27 +207,42 @@ void Slice::resize(
             return;
         }
     }
-    Slice resized(new_size, novel_buffer, placement);
+    Slice resized(new_size, novel_buffer, placement, location);
     if (preserve_data && previous != 0) {
         std::memcpy(resized.raw(), raw(), std::min(previous, rounded_size));
     }
     *this = std::move(resized);
 }
 /** --------------------------------------------------------------------------------------------------------- Novel Backing
- * @brief Reports whether this view retains a dedicated backing allocation.
+ * @brief Reports whether the slot's buffer is dedicated.
  */
 bool Slice::is_novel() const noexcept {
-    return !is_null() && Alligator::inst().entry(*this).token()->is_novel();
+    if (is_null()) return false;
+    const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    return Arena::buffers[Location::buffer(word)].novel != 0;
 }
 /** --------------------------------------------------------------------------------------------------------- Adopt
  * @brief Transfers the passed view into this handle.
  */
 void Slice::adopt(Slice other) { *this = std::move(other); }
 /** --------------------------------------------------------------------------------------------------------- Free
- * @brief Releases one owned identifier and leaves this handle null.
+ * @brief Drops a handle; the last destroys typed elements, frees the slot, and retires the buffer.
  */
 void Slice::free() {
-    if (!is_null()) Alligator::inst().destroy(*this);
+    if (is_null()) return;
+    SlotState& state = Arena::states[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    if (std::atomic_ref<uint16_t>(state.references).fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        if (state.type) {
+            const SliceTypeRecord& record = *SliceTypes::records_[state.type];
+            if (record.destroy) record.destroy(raw(), size_bytes() / record.size);
+        }
+        const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+        const uint32_t buffer = Location::buffer(word);
+        std::atomic_ref<uint64_t>(Arena::occupancy[id_ >> SEGMENT_BITS][(id_ & SEGMENT_MASK) / 64])
+            .fetch_and(~(uint64_t{1} << (id_ % 64)), std::memory_order_release);
+        Arena::retire(buffer);
+    }
+    id_ = UINT32_MAX;
 }
 /** --------------------------------------------------------------------------------------------------------- Is Null
  * @brief Tests the null identifier without accessing arena metadata.
@@ -203,20 +257,30 @@ bool Slice::valid() const { return !is_null(); }
  */
 Slice::operator bool() const { return !is_null(); }
 /** --------------------------------------------------------------------------------------------------------- Raw
- * @brief Resolves a live view's exact first host byte.
+ * @brief Adds the slot's granule offset to its buffer's host base.
  */
-void* Slice::raw() { return is_null() ? nullptr : Alligator::inst().entry(*this).host_ptr(); }
+void* Slice::raw() {
+    if (is_null()) return nullptr;
+    const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    return Arena::buffers[Location::buffer(word)].host_base + (Location::offset(word) << 6);
+}
 /** --------------------------------------------------------------------------------------------------------- Raw Constant
- * @brief Resolves a live view's exact first host byte for constant access.
+ * @brief Adds the slot's granule offset to its buffer's host base for constant access.
  */
 const void* Slice::raw() const {
-    return is_null() ? nullptr : std::as_const(Alligator::inst()).entry(*this).host_ptr();
+    if (is_null()) return nullptr;
+    const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    return Arena::buffers[Location::buffer(word)].host_base + (Location::offset(word) << 6);
 }
 /** --------------------------------------------------------------------------------------------------------- Byte Length
- * @brief Returns the represented granule length in bytes.
+ * @brief Widens the scaled length field, or reads the buffer size for a whole-buffer slot.
  */
 size_t Slice::size_bytes() const {
-    return is_null() ? 0 : Alligator::inst().entry(*this).size();
+    if (is_null()) return 0;
+    const uint64_t word = Arena::locations[id_ >> SEGMENT_BITS][id_ & SEGMENT_MASK];
+    const uint64_t units = Location::units(word);
+    return units ? units << (6 + 2 * Location::scale(word))
+        : uint64_t{Arena::buffers[Location::buffer(word)].granules} << 6;
 }
 /** ------------------------------------------------------------------------------------------- Discharge Unsafely
  * @brief Releases the underlying ID of the slice without marking the slots as unallocated,
@@ -239,88 +303,6 @@ Slice Slice::from_id(uint32_t id) {
     Slice slice;
     slice.id_ = id;
     return slice;
-}
-/** --------------------------------------------------------------------------------------------------------- Entry Token
- * @brief Resolves the aligned, constructed token in an occupied entry.
- */
-ChainBuffet::ChainBuffetToken* SliceEntry::token() {
-    return std::launder(reinterpret_cast<ChainBuffet::ChainBuffetToken*>(data));
-}
-/** --------------------------------------------------------------------------------------------------------- Constant Entry Token
- * @brief Resolves the aligned, constructed token for constant access.
- */
-const ChainBuffet::ChainBuffetToken* SliceEntry::token() const {
-    return std::launder(reinterpret_cast<const ChainBuffet::ChainBuffetToken*>(data));
-}
-/** --------------------------------------------------------------------------------------------------------- Set Entry Token
- * @brief Constructs exactly one counted backing reference in a reserved entry.
- */
-void SliceEntry::set_token(const ChainBuffet::ChainBuffetToken* retained) {
-    std::construct_at(reinterpret_cast<ChainBuffet::ChainBuffetToken*>(data), *retained);
-}
-/** --------------------------------------------------------------------------------------------------------- Entry Region
- * @brief Returns the region containing this entry.
- */
-uint8_t SliceEntry::region() const { return region_id_; }
-/** --------------------------------------------------------------------------------------------------------- Set Entry Region
- * @brief Records the entry's destination region.
- */
-void SliceEntry::set_region(uint8_t index) { region_id_ = index; }
-/** --------------------------------------------------------------------------------------------------------- Publish Entry
- * @brief Constructs a backing reference and initializes one identifier owner.
- */
-void SliceEntry::set(const ChainBuffet::ChainBuffetToken* retained, uint8_t index) {
-    set_token(retained);
-    set_region(index);
-    owners.store(1, std::memory_order_relaxed);
-}
-/** --------------------------------------------------------------------------------------------------------- Clear Entry
- * @brief Ends the token's lifetime after the identifier's last owner retires.
- */
-void SliceEntry::clear() { std::destroy_at(token()); }
-/** --------------------------------------------------------------------------------------------------------- Entry Size
- * @brief Widens the stored granule length before converting it to bytes.
- */
-size_t SliceEntry::size() const {
-    const Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
-    const size_t index = this - source.slots.data();
-    return uint64_t(source.gpu_slots[index].size) << 6;
-}
-/** --------------------------------------------------------------------------------------------------------- Entry Offset
- * @brief Widens the stored granule offset before converting it to bytes.
- */
-size_t SliceEntry::offset() const {
-    const Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
-    const size_t index = this - source.slots.data();
-    return uint64_t(source.gpu_slots[index].offset) << 6;
-}
-/** --------------------------------------------------------------------------------------------------------- Entry Host Pointer
- * @brief Resolves this entry's represented byte offset through its retained backing.
- */
-void* SliceEntry::host_ptr() { return token()->raw(offset()); }
-/** --------------------------------------------------------------------------------------------------------- Constant Entry Host Pointer
- * @brief Resolves this entry's represented byte offset for constant access.
- */
-const void* SliceEntry::host_ptr() const { return token()->raw(offset()); }
-/** --------------------------------------------------------------------------------------------------------- Entry GPU Record
- * @brief Returns the granule record sharing this entry's region and slot.
- */
-GPUBuf* SliceEntry::gpu_buf() {
-    Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
-    return &source.gpu_slots[this - source.slots.data()];
-}
-/** --------------------------------------------------------------------------------------------------------- Constant Entry GPU Record
- * @brief Returns the granule record for constant access.
- */
-const GPUBuf* SliceEntry::gpu_buf() const {
-    const Region& source = *Alligator::inst().regions[region()].load(std::memory_order_acquire);
-    return &source.gpu_slots[this - source.slots.data()];
-}
-/** --------------------------------------------------------------------------------------------------------- Entry From Slice
- * @brief Resolves an entry belonging to a live Slice.
- */
-SliceEntry* SliceEntry::from_slice(const Slice& slice) {
-    return &Alligator::inst().entry(slice);
 }
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice Details
  * @struct PotentialSlice::Details

@@ -6,6 +6,7 @@
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
+#include <memory/arena.hpp>
 #include "../kitchen_test_support.hpp"
 #include "../functional_support.hpp"
 #include <cstdint>
@@ -41,15 +42,22 @@ void alligator_main(Slice addresses) {
     result.rethrow();
     require(output[0] == 42 && output[1] == 0, "GPU writes did not preserve mapped buffer boundaries");
 }
+/** --------------------------------------------------------------------------------------------------------- Location Of
+ * @brief Reads a live Slice's location word from its slot segment.
+ */
+static uint64_t location_of(const Slice& slice) {
+    return Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
+}
 /** --------------------------------------------------------------------------------------------------------- Claims
- * @brief Checks granule records and region-directory lookup for successive slab claims.
+ * @brief Checks location words and directory lookup for successive slab claims.
  */
 static void vulkan_claims() {
     Slice first(4096, VulkanContext::buffer_placement());
     Slice following(4096, VulkanContext::buffer_placement());
-    const GPUBuf before = *Alligator::gpubuf_for(first);
-    const GPUBuf after = *Alligator::gpubuf_for(following);
-    require(before.address == after.address && after.offset == before.offset + 64,
+    const uint64_t before = location_of(first);
+    const uint64_t after = location_of(following);
+    require(Location::buffer(before) == Location::buffer(after)
+        && Location::offset(after) == Location::offset(before) + 64,
         "Successive claims did not retain granule-based slab offsets");
     require(VulkanKernel::device_address(following) == VulkanKernel::device_address(first) + 4096,
         "Device addressing did not widen granules into bytes");
@@ -59,13 +67,14 @@ static void vulkan_claims() {
         "A requested byte window did not round outward");
     require(nested.size_bytes() == 64 && nested.data() == following.data() + 64,
         "A nested view did not preserve rounded parent bounds");
-    require(Alligator::gpubuf_for(nested)->size == 1
-        && Alligator::gpubuf_for(nested)->offset == after.offset + 1,
+    require(Location::units(location_of(nested)) == 1
+        && Location::offset(location_of(nested)) == Location::offset(after) + 1,
         "Nested views stored byte counts in granule fields");
-    require(Alligator::gpu_table(uint8_t((nested.id() >> 3) & 63)) + (nested.id() >> 9)
-        == Alligator::gpubuf_for(nested), "Region lookup addressed the wrong GPU record");
+    require(Arena::directory[SEGMENT_COUNT + Location::buffer(location_of(nested))]
+        + (Location::offset(location_of(nested)) << 6) == VulkanKernel::device_address(nested),
+        "Directory lookup addressed the wrong buffer base");
     require(Alligator::gpu_directory_address() == VulkanKernel::gpu_pool_address()
-        && VulkanKernel::gpu_pool_address() != 0, "The GPU region directory is unavailable");
+        && VulkanKernel::gpu_pool_address() != 0, "The GPU arena directory is unavailable");
     nested.get_as<uint32_t>() = 77;
     require(following.data<uint32_t>()[16] == 77, "A rounded view wrote the wrong host offset");
     Slice heap(64, BuffetDescriptors::get(0));
@@ -79,7 +88,7 @@ static void vulkan_novel_views() {
     Slice separate(256, true, VulkanContext::buffer_placement());
     const uint64_t address = VulkanKernel::device_address(root);
     require(address != VulkanKernel::device_address(separate), "Dedicated claims share their device address");
-    require(Alligator::gpubuf_for(root)->size == 4 && Alligator::gpubuf_for(root)->offset == 0,
+    require(Location::units(location_of(root)) == 4 && Location::offset(location_of(root)) == 0,
         "Dedicated claim metadata is not expressed in granules");
     Slice view = root.slice(70, 80);
     Slice nested = view.slice(67, 4);
@@ -90,7 +99,7 @@ static void vulkan_novel_views() {
         "Rounded dedicated views have incorrect host offsets");
     nested.get_as<uint64_t>() = 0x123456789ABCDEF0ull;
     Slice retained = nested;
-    require(retained.id() != nested.id(), "A public Slice copy reused an occupied table identity");
+    require(retained.id() == nested.id(), "A public Slice copy did not share its slot");
     root.free(); view.free(); nested.free(); tail.free();
     require(retained.size_bytes() == 64 && VulkanKernel::device_address(retained) == address + 128
         && retained.get_as<uint64_t>() == 0x123456789ABCDEF0ull,

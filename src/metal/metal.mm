@@ -230,8 +230,7 @@ std::unique_ptr<ShaderProgram> metal_prepare(const ShaderPrepareInfo& info) {
         owned->storage = std::make_unique<MetalBuffer>(storage_bytes);
         slot->mapped = static_cast<uint8_t*>(owned->storage->raw());
         if (info.format == ShaderFormat::References) {
-            const GPUBuf& record = *Alligator::gpubuf_for(*info.references);
-            *reinterpret_cast<uint64_t*>(slot->mapped) = record.address + (uint64_t(record.offset) << 6);
+            *reinterpret_cast<uint64_t*>(slot->mapped) = Alligator::device_address(*info.references);
             reinterpret_cast<uint32_t*>(slot->mapped)[2] = uint32_t(info.references->size<uint32_t>() - 1);
             reinterpret_cast<uint32_t*>(slot->mapped)[7] = info.resources;
         } else {

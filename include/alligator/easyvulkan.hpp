@@ -396,21 +396,21 @@ public:
      */
     static uint64_t device_address(const Slice& slice);
     /** ------------------------------------------------------------------------------------------- gpu_usage
-     * @brief Bytes currently held in Vulkan slabs.
+     * @brief Bytes currently held in Vulkan slabs, or zero while allocation tracking is off.
      * @return The number of bytes currently allocated on the Vulkan device.
      */
     static uint64_t gpu_usage();
     /** ------------------------------------------------------------------------------------------- gpu_pool_address
-     * @brief The device address of the alligator's GPUBuf table for shader-side slice
-     * resolution; 0 while the table is host-only.
-     * @return The table's device address.
+     * @brief The device address of the arena directory shaders resolve Slice ids through, 0
+     * while it is host-only.
+     * @return The directory's device address.
      */
     static uint64_t gpu_pool_address();
 };
 /** --------------------------------------------------------------------------------------------------------- Vulkan GLSL Kernel Prelude
  * @brief GLSL prelude and host-side mirrors for Buffet Alligator's persistent megakernel dispatch.
  *
- * GPU-side model: one push block with the job table and shared GPUBufRef pool addresses.
+ * GPU-side model: one push block with the job table and arena directory addresses.
  * The table holds one 4-byte Slice ID per stage, resolving that stage's job array in the pool.
  * Each 32-byte job record holds a 4-byte input Slice ID, 12 reserved bytes, and a 16-byte host handle.
  * The job count arrives as gl_NumWorkGroups.z via indirect dispatch — nothing is pushed per
@@ -436,28 +436,21 @@ inline constexpr std::string_view VULKAN_GLSL_KERNEL_CORE = R"glsl(#extension GL
 #define VULKAN_GLSL_KERNEL_CORE_INCLUDED 1
 // ------------------------------------------------------------------------------------------------- Kernel push block (16 bytes)
 // One push block for every kernel family: the per-engine table address (the megakernel's job
-// table, the public Shader's parameters list) and the global GPUBufRef pool's device address.
+// table, the public Shader's parameters list) and the arena directory's device address.
 layout(push_constant) uniform AlligatorPush {
     uint64_t vulkan_table_address;  ///< This engine's table: job records or the parameters list
-    uint64_t vulkan_pool_address;   ///< The global GPUBufRef table, shared host and device
+    uint64_t vulkan_pool_address;   ///< The arena directory, shared host and device
 } vulkan_push;
 // ------------------------------------------------------------------------------------------------- Slice (4-byte pool ID)
 struct Slice {
-    uint32_t id;  ///< Encoded placement, region, and region-local slot
+    uint32_t id;  ///< 24-bit slot: segment in the high 8 bits, slot within it in the low 16
 };
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SliceRef {
     uint32_t id;
 };
-// ------------------------------------------------------------------------------------------------- GPUBufRef pool (16-byte entries)
-// The region directory locates the mapped GPUBuf records shared by CPU and GPU.
-struct GPUBufRef {
-    uint64_t address;      ///< The backing slab's device address
-    uint32_t size;         ///< The rounded slice length in 64-byte granules
-    uint32_t offset;       ///< The slab-relative offset in 64-byte granules
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer GPUBufRefArray {
-    GPUBufRef refs[];
-};
+// ------------------------------------------------------------------------------------------------- Arena directory
+// 256 segment addresses, then one device base per buffer. Each segment holds 65,536 location
+// words: buffer 16 bits, granule scale 2, offset 26 in 64-byte units, length 20 in scaled units.
 Slice gpu_slice(uint32_t index) { return Slice(index); }
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer I32Array { int v[]; };
@@ -468,17 +461,23 @@ layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array 
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
 // ------------------------------------------------------------------------------------------------- Slice basics
-uint64_t slice_table(Slice s) {
-    return U64Array(vulkan_push.vulkan_pool_address).v[(s.id >> 3u) & 63u];
+uint64_t slice_word(Slice s) {
+    return U64Array(U64Array(vulkan_push.vulkan_pool_address).v[s.id >> 16u]).v[s.id & 0xFFFFu];
 }
-GPUBufRef slice_ref(Slice s) { return GPUBufRefArray(slice_table(s)).refs[s.id >> 9u]; }
 uint64_t slice_address(Slice s) {
-    GPUBufRef ref = slice_ref(s);
-    return ref.address + (uint64_t(ref.offset) << 6);
+    uint64_t word = slice_word(s);
+    return U64Array(vulkan_push.vulkan_pool_address).v[256u + uint(word >> 48)]
+        + (((word >> 20) & 0x3FFFFFFul) << 6);
 }
 bool slice_is_null(Slice s) { return s.id == 0xFFFFFFFFu; }
 uint64_t slice_size(Slice s) {
-    return uint64_t(slice_ref(s).size) << 6;
+    uint64_t word = slice_word(s);
+    uint64_t units = word & 0xFFFFFul;
+    // A zero length means the whole buffer, whose granule count follows the 65,792 directory words.
+    if (units == 0ul) {
+        return uint64_t(U32Array(vulkan_push.vulkan_pool_address + 526336ul).v[uint(word >> 48)]) << 6;
+    }
+    return units << (6u + 2u * (uint(word >> 46) & 3u));
 }
 Slice slice_read(uint64_t address) { return Slice(SliceRef(address).id); }
 uint64_t gpu_slice_address(uint32_t index) { return slice_address(gpu_slice(index)); }
@@ -624,7 +623,7 @@ inline constexpr std::string_view VULKAN_GLSL_KERNEL_TAIL = R"glsl(
 #define VULKAN_STAGE 0u
 #endif
 // ------------------------------------------------------------------------------------------------- Job decoding
-// The push block (table address + GPUBufRef pool) is declared in the kernel core above.
+// The push block (table address + arena directory) is declared in the kernel core above.
 // A job record is 32 bytes: a Slice ID, 12 reserved bytes, and a 16-byte host handle.
 Slice vulkan_job_array() {
     return slice_read(vulkan_push.vulkan_table_address + uint64_t(VULKAN_STAGE) * 4ul);

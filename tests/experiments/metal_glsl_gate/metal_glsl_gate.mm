@@ -121,9 +121,15 @@ id<MTLComputePipelineState> prepare(id<MTLDevice> device, const std::string& sou
     return pipeline;
 }
 /** --------------------------------------------------------------------------------------------------------- Slice Identifier
- * @brief Encodes the production slot/region/placement bit layout for Metal-owned test allocations.
+ * @brief Encodes the production 24-bit slot id: segment in the high 8 bits, slot in the low 16.
  */
-constexpr uint32_t identifier(uint32_t slot, uint32_t region) { return (slot << 9) | (region << 3) | 2; }
+constexpr uint32_t identifier(uint32_t slot, uint32_t segment) { return (segment << 16) | slot; }
+/** --------------------------------------------------------------------------------------------------------- Location Word
+ * @brief Encodes a production location word at 64-byte scale: buffer, offset, and length.
+ */
+constexpr uint64_t location(uint64_t buffer, uint64_t offset, uint64_t units) {
+    return buffer << 48 | offset << 20 | units;
+}
 /** --------------------------------------------------------------------------------------------------------- Push Block
  * @brief Mirrors the production physical-address push block validated against SPIR-V reflection.
  */
@@ -168,7 +174,7 @@ void alligator_main(Slice parameters) {
     id<MTLComputePipelineState> pipelines[2]{
         prepare(device, public_glsl, names[0], artifacts),
         prepare(device, jobs_glsl, names[1], artifacts)};
-    constexpr std::array<size_t, 8> lengths{512, 128, 128, 512, 512, 128, 64, 64};
+    constexpr std::array<size_t, 8> lengths{4096, 128, 128, 512, 512, 128, 64, 64};
     id<MTLBuffer> buffers[8];
     id<MTLResource> resources[8];
     for (size_t index = 0; index < lengths.size(); ++index) {
@@ -180,15 +186,18 @@ void alligator_main(Slice parameters) {
     auto* directory = static_cast<uint64_t*>(buffers[0].contents);
     directory[3] = buffers[1].gpuAddress;
     directory[37] = buffers[2].gpuAddress;
-    auto* first_table = static_cast<GPUBuf*>(buffers[1].contents);
-    auto* second_table = static_cast<GPUBuf*>(buffers[2].contents);
-    first_table[1].set(buffers[3].gpuAddress, 1, 1);
-    first_table[2].set(buffers[5].gpuAddress, 1, 0);
-    first_table[3].set(buffers[6].gpuAddress, 1, 0);
-    first_table[4].set(buffers[3].gpuAddress, 1, 3);
-    second_table[1].set(buffers[4].gpuAddress, 1, 1);
-    second_table[2].set(buffers[5].gpuAddress, 1, 1);
-    second_table[3].set(buffers[4].gpuAddress, 1, 5);
+    for (uint64_t buffer = 0; buffer < 4; ++buffer) {
+        directory[256 + 10 + buffer] = buffers[3 + buffer].gpuAddress;
+    }
+    auto* first_table = static_cast<uint64_t*>(buffers[1].contents);
+    auto* second_table = static_cast<uint64_t*>(buffers[2].contents);
+    first_table[1] = location(10, 1, 1);
+    first_table[2] = location(12, 0, 1);
+    first_table[3] = location(13, 0, 1);
+    first_table[4] = location(10, 3, 1);
+    second_table[1] = location(11, 1, 1);
+    second_table[2] = location(12, 1, 1);
+    second_table[3] = location(11, 5, 1);
     auto* parameters = static_cast<uint32_t*>(buffers[5].contents);
     parameters[0] = identifier(1, 3);
     parameters[1] = identifier(1, 37);

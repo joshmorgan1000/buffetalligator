@@ -4,6 +4,7 @@
  */
 #include <alligator.hpp>
 #include <alligator/atomics.hpp>
+#include <memory/arena.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -79,6 +80,13 @@ void claim_worker(std::atomic<bool>* failed) {
     }
 }
 } // namespace
+/** --------------------------------------------------------------------------------------------------------- Backing Of
+ * @brief Returns the buffet handle behind a live Slice's buffer record.
+ */
+static void* backing_of(const Slice& slice) {
+    const uint64_t word = Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
+    return Arena::buffers[Location::buffer(word)].native;
+}
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Exercises registered descriptors through the public Slice and tracking contracts.
  */
@@ -96,7 +104,7 @@ int main() {
     Slice bytes(4096, &placement);
     require(sizeof(bytes) == 4 && bytes.placement() == &placement,
         "Slice size or explicit placement differs");
-    void* backing = SliceEntry::from_slice(bytes)->token()->buffet();
+    void* backing = backing_of(bytes);
     require(backing != nullptr, "live Slice lost its backing handle");
     const std::array<unsigned char, 4096> zeros{};
     require(std::memcmp(bytes.raw(), zeros.data(), zeros.size()) == 0,
@@ -109,7 +117,7 @@ int main() {
     bytes.free();
     require(shared.data<uint8_t>()[128] == 91, "shared Slice did not retain the slab");
     Slice view = shared.slice(64, 256);
-    require(SliceEntry::from_slice(view)->token()->buffet() == backing,
+    require(backing_of(view) == backing,
         "subview changed its backing handle");
     require(view.size_bytes() == 256 && view.raw() == shared.data<uint8_t>() + 64,
         "subview changed its byte bounds");

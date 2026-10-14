@@ -474,11 +474,11 @@ namespace {
 /** --------------------------------------------------------------------------------------------------------- Kernel Push
  * @struct KernelPush
  * @brief The host mirror of the kernel core's push block (vulkanglsl.hpp): the engine's table
- * address and the global GPUBufRef pool's device address, 16 bytes.
+ * address and the arena directory's device address, 16 bytes.
  */
 struct KernelPush {
     uint64_t table;  ///< Job table (megakernel) or parameters list (public Shader)
-    uint64_t pool;   ///< The global GPUBufRef table's device address
+    uint64_t pool;   ///< The arena directory's device address
 };
 static_assert(sizeof(KernelPush) == 16, "KernelPush must mirror the GLSL push block");
 

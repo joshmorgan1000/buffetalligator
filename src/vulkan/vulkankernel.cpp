@@ -30,13 +30,11 @@ std::string VulkanKernel::device_name() {
  * @return The device address of the Slice's first byte if GPU-visible, otherwise 0.
  */
 uint64_t VulkanKernel::device_address(const Slice& slice) {
-    if (slice.is_null()) return 0;
-    const GPUBuf& buffer = *Alligator::gpubuf_for(slice);
-    return buffer.address == 0 ? 0 : buffer.address + (uint64_t(buffer.offset) << 6);
+    return Alligator::device_address(slice);
 }
 /** --------------------------------------------------------------------------------------------------------- VulkanKernel::gpu_pool_address
- * @brief The device address of the alligator's shared GPUBuf table, 0 without a compute device.
- * @return The table's device address.
+ * @brief The device address of the arena directory, 0 without a compute device.
+ * @return The directory's device address.
  */
 uint64_t VulkanKernel::gpu_pool_address() {
     return Alligator::gpu_directory_address();

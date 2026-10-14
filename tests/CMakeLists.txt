@@ -20,12 +20,12 @@ set_tests_properties(buffetalligator_kitchen_order_test buffetalligator_kitchen_
     PROPERTIES TIMEOUT 45 LABELS "kitchen;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
 foreach(case IN ITEMS vulkan_shader_identity vulkan_reference_dispatch vulkan_job_dispatch
     vulkan_embedded_slices vulkan_dispatch_rounds vulkan_async_completion
-    vulkan_program_roundtrip vulkan_coroutine_completion vulkan_region_spread)
+    vulkan_program_roundtrip vulkan_coroutine_completion vulkan_segment_spread)
     add_test(NAME buffetalligator_${case} COMMAND buffetalligator_shader_slice_test ${case})
     set_tests_properties(buffetalligator_${case} PROPERTIES TIMEOUT 30 LABELS "gpu;functional"
         SKIP_RETURN_CODE 77)
 endforeach()
-set_tests_properties(buffetalligator_vulkan_region_spread PROPERTIES TIMEOUT 60)
+set_tests_properties(buffetalligator_vulkan_segment_spread PROPERTIES TIMEOUT 60)
 target_link_libraries(buffetalligator_shader_failure_test PRIVATE alligator::shaderc)
 set_tests_properties(buffetalligator_shader_failure_test PROPERTIES TIMEOUT 60
     LABELS "gpu;functional" SKIP_RETURN_CODE 77)
@@ -34,7 +34,7 @@ set(BUFFETALLIGATOR_TEST_VULKAN_BACKEND vulkan CACHE STRING
 set_property(CACHE BUFFETALLIGATOR_TEST_VULKAN_BACKEND PROPERTY STRINGS vulkan cpu)
 foreach(case IN ITEMS vulkan_shader_identity vulkan_reference_dispatch vulkan_job_dispatch
         vulkan_embedded_slices vulkan_dispatch_rounds vulkan_async_completion
-        vulkan_program_roundtrip vulkan_coroutine_completion vulkan_region_spread
+        vulkan_program_roundtrip vulkan_coroutine_completion vulkan_segment_spread
         shader_failure_test)
     set_tests_properties(buffetalligator_${case} PROPERTIES
         ENVIRONMENT "ALLIGATOR_GPU_BACKEND=${BUFFETALLIGATOR_TEST_VULKAN_BACKEND}")
@@ -71,7 +71,7 @@ function(add_functional_cases component)
         set_tests_properties(buffetalligator_${case} PROPERTIES TIMEOUT 30 LABELS functional)
     endforeach()
 endfunction()
-add_functional_cases(slice typed_slices typed_views weak_slices)
+add_functional_cases(slice typed_slices typed_lifecycle typed_views weak_slices)
 add_functional_cases(atomic native_atomics complex_atomics atomic_ownership atomic_exceptions
     concurrent_atomics atomic_wait_notify registry global_registry concurrent_registry registry_exceptions)
 add_functional_cases(synchronization mutex barrier_arrival barrier_reuse barrier_release)
@@ -83,7 +83,7 @@ set_tests_properties(buffetalligator_vulkan_typed_io buffetalligator_vulkan_subs
     ENVIRONMENT "ALLIGATOR_GPU_BACKEND=${BUFFETALLIGATOR_TEST_VULKAN_BACKEND}")
 set_tests_properties(buffetalligator_slice_map_growth_test PROPERTIES TIMEOUT 30
     LABELS "containers;functional")
-set_tests_properties(buffetalligator_slice_region_test PROPERTIES TIMEOUT 120
+set_tests_properties(buffetalligator_slice_segment_test PROPERTIES TIMEOUT 120
     LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
 set_tests_properties(buffetalligator_slice_core_regression_test PROPERTIES TIMEOUT 120
     LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")

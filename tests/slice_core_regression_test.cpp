@@ -3,6 +3,7 @@
  * @brief Exercises granule views, allocation ownership, rollover, and retry through production Slices.
  */
 #include <alligator.hpp>
+#include <memory/arena.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -68,6 +69,19 @@ uint64_t tracked_address(void* pointer) {
     return UINT64_C(0x10000000000)
         + static_cast<TrackedBacking*>(pointer)->identity * UINT64_C(0x100000);
 }
+/** --------------------------------------------------------------------------------------------------------- Location Of
+ * @brief Reads a live Slice's location word from its slot segment.
+ */
+uint64_t location_of(const Slice& slice) {
+    return Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
+}
+/** --------------------------------------------------------------------------------------------------------- Backing Of
+ * @brief Returns the tracked allocation behind a live Slice's buffer record.
+ */
+TrackedBacking* backing_of(const Slice& slice) {
+    const BufferRecord& record = Arena::buffers[Location::buffer(location_of(slice))];
+    return static_cast<TrackedBacking*>(record.native);
+}
 const BuffetDescriptor small_placement{
     "SliceCoreSmall", tracked_deleter, tracked_host, tracked_size, tracked_factory, 2, 256,
     tracked_address};
@@ -76,6 +90,9 @@ const BuffetDescriptor retry_placement{
     tracked_address};
 const BuffetDescriptor rollover_placement{
     "SliceCoreRollover", tracked_deleter, tracked_host, tracked_size, tracked_factory, 5, 256,
+    tracked_address};
+const BuffetDescriptor churn_placement{
+    "SliceCoreChurn", tracked_deleter, tracked_host, tracked_size, tracked_factory, 6, 4096,
     tracked_address};
 /** --------------------------------------------------------------------------------------------------------- Verify Final Release
  * @brief Checks current roots and prepared successors after their actual process-exit destructors.
@@ -106,13 +123,14 @@ void null_and_granules() {
     std::array<Slice, requests.size()> claims;
     for (size_t index = 0; index < requests.size(); ++index) {
         claims[index] = Slice(requests[index], &small_placement);
-        const GPUBuf& record = *Alligator::gpubuf_for(claims[index]);
+        const uint64_t word = location_of(claims[index]);
         require(claims[index].size_bytes() == ((requests[index] + 63) & ~size_t(63))
-            && record.size == (requests[index] + 63) / 64,
-            "public length and GPUBuf granules disagree");
-        auto* backing = static_cast<TrackedBacking*>(SliceEntry::from_slice(claims[index])->token()->buffet());
-        require(record.address == tracked_address(backing)
-            && claims[index].raw() == tracked_host(backing, uint64_t(record.offset) << 6),
+            && Location::scale(word) == 0 && Location::units(word) == (requests[index] + 63) / 64,
+            "public length and location granules disagree");
+        auto* backing = backing_of(claims[index]);
+        const uint64_t base = Arena::directory[SEGMENT_COUNT + Location::buffer(word)];
+        require(base == tracked_address(backing)
+            && claims[index].raw() == tracked_host(backing, Location::offset(word) << 6),
             "claim address or granule offset resolves another allocation");
     }
     require(claims[1].data() == claims[0].data() + 64
@@ -175,8 +193,12 @@ void copies_and_views() {
     Slice original(size_t(193), true, &small_placement);
     original.data<uint64_t>()[16] = 84;
     Slice copied(original);
-    require(copied.id() != original.id() && copied.raw() == original.raw()
-        && copied.size_bytes() == 256, "copy did not publish a separate retained identifier");
+    require(copied.id() == original.id() && copied.raw() == original.raw()
+        && copied.size_bytes() == 256, "copy did not share its source slot");
+    const uint32_t slot = original.id();
+    const SlotState& shared = Arena::states[slot >> SEGMENT_BITS][slot & SEGMENT_MASK];
+    require(shared.references == 2,
+        "copy did not count one more handle on the shared slot");
     Slice view = original.slice(65, 65);
     Slice nested = view.slice(63, 2);
     Slice tail = original.slice(65);
@@ -211,10 +233,10 @@ void stack_ownership() {
         retained = stack.claim(64);
         retained.get_as<uint64_t>() = 123;
     }
-    require(retained.get_as<uint64_t>() == 123 && Memory::placement_freed(*heap) == before,
-        "stack ChainBuffet destruction released live Slice backing");
+    require(retained.get_as<uint64_t>() == 123 && Memory::placement_freed(*heap) == before + 512,
+        "stack ChainBuffet destruction did not release exactly its two unused buffers ahead");
     retained.free();
-    require(Memory::placement_freed(*heap) == before + 256,
+    require(Memory::placement_freed(*heap) == before + 768,
         "last stack-buffer Slice did not release its backing exactly once");
 }
 /** --------------------------------------------------------------------------------------------------------- Dedicated Ownership
@@ -225,11 +247,12 @@ void dedicated_ownership() {
     constexpr std::array<size_t, 3> requests{17, 256, 320};
     for (size_t index = 0; index < requests.size(); ++index) {
         Slice original(requests[index], index == 0, &small_placement);
-        auto* backing = static_cast<TrackedBacking*>(SliceEntry::from_slice(original)->token()->buffet());
+        auto* backing = backing_of(original);
         const size_t identity = backing->identity;
-        const GPUBuf& record = *Alligator::gpubuf_for(original);
-        require(original.is_novel() && record.address == tracked_address(backing)
-            && record.offset == 0 && original.raw() == backing->memory.raw()
+        const uint64_t word = location_of(original);
+        require(original.is_novel()
+            && Arena::directory[SEGMENT_COUNT + Location::buffer(word)] == tracked_address(backing)
+            && Location::offset(word) == 0 && original.raw() == backing->memory.raw()
             && original.size_bytes() == backing->memory.size(),
             "dedicated claim published the chain slab's allocation metadata");
         Slice retained(original);
@@ -252,22 +275,20 @@ void factory_retry() {
     catch (const std::bad_alloc&) { rejected = true; }
     require(rejected, "controlled initial-root factory failure was not observed");
     Slice first(size_t(64), &retry_placement);
-    Slice second(size_t(64), &retry_placement);
     first.get_as<uint64_t>() = 91;
-    fail_at.store(factory_calls.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-    rejected = false;
-    try { Slice failed(size_t(64), &retry_placement); }
-    catch (const std::bad_alloc&) { rejected = true; }
-    require(rejected, "controlled successor factory failure was not observed");
-    Slice retried(size_t(64), &retry_placement);
-    Slice filled(size_t(64), &retry_placement);
-    fail_at.store(factory_calls.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
-    rejected = false;
-    try { Slice failed(size_t(64), &retry_placement); }
-    catch (const std::bad_alloc&) { rejected = true; }
-    require(rejected, "controlled prepared-successor failure was not observed");
-    Slice retried_again(size_t(64), &retry_placement);
-    require(first.get_as<uint64_t>() == 91 && retried && retried_again,
+    std::vector<Slice> kept;
+    for (const char* phase : {"first refill", "second refill"}) {
+        fail_at.store(factory_calls.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        rejected = false;
+        for (size_t attempt = 0; attempt < 8 && !rejected; ++attempt) {
+            try { kept.emplace_back(size_t(64), &retry_placement); }
+            catch (const std::bad_alloc&) { rejected = true; }
+        }
+        require(rejected, "controlled refill factory failure was not observed");
+        kept.emplace_back(size_t(64), &retry_placement);
+        LOG_INFO_STREAM << "Chain claims retried after the " << phase << " failure";
+    }
+    require(first.get_as<uint64_t>() == 91 && kept.back(),
         "allocation failure lost a live slab or prevented retry");
     const BuffetDescriptor missing{"SliceCoreMissing", tracked_deleter, tracked_host, tracked_size,
         tracked_factory, 4, 128, tracked_address};
@@ -312,8 +333,8 @@ void rollover_ownership() {
                 require(identifiers.insert(retained.id()).second
                     && retained.get_as<uint64_t>() == ((uint64_t(worker + 1) << 32) | round),
                     "concurrent slab retirement duplicated an identifier or invalidated payload");
-                auto* backing = static_cast<TrackedBacking*>(SliceEntry::from_slice(retained)->token()->buffet());
-                require(releases[backing->identity].load(std::memory_order_relaxed) == 0,
+                const size_t identity = backing_of(retained)->identity;
+                require(releases[identity].load(std::memory_order_relaxed) == 0,
                     "concurrent rollover released backing before publication ownership completed");
             }
         }
@@ -322,8 +343,52 @@ void rollover_ownership() {
     size_t released = 0;
     for (size_t identity = first_allocation; identity < last_allocation; ++identity)
         released += releases[identity].load(std::memory_order_relaxed);
-    require(released + 2 == last_allocation - first_allocation,
-        "retired slabs remain pinned beyond the current and prepared roots");
+    require(released + 3 == last_allocation - first_allocation,
+        "retired slabs remain pinned beyond the current buffer and the two ahead");
+}
+/** --------------------------------------------------------------------------------------------------------- Concurrent Churn
+ * @brief Claims, checks, copies, and frees on small slabs so buffers retire and indices recycle.
+ */
+struct Churn {
+    static constexpr size_t workers = 16, rounds = 20000, held = 3;
+    std::barrier<> gate{workers};
+    std::atomic<bool> overlapped{false};
+    static void run(Churn* work, size_t worker) {
+        std::array<Slice, held> live;
+        work->gate.arrive_and_wait();
+        for (size_t round = 0; round < rounds; ++round) {
+            Slice& slot = live[round % held];
+            const uint64_t expected = (uint64_t(worker + 1) << 32) | (round - held);
+            if (round >= held && slot.get_as<uint64_t>() != expected)
+                work->overlapped.store(true, std::memory_order_relaxed);
+            Slice copy(slot);
+            slot = Slice(size_t(64), &churn_placement);
+            slot.get_as<uint64_t>() = (uint64_t(worker + 1) << 32) | round;
+            if (worker == 0 && round % 5000 == 0)
+                LOG_INFO_STREAM << "Checking Slice churn round " << round;
+        }
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- Churn Ownership
+ * @brief Checks that no claim overlaps another and every retired buffer releases exactly once.
+ */
+void churn_ownership() {
+    const size_t first_allocation = allocation_count.load(std::memory_order_relaxed);
+    {
+        Churn work;
+        std::vector<std::thread> workers;
+        for (size_t worker = 0; worker < Churn::workers; ++worker)
+            workers.emplace_back(&Churn::run, &work, worker);
+        for (auto& worker : workers) worker.join();
+        require(!work.overlapped.load(std::memory_order_relaxed),
+            "concurrent churn handed one granule to two live Slices");
+    }
+    const size_t last_allocation = allocation_count.load(std::memory_order_relaxed);
+    size_t released = 0;
+    for (size_t identity = first_allocation; identity < last_allocation; ++identity)
+        released += releases[identity].load(std::memory_order_relaxed);
+    require(released + 3 == last_allocation - first_allocation,
+        "churned buffers remain pinned beyond the current buffer and the two ahead");
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
@@ -337,6 +402,7 @@ int main() {
     BuffetDescriptors::register_descriptor(&small_placement);
     BuffetDescriptors::register_descriptor(&retry_placement);
     BuffetDescriptors::register_descriptor(&rollover_placement);
+    BuffetDescriptors::register_descriptor(&churn_placement);
     null_and_granules();
     granule_limits();
     copies_and_views();
@@ -344,5 +410,6 @@ int main() {
     dedicated_ownership();
     factory_retry();
     rollover_ownership();
+    churn_ownership();
     LOG_INFO_STREAM << "Slice granule and allocator ownership regressions passed";
 }

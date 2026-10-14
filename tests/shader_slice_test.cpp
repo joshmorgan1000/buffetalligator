@@ -7,6 +7,7 @@
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
 #include "kitchen_test_support.hpp"
+#include <memory/arena.hpp>
 #include <vulkan/shader_state.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -36,7 +37,7 @@ void alligator_main(Slice stream) {
 }
 )glsl";
 /** --------------------------------------------------------------------------------------------------------- Direct Dispatch
- * @brief Resolves rounded views through their region table without changing the slab base.
+ * @brief Resolves rounded views through their segment words without changing the buffer base.
  */
 static void direct_dispatch() {
     Slice storage(512, VulkanContext::buffer_placement());
@@ -47,10 +48,13 @@ static void direct_dispatch() {
         stream.data<uint32_t>()[0] = payloads[0].id();
         stream.data<uint32_t>()[1] = payloads[1].id();
     }
-    const GPUBuf* record = Alligator::gpubuf_for(payloads[1]);
-    require(record == Alligator::gpu_table(uint8_t((payloads[1].id() >> 3) & 63)) + (payloads[1].id() >> 9),
-        "Slice identity resolved the wrong region entry");
-    require(record->offset == Alligator::gpubuf_for(storage)->offset + 2 && record->size == 1,
+    const uint32_t view = payloads[1].id();
+    const uint32_t root = storage.id();
+    const uint64_t word = Arena::locations[view >> SEGMENT_BITS][view & SEGMENT_MASK];
+    const uint64_t parent = Arena::locations[root >> SEGMENT_BITS][root & SEGMENT_MASK];
+    require(Location::buffer(word) == Location::buffer(parent),
+        "A rounded view resolved a different buffer than its parent");
+    require(Location::offset(word) == Location::offset(parent) + 2 && Location::units(word) == 1,
         "Rounded view metadata is not expressed in granules");
     ShaderState shader(IDENTITY_BODY, "slice_identity");
     shader.dispatch(streams.data(), streams.size(), 1);
@@ -65,30 +69,30 @@ static void direct_dispatch() {
             "Dispatch did not preserve its parameter identities and live count");
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Region Spread
- * @brief Resolves retained embedded identities across independently allocated GPU metadata regions.
+/** --------------------------------------------------------------------------------------------------------- Segment Spread
+ * @brief Resolves retained embedded identities across independently allocated slot segments.
  */
-static void region_spread() {
+static void segment_spread() {
     Slice storage(256, true, VulkanContext::buffer_placement());
     std::array<Slice, 2> dependencies{storage.slice(0, 64), Slice{}};
-    const uint32_t first_region = (dependencies[0].id() >> 3) & 63;
+    const uint32_t first_segment = dependencies[0].id() >> SEGMENT_BITS;
     std::vector<Slice> aliases;
-    aliases.reserve(REGION_SIZE + 1);
-    for (size_t index = 0; index <= REGION_SIZE; ++index) {
+    aliases.reserve(SEGMENT_SLOTS + 1);
+    for (size_t index = 0; index <= SEGMENT_SLOTS; ++index) {
         aliases.push_back(storage.slice(128, 128));
-        if (((aliases.back().id() >> 3) & 63) != first_region) {
+        if ((aliases.back().id() >> SEGMENT_BITS) != first_segment) {
             dependencies[1] = std::move(aliases.back());
             aliases.pop_back();
             break;
         }
     }
-    require(!dependencies[1].is_null(), "Live Slice aliases did not cross a metadata region");
+    require(!dependencies[1].is_null(), "Live Slice views did not cross a slot segment");
     const std::array<uint64_t, 2> addresses{VulkanKernel::device_address(dependencies[0]),
         VulkanKernel::device_address(dependencies[1])};
     Slice invocation(64, VulkanContext::buffer_placement());
     invocation.data<uint32_t>()[0] = dependencies[0].id();
     invocation.data<uint32_t>()[1] = dependencies[1].id();
-    Shader shader(IDENTITY_BODY, "region_spread");
+    Shader shader(IDENTITY_BODY, "segment_spread");
     ShaderResult result;
     std::latch complete{1};
     shader(invocation, result, &kitchen_test::latch_arrive, &complete, 1, dependencies);
@@ -100,9 +104,9 @@ static void region_spread() {
     result.rethrow();
     const uint64_t* actual = invocation.data<uint64_t>();
     require(actual[2] == addresses[0] && actual[3] == addresses[1],
-        "GPU lookup did not use both entries in the metadata region directory");
+        "GPU lookup did not use both segments in the arena directory");
     require(actual[4] == 64 && actual[5] == 128,
-        "Cross-region dependencies lost their independent granule bounds");
+        "Cross-segment dependencies lost their independent granule bounds");
 }
 /** --------------------------------------------------------------------------------------------------------- Reference Dispatch
  * @brief Resolves a prepared reference ring using granule-aligned invocation records.
@@ -412,7 +416,7 @@ int main(int count, char** arguments) {
         return 77;
     }
     return functional::run(count, arguments, {{"vulkan_shader_identity", &direct_dispatch},
-        {"vulkan_region_spread", &region_spread},
+        {"vulkan_segment_spread", &segment_spread},
         {"vulkan_reference_dispatch", &reference_dispatch}, {"vulkan_job_dispatch", &job_dispatch},
         {"vulkan_embedded_slices", &embedded_handles}, {"vulkan_dispatch_rounds", &dispatch_rounds},
         {"vulkan_async_completion", &async_completion}, {"vulkan_program_roundtrip", &program_roundtrip},

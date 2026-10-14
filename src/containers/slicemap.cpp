@@ -350,16 +350,10 @@ struct SliceMap::State {
          */
         ~Payload() { if (finalizer) finalizer(slice.data<void>()); }
         /** ----------------------------------------------------------------------------- Retain Slice
-         * @brief Retains this protected payload's existing arena entry for a
-         * callback-local handle.
+         * @brief Shares this protected payload's slot with a callback-local handle.
          * @return A handle to the retained slice.
          */
-        Slice retain_slice() const {
-            if (!slice.is_null()) {
-                SliceEntry::from_slice(slice)->owners.fetch_add(1, std::memory_order_relaxed);
-            }
-            return SliceHandle::adopt(slice.id());
-        }
+        Slice retain_slice() const { return slice; }
     };
     /** ------------------------------------------------------------------------------------------- Node
      * @struct Node

@@ -215,14 +215,13 @@ struct ShaderOperation {
     std::coroutine_handle<> continuation{};
     std::shared_ptr<ShaderOperation> self;
     /** ------------------------------------------------------------------------------------------- Retain
-     * @brief Pins an existing table identity without copying its payload or allocating another id.
+     * @brief Pins an existing slot by sharing it, without copying its payload or taking a new id.
      */
     static Slice retain(const Slice& slice) {
-        if (slice.is_null() || (slice.id() & 7) != gpu_device().placement->type_idx
-            || Alligator::gpubuf_for(slice)->address == 0)
+        if (slice.is_null() || slice.placement() != gpu_device().placement
+            || Alligator::device_address(slice) == 0)
             ALLIGATOR_GPU_THROW("Shader admission requires a device-visible Slice");
-        SliceEntry::from_slice(slice)->owners.fetch_add(1, std::memory_order_relaxed);
-        return Slice(Slice::AdoptId{}, slice.id());
+        return slice;
     }
     /** ------------------------------------------------------------------------------------------- Execute
      * @brief Retires all rounds on a Kitchen worker and publishes the terminal result.

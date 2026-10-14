@@ -6,6 +6,7 @@
 #include <alligator/containers.hpp>
 #include "functional_support.hpp"
 #include <array>
+#include <atomic>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -84,6 +85,41 @@ static void typed_slices() {
     require_throws([] { SliceT<AlignedValue> invalid(SIZE_MAX / sizeof(AlignedValue) + 1); },
         "typed element count overflow accepted");
 }
+/** --------------------------------------------------------------------------------------------------------- Counted Value
+ * @brief Counts live constructions so typed slots can be checked for exactly-once destruction.
+ */
+struct alignas(64) CountedValue {
+    static inline std::atomic<int> live{0};
+    uint64_t value = 7;
+    CountedValue() { live.fetch_add(1, std::memory_order_relaxed); }
+    ~CountedValue() { live.fetch_sub(1, std::memory_order_relaxed); }
+};
+/** --------------------------------------------------------------------------------------------------------- Typed Lifecycle
+ * @brief Checks typed claims construct every element and the last handle destroys them once.
+ */
+static void typed_lifecycle() {
+    {
+        SliceT<CountedValue> values(size_t(4));
+        require(CountedValue::live.load() == 4 && values.data()[3].value == 7,
+            "a typed claim did not construct every element");
+        SliceT<CountedValue> shared = values;
+        require(shared.root_slice().id() == values.root_slice().id(),
+            "a typed copy did not share its slot");
+        Slice view = values.slice(64, 64);
+        values.free();
+        require(CountedValue::live.load() == 4,
+            "a typed slot destroyed elements while a copy remained");
+        shared.free();
+        require(CountedValue::live.load() == 0 && view.size_bytes() == 64,
+            "the last typed handle did not destroy elements, or an untyped view lost its buffer");
+    }
+    SliceT<CountedValue> single(true);
+    require(CountedValue::live.load() == 1 && single.get_as().value == 7,
+        "an initialized typed slice did not construct its element");
+    single.free();
+    require(CountedValue::live.load() == 0,
+        "an initialized typed slice did not destroy its element");
+}
 /** --------------------------------------------------------------------------------------------------------- Typed Views
  * @brief Checks that aligned payload references provide live views of the backing bytes.
  */
@@ -145,7 +181,8 @@ static void weak_slices() {
  */
 int main(int count, char** arguments) {
     return functional::run(count, arguments, {
-        {"typed_slices", typed_slices}, {"typed_views", typed_views},
+        {"typed_slices", typed_slices}, {"typed_lifecycle", typed_lifecycle},
+        {"typed_views", typed_views},
         {"weak_slices", weak_slices}
     });
 }

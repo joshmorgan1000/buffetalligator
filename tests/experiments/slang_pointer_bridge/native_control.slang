@@ -1,12 +1,10 @@
 struct KernelPush { uint64_t table; uint64_t directory; };
-struct GPUBufRef { uint64_t address; uint size; uint offset; };
 struct Slice { uint id; };
 [[vk::push_constant]] ConstantBuffer<KernelPush> push;
 uint64_t slice_address(Slice slice) {
     uint64_t* directory = (uint64_t*)push.directory;
-    GPUBufRef* entries = (GPUBufRef*)directory[(slice.id >> 3) & 63];
-    GPUBufRef entry = entries[slice.id >> 9];
-    return entry.address + (uint64_t(entry.offset) << 6);
+    uint64_t word = ((uint64_t*)directory[slice.id >> 16])[slice.id & 0xFFFF];
+    return directory[256 + uint(word >> 48)] + (((word >> 20) & 0x3FFFFFF) << 6);
 }
 [numthreads(16,4,1)]
 void main(uint3 group : SV_GroupID, uint local : SV_GroupIndex) {

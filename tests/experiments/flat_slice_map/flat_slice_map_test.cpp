@@ -104,11 +104,10 @@ void retained_ownership() {
         require(!original, "flat map insertion did not move the caller's ownership");
         original_result = map.get_slice(-7);
         original_peer = map.get_slice(-7);
-        require(original_result.id() != inserted_identifier
-            && original_peer.id() != inserted_identifier
-            && original_result.id() != original_peer.id()
+        require(original_result.id() == inserted_identifier
+            && original_peer.id() == inserted_identifier
             && original_result.raw() == inserted_pointer && original_peer.raw() == inserted_pointer,
-            "retained flat map lookup did not create a distinct zero-copy Slice");
+            "retained flat map lookup did not share the inserted zero-copy slot");
         original_result.resize(64, true, false, &tracked_placement);
         require(original_result.size_bytes() == 64 && original_peer.size_bytes() == 192
             && map.get_slice(-7).size_bytes() == 192,

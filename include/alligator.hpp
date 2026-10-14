@@ -45,6 +45,7 @@
 #include <mutex>
 #include <new>
 #include <semaphore>
+#include <source_location>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -82,8 +83,8 @@ EXCEPTION_CLASS(Alligator)
 /** ------------------------------------------------------------------------------------- Forward Declarations */
 class Alligator; class Slice; class Memory;
 class SliceQueue; class SliceChannel;
-struct SliceEntry; class PrioritySlice;
-class HeapSlice; struct SliceHandle; struct GPUBuf;
+class PrioritySlice;
+class HeapSlice; struct SliceHandle;
 class AlignedHeapBuffer; class VulkanBuffer;
 /** --------------------------------------------------------------------------------------------------------- IsABuffetType
  * @brief Concept to check if a type T satisfies the requirements of a Buffet.
@@ -183,6 +184,16 @@ public:
      * @param buffet The buffet handle being released.
      */
     static void record_deallocation(size_t type, size_t bytes, const void* buffet);
+    /** --------------------------------------------------------------------------------------------------------- set_allocation_tracking
+     * @brief Turns allocation counters and location records on or off before the arena starts.
+     * @param enabled Whether allocations and releases reach the memory tracker.
+     */
+    static void set_allocation_tracking(bool enabled);
+    /** --------------------------------------------------------------------------------------------------------- allocation_tracking
+     * @brief Reports whether allocations and releases reach the memory tracker.
+     * @return True while tracking is on, which is the default.
+     */
+    static bool allocation_tracking();
     static const BuffetDescriptor* get(size_t type);
     static size_t register_descriptor(const BuffetDescriptor* descriptor);
     static size_t count();
@@ -247,7 +258,10 @@ private:
     void free();
 public:
     SharedBuffet() = default;
-    explicit SharedBuffet(size_t size);
+    explicit SharedBuffet(
+        size_t size,
+        std::source_location location = std::source_location::current()
+    );
     template<IsABuffetType T = AlignedHeapBuffer>
     explicit SharedBuffet(T&& buffet) {
         const size_t bytes = buffet.size();
@@ -296,146 +310,105 @@ public:
     size_t size() const { return static_cast<size_t>(sizex64()) << 6; }
 };
 static_assert(sizeof(SharedBuffet) == 8, "SharedBuffet must be 8 bytes");
+/** --------------------------------------------------------------------------------------------------------- Slice Type Record
+ * @struct SliceTypeRecord
+ * @brief Lifecycle hooks a typed slot runs over its elements.
+ */
+struct SliceTypeRecord {
+    void (*construct)(void* first, size_t count);  ///< Null when default construction is trivial.
+    void (*destroy)(void* first, size_t count);  ///< Null when destruction is trivial.
+    uint32_t size;  ///< Element size in bytes.
+};
+/** --------------------------------------------------------------------------------------------------------- Slice Types
+ * @class SliceTypes
+ * @brief Registers up to 255 element types under the type byte each slot carries.
+ */
+class SliceTypes {
+private:
+    static const SliceTypeRecord* records_[256];  ///< Index zero stays null for raw bytes.
+    static std::atomic<uint32_t> count_;  ///< Highest assigned type index.
+    friend class Slice;
+    friend class ChainBuffet;
+public:
+    /** ------------------------------------------------------------------------------------------- Register Type
+     * @brief Assigns the next type index to a record and throws past 255 types.
+     * @param record The element type's lifecycle hooks, which must outlive the process.
+     * @return The assigned type index.
+     */
+    static uint8_t register_type(const SliceTypeRecord* record);
+};
 /** --------------------------------------------------------------------------------------------------------- ChainBuffet
  * @class ChainBuffet
- * @brief Abstract base class representing a bump pointer arena buffer that automatically pre-allocates
- * several memory blocks in advance to optimize allocation performance.
+ * @brief Bump-claims Slices from the current buffer of a linked chain that always holds two
+ * buffers ahead; a full buffer hands over to its already allocated successor without waiting.
  */
 class alignas(64) ChainBuffet {
-public:
-    class ChainBuffetToken {
-    private:
-        struct Control;
-        Control* token_ = nullptr;
-        void add_ref(); void free();
-        ChainBuffetToken(const ChainBuffet* buffer = nullptr);
-        friend class ChainBuffet;
-        friend struct SliceEntry;
-    public:
-        ChainBuffetToken(const ChainBuffetToken& other);
-        ChainBuffetToken& operator=(const ChainBuffetToken& other);
-        ChainBuffetToken(ChainBuffetToken&& other) noexcept;
-        ChainBuffetToken& operator=(ChainBuffetToken&& other) noexcept;
-        ~ChainBuffetToken();
-        const BuffetDescriptor* descriptor() const;
-        bool is_novel() const;
-        /** ------------------------------------------------------------------------------------------- Buffet
-         * @brief The buffet handle this token keeps alive, as the descriptor's hooks expect it.
-         * @return The buffet handle.
-         */
-        void* buffet() const;
-        void* raw(size_t offset);
-        const void* raw(size_t offset) const;
-    };
 private:
-    void* buffer_ = nullptr;
-    const BuffetDescriptor* descriptor = nullptr;
-    ChainBuffetToken::Control* token_ = nullptr;
-    std::atomic<size_t> bump_ptr_{0};
-    std::atomic<ChainBuffet*> next_{nullptr};
-    std::atomic<bool> owns_token_{false};
-    ChainBuffet* next(bool allocate_next = true);
-    static std::atomic<ChainBuffet*>& current_for(size_t idx);
+    const BuffetDescriptor* descriptor_ = nullptr;  ///< Placement every buffer in this chain uses.
+    uint64_t granules_ = 0;  ///< Buffer size in 64-byte granules.
+    std::atomic<uint32_t> current_{UINT32_MAX};  ///< Buffer that claims bump.
+    /** ------------------------------------------------------------------------------------------- Next
+     * @brief Returns a buffer's successor, allocating it only when the link is empty, then makes
+     * sure `ahead` more buffers follow it, so `next(buffer, 1)` keeps two buffers ahead.
+     * @param buffer The buffer whose successor is wanted.
+     * @param ahead Further successors to ensure past the returned one.
+     * @return The successor's buffer index.
+     */
+    uint32_t next(uint32_t buffer, size_t ahead = 0);
     static void release_chains();
-    ChainBuffet(const BuffetDescriptor* desc, size_t size, bool owned, bool novel);
-    void free();
-    friend class ChainBuffetToken;
     friend class Alligator;
 public:
-    ChainBuffet() = default; bool valid() const { return buffer_ != nullptr; }
-    operator bool() const { return valid(); } ~ChainBuffet() { free(); }
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Opens the chain's first buffer and the two buffers ahead of it.
+     * @param descriptor The placement every buffer comes from.
+     * @param size Buffer size in bytes, at most 4 GiB.
+     */
+    ChainBuffet(const BuffetDescriptor* descriptor, size_t size);
+    /** ------------------------------------------------------------------------------------------- Constructor - Typed Buffet
+     * @brief Opens a chain of T buffers.
+     * @param size Buffer size in bytes, at most 4 GiB.
+     */
     template<IsABuffetType T = AlignedHeapBuffer>
-    explicit ChainBuffet(size_t size, bool allocate_next = false)
-    : ChainBuffet(BuffetDescriptors::descriptor_for(static_cast<T*>(nullptr)), size, false, false) {
-        if (allocate_next) (void)next(false);
-    }
+    explicit ChainBuffet(size_t size)
+    : ChainBuffet(BuffetDescriptors::descriptor_for(static_cast<T*>(nullptr)), size) {}
     ChainBuffet(const ChainBuffet&) = delete;
     ChainBuffet& operator=(const ChainBuffet&) = delete;
     ChainBuffet(ChainBuffet&&) = delete;
     ChainBuffet& operator=(ChainBuffet&&) = delete;
-    static Slice chain(const BuffetDescriptor* desc, size_t size, bool novel_buffer = false);
-    Slice claim(size_t size, bool novel_buffer = false);
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Drops the chain's holds; buffers with live Slices remain until those Slices release.
+     */
+    ~ChainBuffet();
+    /** ------------------------------------------------------------------------------------------- Chain
+     * @brief Claims from the process-wide chain of a placement, constructing typed elements.
+     * @param placement The placement to claim from.
+     * @param size Requested bytes.
+     * @param novel_buffer Whether the Slice gets a dedicated buffer.
+     * @param type Slot type index from SliceTypes, zero for raw bytes.
+     * @param location The caller recorded by allocation location tracking.
+     * @return The claimed Slice.
+     */
+    static Slice chain(
+        const BuffetDescriptor* placement,
+        size_t size,
+        bool novel_buffer = false,
+        uint8_t type = 0,
+        std::source_location location = std::source_location::current()
+    );
+    /** ------------------------------------------------------------------------------------------- Claim
+     * @brief Claims zeroed granules, or a dedicated buffer for novel or slab-sized requests.
+     * @param size Requested bytes.
+     * @param novel_buffer Whether the Slice gets a dedicated buffer.
+     * @param location The caller recorded by allocation location tracking.
+     * @return The claimed Slice.
+     */
+    Slice claim(
+        size_t size,
+        bool novel_buffer = false,
+        std::source_location location = std::source_location::current()
+    );
 };
 static_assert(sizeof(ChainBuffet) == 64, "ChainBuffet must be 64 bytes");
-/** --------------------------------------------------------------------------------------------------------- Pool Sizes
- * @brief Each `Slice` has a 32-bit identifier that represents a type and an index within a global buffer
- * pool.
- */
-inline static constexpr size_t SLICE_SLOT_BITS = 19;
-inline static constexpr size_t SLICE_REGION_BITS = 6;
-inline static constexpr size_t POOL_BITS = SLICE_SLOT_BITS + SLICE_REGION_BITS;
-inline static constexpr size_t POOL_SIZE = 1 << POOL_BITS;
-inline static constexpr size_t REGION_SIZE = POOL_SIZE >> 6;
-inline static constexpr size_t POOL_MASK = POOL_SIZE - 1;
-inline static constexpr size_t pool_index(size_t id) { return id >> 9; }
-inline static constexpr size_t POOL_TYPE_BITS = 3;
-inline static constexpr size_t POOL_TYPE_SIZE = 1 << POOL_TYPE_BITS;
-inline static constexpr size_t POOL_TYPE_MASK = POOL_TYPE_SIZE - 1;
-inline static constexpr size_t pool_type(size_t id) { return id & POOL_TYPE_MASK; }
-/** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @struct GPUBuf
- * @brief Stores a slab base address with length and slab-relative offset in 64-byte granules.
- */
-struct alignas(16) GPUBuf {
-    uint64_t address = 0;
-    uint32_t size = 0;
-    uint32_t offset = 0;
-    void set(uint64_t addr, uint32_t sz, uint32_t off) {
-        address = addr; size = sz; offset = off;
-    }
-    void clear() { address = 0xFFFFFFFFFFFFFFFFull; size = 0; offset = 0; }
-};
-static_assert(sizeof(GPUBuf) == 16 && offsetof(GPUBuf, size) == 8
-    && offsetof(GPUBuf, offset) == 12, "GPUBuf must match the GLSL GPUBufRef record.");
-/** --------------------------------------------------------------------------------------------------------- Slice Entry
- * @struct SliceEntry
- * @brief Represents an entry in the slice table, containing a token, size, and offset.
- */
-struct SliceEntry {
-    alignas(ChainBuffet::ChainBuffetToken) std::byte data[sizeof(ChainBuffet::ChainBuffetToken)];
-    std::atomic<uint32_t> owners{0};
-    uint8_t region_id_ = 0;
-    ChainBuffet::ChainBuffetToken* token();
-    const ChainBuffet::ChainBuffetToken* token() const;
-    void set_token(const ChainBuffet::ChainBuffetToken* token);
-    uint8_t region() const;
-    void set_region(uint8_t region);
-    void set(const ChainBuffet::ChainBuffetToken* token, uint8_t region);
-    void clear();
-    size_t size() const;
-    size_t offset() const;
-    void* host_ptr();
-    const void* host_ptr() const;
-    GPUBuf* gpu_buf();
-    const GPUBuf* gpu_buf() const;
-    static SliceEntry* from_slice(const Slice& slice);
-};
-/** --------------------------------------------------------------------------------------------------------- Region
- * @struct Region
- * @brief Represents a region of slice entries.
- */
-struct Region {
-    inline static constexpr size_t NUM_ATOMICS = (POOL_SIZE >> 12);
-    std::array<GPUBuf, (POOL_SIZE >> 6)> gpu_slots;
-    std::array<SliceEntry, (POOL_SIZE >> 6)> slots;
-    std::array<std::atomic<uint64_t>, NUM_ATOMICS> occupancy{};
-    std::atomic<uint64_t> last_idx{0};
-    std::atomic<uint64_t> claimed{0};
-    std::atomic<uint64_t> freed{0};
-    uint8_t region = 0;
-    size_t slots_available() const;
-    SliceEntry* claim(size_t skip_at_most);
-    bool release(SliceEntry* entry);
-    GPUBuf* gpu_table() { return gpu_slots.data(); }
-    const GPUBuf* gpu_table() const { return gpu_slots.data(); }
-    SliceEntry* slice_table() { return slots.data(); }
-    const SliceEntry* slice_table() const { return slots.data(); }
-};
-/** --------------------------------------------------------------------------------------------------------- Slice Entry Size and Pool Overhead
- * @brief Defines the size of a SliceEntry and the total overhead for the pool.
- */
-inline static constexpr size_t SLICE_ENTRY_SIZE = sizeof(SliceEntry);
-inline static constexpr size_t ALLIGATOR_POOL_OVERHEAD = sizeof(Region) << SLICE_REGION_BITS;
 /** --------------------------------------------------------------------------------------------------------- Host Memory Usage
  * @struct HostMemoryUsage
  * @brief Reports physical capacity, estimated available memory, and this process's resident bytes.
@@ -522,9 +495,9 @@ concept PrimitiveSliceType = (
  * slab arena. On systems that support unified memory, they are always sliced from host-coherent GPU
  * buffers when selected by the placement policy, and GPU work requires a compatible visible placement.
  * 
- * Slices can be sub-sliced to create smaller slices, and they all share the same reference counter and
- * underlying memory. Slices can behave much like `std::shared_ptr` by calling the `slice()` method with
- * no parameters passed, while copies publish distinct identifiers sharing the same backing allocation.
+ * A Slice is a 4-byte slot id. Copies share the slot and its reference counter, much like
+ * `std::shared_ptr`. A sub-slice of a different span gets its own slot that keeps the backing
+ * buffer alive, so it can outlive the Slice it was cut from.
  * 
  * In most cases, slices are meant to be short-lived since they are references to memory that is part of a
  * larger slab in the arena's memory pool. Holding on to a small claim for a long time can lead to
@@ -547,7 +520,11 @@ public:
      * @param size The size of the slice in bytes.
      */
     Slice() noexcept = default;
-    explicit Slice(size_t size, const BuffetDescriptor* placement = default_placement());
+    explicit Slice(
+        size_t size,
+        const BuffetDescriptor* placement = default_placement(),
+        std::source_location location = std::source_location::current()
+    );
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
      * @brief Constructs a slice of memory with the specified size. If not a novel buffer, then
      * it will be claimed from a pre-allocated slab in the buffet alligator's arena.
@@ -556,7 +533,12 @@ public:
      * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
      * reduce fragmentation in the arena.
      */
-    Slice(size_t size, bool novel_buffer, const BuffetDescriptor* placement = default_placement());
+    Slice(
+        size_t size,
+        bool novel_buffer,
+        const BuffetDescriptor* placement = default_placement(),
+        std::source_location location = std::source_location::current()
+    );
     /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
      * @brief Copies data from an external memory location into a new slice of memory in the
      * buffet alligator, ensuring the data is managed within the buffet alligator's memory system
@@ -571,12 +553,12 @@ public:
         const void* copy_from,
         size_t size,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = default_placement()
+        const BuffetDescriptor* placement = default_placement(),
+        std::source_location location = std::source_location::current()
     );
     /** ------------------------------------------------------------------------------------------- Copy/move semantics
-     * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
-     * much like `std::shared_ptr` in that they share the same reference counter and underlying
-     * memory, while moves transfer the owned identifier without reference-counting traffic.
+     * @brief Copies share the slot id and add one to its 16-bit reference count; moves transfer
+     * the id without touching the count.
      */
     Slice(const Slice& other);
     Slice& operator=(const Slice& other);
@@ -615,11 +597,8 @@ public:
     template<typename T = uint8_t>
     const T* data() const { return static_cast<const T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Create new view
-     * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
-     * view shares the same underlying memory and reference counter as the original slice. Using
-     * the default parameters will create a new view that is essentially identical to the original
-     * slice - a shared view that increments the reference counter and will keep the underlying
-     * memory alive until all views are destroyed.
+     * @brief Returns a view of a byte range; the whole span is a copy of this Slice, and any other
+     * span gets its own untyped slot that keeps the backing buffer alive.
      * @param offset Requested byte offset, rounded down to a 64-byte boundary.
      * @param length Requested byte length, with the range end rounded up to a 64-byte boundary.
      * @return A new `Slice` object that is a view of the original slice.
@@ -657,12 +636,14 @@ public:
      * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
      * Default is false.
      * @param placement The memory placement strategy to use. Default is `default_placement()`.
+     * @param location The caller recorded by allocation location tracking.
      */
     void resize(
         size_t new_size,
         bool preserve_data = true,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = default_placement()
+        const BuffetDescriptor* placement = default_placement(),
+        std::source_location location = std::source_location::current()
     );
     /** ------------------------------------------------------------------------------------------- Check if slice is null
      * @brief Checks if the slice is null (i.e., has no underlying memory).
@@ -784,7 +765,6 @@ private:
     struct AdoptId {};
     explicit Slice(AdoptId, uint32_t id) : id_(id) {}
     friend class Alligator;
-    friend struct SliceEntry;
     friend class SliceQueue;
     friend struct SliceHandle;
     friend struct SliceNetworkAccess;
@@ -930,18 +910,53 @@ template <typename T>
 class SliceT {
 private:
     Slice slice_;  ///< The underlying Slice object that this SliceT wraps.
+    /** ------------------------------------------------------------------------------------------- Construct Elements
+     * @brief Value-constructs a freshly claimed element range before its slot is typed.
+     * @param first The first element's host address.
+     * @param count The number of elements to construct.
+     */
+    static void construct(void* first, size_t count) {
+        if constexpr (std::is_default_constructible_v<T>) {
+            std::uninitialized_value_construct_n(static_cast<T*>(first), count);
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- Destroy Elements
+     * @brief Destroys a typed slot's elements when its last handle releases it.
+     * @param first The first element's host address.
+     * @param count The number of elements to destroy.
+     */
+    static void destroy(void* first, size_t count) {
+        std::destroy_n(static_cast<T*>(first), count);
+    }
+    /** ------------------------------------------------------------------------------------------- Type Index
+     * @brief Registers T's lifecycle record once, or returns zero without a default constructor.
+     * @return The slot type index for typed claims.
+     */
+    static uint8_t type_index() {
+        if constexpr (std::is_default_constructible_v<T>) {
+            static constexpr SliceTypeRecord record{
+                std::is_trivially_default_constructible_v<T> ? nullptr : &construct,
+                std::is_trivially_destructible_v<T> ? nullptr : &destroy, sizeof(T)};
+            static const uint8_t index = SliceTypes::register_type(&record);
+            return index;
+        }
+        return 0;
+    }
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT with a specified size in bytes. The size must be a multiple of
      * the size of type T.
      * @param size The size of the slice in bytes.
      */
-    SliceT(bool initialize = false);
+    SliceT(
+        bool initialize = false,
+        std::source_location location = std::source_location::current()
+    );
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT with a specified number of elements of type T.
      * @param count The number of elements of type T.
      */
-    SliceT(size_t count);
+    SliceT(size_t count, std::source_location location = std::source_location::current());
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a SliceT from a Slice. The Slice must have a size that is a multiple of
      * the size of type T.
@@ -1149,13 +1164,10 @@ public:
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>::SliceT(bool initialize) {
-    if (initialize) {
-        slice_.resize(sizeof(T));
-        if constexpr (std::is_default_constructible_v<T>) {
-            new (slice_.data()) T();
-        }
-    }
+SliceT<T>::SliceT(bool initialize, std::source_location location) {
+    if (!initialize) return;
+    slice_ = ChainBuffet::chain(Slice::default_placement(), sizeof(T), false, type_index(),
+        location);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Count
  * @brief Constructs a SliceT with a specified number of elements of type T.
@@ -1163,9 +1175,10 @@ SliceT<T>::SliceT(bool initialize) {
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>::SliceT(size_t count) {
+SliceT<T>::SliceT(size_t count, std::source_location location) {
     if (count > SIZE_MAX / sizeof(T)) ALLIGATOR_THROW("SliceT element count exceeds addressable memory");
-    slice_ = Slice(count * sizeof(T));
+    slice_ = ChainBuffet::chain(Slice::default_placement(), count * sizeof(T), false,
+        type_index(), location);
 }
 /** --------------------------------------------------------------------------------------------------------- Constructor - From Slice
  * @brief Constructs a SliceT from an existing Slice.
@@ -1234,47 +1247,14 @@ static_assert(sizeof(SliceT<DummyAlignedStructure>) == sizeof(Slice), "SliceT mu
 class ConcurrentBitplane;
 /** --------------------------------------------------------------------------------------------------------- Arena
  * @class Alligator
- * @brief Owns the Slice id regions: the host entry tables and the GPUBuf tables shaders resolve ids through.
+ * @brief Owns the arena's lifetime: slot segments, buffer records, and the directory shaders read.
  */
 class Alligator {
 private:
-    std::atomic<uint64_t> next_slice_{};
-    uint32_t next_id(const BuffetDescriptor* placement);
-    mutable std::array<std::atomic<Region*>, 64> regions{};
-    struct SliceRegion {
-        uint64_t device_address;
-        void* handle;
-        Region* host_ptr;
-        const BuffetDescriptor* descriptor;
-        SliceRegion(const BuffetDescriptor* desc, uint8_t index);
-        SliceRegion(const SliceRegion&) = delete;
-        SliceRegion& operator=(const SliceRegion&) = delete;
-        SliceRegion(SliceRegion&&) = delete;
-        SliceRegion& operator=(SliceRegion&&) = delete;
-        ~SliceRegion();
-    };
-    mutable std::array<std::unique_ptr<SliceRegion>, 64> region_backing;
-    const BuffetDescriptor* metadata_placement_ = nullptr;
-    void* directory_backing_ = nullptr;
-    uint64_t* directory_ = nullptr;
-    uint64_t directory_address_ = 0;
-    std::atomic<uint8_t> last_region{0};
-    std::atomic<size_t> skip_at_most{4};
-    SliceEntry& entry(const Slice& slice);
-    const SliceEntry& entry(const Slice& slice) const;
-    GPUBuf* gpubuf(const Slice& slice);
-    const GPUBuf* gpubuf(const Slice& slice) const;
-    void destroy(Slice& slice);
     Alligator();
     ~Alligator();
-    friend class Slice; friend class Memory;
-    friend class VulkanKernel; friend struct SliceEntry;
     friend struct AlligatorInitializer;
     friend struct RuntimeFinalizer;
-    friend class ChainBuffet; friend class Kitchen;
-    friend class ChainBuffetToken;
-    friend class ShaderState;
-    friend struct ShaderOperation;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
@@ -1285,21 +1265,15 @@ public:
      * @return The Alligator instance.
      */
     static Alligator& inst();
-    /** ------------------------------------------------------------------------------------------- GPUBuf For
-     * @brief The writable GPUBuf half for a live slice, nullptr when the slot is unoccupied.
-     * @param slice The slice to resolve.
-     * @return The slice's GPUBuf entry.
+    /** ------------------------------------------------------------------------------------------- Device Address
+     * @brief Returns a live Slice's first device byte, or zero for a null or host-only Slice.
+     * @param slice The Slice to resolve.
+     * @return The device address.
      */
-    static GPUBuf* gpubuf_for(const Slice& slice);
+    static uint64_t device_address(const Slice& slice);
     /** ------------------------------------------------------------------------------------------- GPU Directory
-     * @brief Returns the stable device address of the region directory, or zero for CPU-only use.
+     * @brief Returns the device address of the arena directory, or zero for CPU-only use.
      */
     static uint64_t gpu_directory_address();
-    /** ------------------------------------------------------------------------------------------- GPU Table
-     * @brief The shared GPUBuf table's host mapping, the same bytes shaders read at gpu_table_address().
-     * @param region_id The region ID of the GPU table.
-     * @return The table base.
-     */
-    static const GPUBuf* gpu_table(uint8_t region_id);
 };
 } // namespace buffetalligator

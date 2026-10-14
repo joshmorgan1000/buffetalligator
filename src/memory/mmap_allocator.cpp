@@ -3,6 +3,7 @@
  * @brief Allocates MmapBuffer storage as zero-filled MAP_SHARED mappings of unlinked scratch files.
  */
 #include <alligator/easymmap.hpp>
+#include <memory/arena.hpp>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -91,7 +92,9 @@ void MmapBuffer::release() {
  * @return Its backing buffer.
  */
 const MmapBuffer& MmapBuffer::buffer_for(const Slice& slice) {
-    return *static_cast<const MmapBuffer*>(SliceEntry::from_slice(slice)->token()->buffet());
+    const uint32_t slot = slice.id();
+    const uint64_t word = Arena::locations[slot >> SEGMENT_BITS][slot & SEGMENT_MASK];
+    return *static_cast<const MmapBuffer*>(Arena::buffers[Location::buffer(word)].native);
 }
 /** --------------------------------------------------------------------------------------------------------- Register Type
  * @brief Checks the scratch directory and registers the mmap descriptor once.

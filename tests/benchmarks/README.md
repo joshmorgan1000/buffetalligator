@@ -273,6 +273,27 @@ device execution latency, or a before/after improvement. Archive the environment
 commands, source revision and patch, and raw samples with each comparison; run
 performance measurements on an otherwise idle host after correctness gates pass.
 
+Pass `--untracked` to turn allocation tracking off before the first claim and
+compare dedicated-buffer churn with and without the tracker.
+
+## Slab churn measurements
+
+The slab churn harness models normal operation: workers keep a ring of live Slices,
+replace the oldest with each claim, and cycle mostly small requests up to 64 KiB, so
+every sample rolls through many 64 MiB slabs. It runs a counted heap placement, which
+counts its own buffers independently of the tracker, and the default device placement.
+
+```sh
+./build/tests/benchmarks/buffetalligator_slab_churn_benchmark --gib 8 --repetitions 9
+./build/tests/benchmarks/buffetalligator_slab_churn_benchmark --gib 8 --repetitions 9 --untracked
+```
+
+Each placement runs an untimed throughput pass and a pass that times every claim and
+release. After each sample every Slice is released; the counted placement must then hold
+exactly its current buffer and the two ahead, and tracker bytes and native device bytes must
+match the first sample. A growing value fails the run as a leak. `--factory-delay-us N`
+adds N microseconds to each counted allocation to model a slower device allocator.
+
 ## GPU dispatch measurements
 
 `buffetalligator_gpu_dispatch_benchmark` measures an explicitly selected Vulkan

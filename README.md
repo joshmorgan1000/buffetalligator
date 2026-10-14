@@ -14,7 +14,9 @@ The project is pre-release. API and ABI compatibility are not guaranteed until 1
 
 A registered `BuffetDescriptor` supplies allocation, release, host access, and device-address hooks for one `ChainBuffet`. Chains allocate on demand, prepare successors during rollover, and reclaim drained backing buffers after their last counted owner releases them. Custom descriptors must be registered before concurrent use and remain valid for the process lifetime.
 
-`Slice` is a four-byte owning handle. A default Slice is null; copying creates a distinct identifier sharing the backing allocation, and moving leaves the source null. Allocation sizes round up to 64 bytes. Sub-slice starts round down and ends round up to cover the requested range within the represented parent. `size_bytes()` reports that represented range. The GPU record remains 16 bytes, with `uint32_t` size and offset fields in 64-byte units; no exact-byte side record is stored.
+`Slice` is a four-byte owning handle naming one slot. A default Slice is null; copies share the slot and its 16-bit reference count, and moving leaves the source null. Allocation sizes round up to 64 bytes. Sub-slice starts round down and ends round up to cover the requested range within the represented parent. A sub-slice of a different span gets its own slot, which keeps the backing buffer alive after its parent is gone. `size_bytes()` reports the represented range, exact to 64 bytes for every claim; only sub-slices longer than 64 MiB round to 256, 1024, or 4096 bytes.
+
+Each slot costs 12 bytes: an 8-byte location word the GPU reads, holding the buffer, offset, and length, plus a 4-byte host-only reference count and element type. Slots grow in 64K-slot segments up to 16,777,216, and up to 65,536 buffers, dedicated novel buffers included, can be live at once; both limits fail loudly. `SliceT<T>` claims construct their elements, and the last handle to the slot destroys them; sub-slices of a typed Slice are untyped bytes.
 
 ```cpp
 #include <alligator.hpp>
@@ -49,7 +51,7 @@ Set `ALLIGATOR_GPU_BACKEND` before the first Slice or GPU operation: `auto`, `cp
 
 Vulkan remains linked on every build through MoltenVK on macOS or Vulkan-Loader on Linux. `VulkanContext::buffer_placement()` selects its coherent mapped buffers, `VulkanKernel::device_address(slice)` resolves a live Slice address, and `VulkanKernel::gpu_usage()` reports tracked Vulkan backing bytes. Native Metal uses shared buffers and the pinned SPIRV-Cross compiler for GLSL translation. The [CUDA compiler investigation](tests/experiments/slang_pointer_bridge/README.md) produces CUDA source through a Slang pointer prelude; production integration still requires PTX compilation and NVIDIA execution qualification.
 
-`ShaderSource` accepts GLSL, Metal, and CUDA source members; preparation owns the source bytes. Vulkan compiles GLSL. Metal uses its native source when supplied and otherwise translates GLSL. Public list shaders define `alligator_main` and resolve Slice identities through the stable region directory with 64-byte granule conversion.
+`ShaderSource` accepts GLSL, Metal, and CUDA source members; preparation owns the source bytes. Vulkan compiles GLSL. Metal uses its native source when supplied and otherwise translates GLSL. Public list shaders define `alligator_main` and resolve Slice identities through the arena directory, which holds the slot segments and each buffer's device base, with 64-byte granule conversion.
 
 Shader dispatch accepts a `ShaderResult` and an optional static callback plus `void*` context. Accepted work retains directly bound identities, prepared resources, and explicitly supplied embedded dependencies through retirement. Completion runs on Kitchen workers after device writes are CPU-visible. Call `result.rethrow()` to inspect terminal failure; `Shader::dispatch` provides `co_await`. An external coroutine-frame owner must retain the result and call `cancel()` before concurrent frame destruction. Admission can apply backpressure when prepared slots are busy.
 
@@ -57,7 +59,7 @@ Shader dispatch accepts a `ShaderResult` and an optional static callback plus `v
 
 ### Memory accounting
 
-Internal backing-allocation counters track allocations and releases by placement, including dedicated buffers. Slice copies and views do not allocate another payload. Optional allocation-site records are disabled by default and can be enabled with:
+Internal backing-allocation counters track allocations and releases by placement, including dedicated buffers. Slice copies and views do not allocate another payload. Counting is on by default. Call `BuffetDescriptors::set_allocation_tracking(false)` before the first Slice to turn it off; under contention that makes dedicated-buffer claims and releases several times faster, and every counter, including `VulkanKernel::gpu_usage()`, then reads zero. Optional allocation-site records name the caller of each claim that allocated a buffer. They are disabled by default and can be enabled with:
 
 ```sh
 ./run_build.sh -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=ON

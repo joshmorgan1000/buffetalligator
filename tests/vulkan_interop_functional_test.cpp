@@ -7,6 +7,7 @@
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
 #include "kitchen_test_support.hpp"
+#include <memory/arena.hpp>
 #include <vulkan/shader_state.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -202,6 +203,12 @@ static void verify_boundary_guards(const BoundaryPayload& values) {
     require(values.middle == BOUNDARY_SEED.middle && values.sibling == BOUNDARY_SEED.sibling,
         "nested shader views modified an untouched sibling or separating guard");
 }
+/** --------------------------------------------------------------------------------------------------------- Location Of
+ * @brief Reads a live Slice's location word from its slot segment.
+ */
+static uint64_t location_of(const Slice& slice) {
+    return Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
+}
 /** --------------------------------------------------------------------------------------------------------- Vulkan Subslice Boundaries
  * @brief Checks nested Slice and Slice views at nonzero slab offsets during GPU writes.
  */
@@ -224,17 +231,17 @@ static void vulkan_subslice_boundaries() {
     invocation_storage.data<uint32_t>()[3] = 0xDCBADCBAu;
     invocation.data<uint32_t>()[0] = source.id();
     invocation.data<uint32_t>()[1] = target.id();
-    const GPUBuf& storage_record = *Alligator::gpubuf_for(storage);
-    const GPUBuf& source_record = *Alligator::gpubuf_for(source);
-    const GPUBuf& target_record = *Alligator::gpubuf_for(target);
-    require(Alligator::gpubuf_for(preceding)->address == storage_record.address
-        && storage_record.offset != 0,
+    const uint64_t storage_word = location_of(storage);
+    const uint64_t source_word = location_of(source);
+    const uint64_t target_word = location_of(target);
+    require(Location::buffer(location_of(preceding)) == Location::buffer(storage_word)
+        && Location::offset(storage_word) != 0,
         "boundary test storage did not occupy a nonzero Vulkan slab offset");
-    require(source_record.address == storage_record.address
-        && target_record.address == storage_record.address,
-        "nested GPU views shifted their shared slab base address");
-    require(source_record.offset == storage_record.offset + 2
-        && target_record.offset == storage_record.offset + 6,
+    require(Location::buffer(source_word) == Location::buffer(storage_word)
+        && Location::buffer(target_word) == Location::buffer(storage_word),
+        "nested GPU views moved to a different buffer than their parent");
+    require(Location::offset(source_word) == Location::offset(storage_word) + 2
+        && Location::offset(target_word) == Location::offset(storage_word) + 6,
         "nested Slice and Slice views did not accumulate slab-relative offsets");
     require(source.data() == storage.data() + 128 && target.data() == storage.data() + 384,
         "nested host views did not resolve the intended vector fields");

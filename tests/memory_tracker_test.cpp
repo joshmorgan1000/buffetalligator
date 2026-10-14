@@ -3,6 +3,7 @@
  * @brief Checks descriptor counters, retained views, failed allocations, and completed releases.
  */
 #include <alligator/containers.hpp>
+#include <memory/arena.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <atomic>
@@ -10,6 +11,8 @@
 #include <cstdlib>
 #include <memory>
 #include <semaphore>
+#include <source_location>
+#include <string_view>
 #include <thread>
 
 using namespace buffetalligator;
@@ -96,14 +99,17 @@ void tracking() {
     require(rejected && allocated_bytes.load() == initial_allocations
         && Memory::total_allocations() == global_allocations,
         "failed allocation did not preserve counters and its exception");
+    const uint_least32_t novel_line = std::source_location::current().line() + 1;
     Slice novel(novel_bytes, true, &placement);
-    const void* handle = SliceEntry::from_slice(novel)->token()->buffet();
+    const uint64_t word = Arena::locations[novel.id() >> SEGMENT_BITS][novel.id() & SEGMENT_MASK];
+    const void* handle = Arena::buffers[Location::buffer(word)].native;
     const auto details = Memory::allocation_info(handle);
     if constexpr (BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING) {
         require(details.has_value() && details->size == novel_bytes
             && details->placement == type && details->timestamp > 0
-            && details->location.line() > 0,
-            "enabled tracking omitted allocation details");
+            && details->location.line() == novel_line
+            && std::string_view(details->location.file_name()).ends_with("tracker_test.cpp"),
+            "enabled tracking omitted allocation details or recorded the wrong caller");
     } else {
         require(!details, "disabled location tracking returned an allocation record");
     }
