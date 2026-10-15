@@ -6,28 +6,46 @@
 #include <gpu/backend.hpp>
 #include <memory/lifetime.hpp>
 #include <alligator/easyvulkan.hpp>
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-#include <alligator/easymetal.hpp>
-#include <metal/metal.hpp>
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
 #include <alligator/easycuda.hpp>
 #include <cuda_runtime.h>
 #endif
+#include <atomic>
 #include <cstdlib>
+#include <string>
 #include <string_view>
 
 namespace buffetalligator {
 namespace {
+/// @brief The backend GPU::select recorded, or -1 when the environment and the auto order decide.
+constinit std::atomic<int> requested_backend{-1};
+/// @brief Set as the freeze begins, so a later select can tell it arrived too late.
+constinit std::atomic<bool> selection_started{false};
+/** --------------------------------------------------------------------------------------------------------- Backend Name
+ * @brief The ALLIGATOR_GPU_BACKEND spelling of a backend.
+ * @param backend The backend.
+ * @return Its name.
+ */
+constexpr std::string_view backend_name(GPUBackend backend) {
+    constexpr std::string_view names[] = {"cpu", "vulkan", "metal", "cuda"};
+    return names[static_cast<int>(backend)];
+}
 /** --------------------------------------------------------------------------------------------------------- GPU Selection
- * @brief Owns the immutable result of explicit selection or native-first capability probing.
+ * @brief Owns the immutable result of explicit selection or Vulkan-first capability probing; native Metal runs
+ * only when asked for or when no Vulkan device exists.
  */
 struct GPUSelection {
     GPUDevice device{GPUBackend::CPU,
         BuffetDescriptors::get(AlignedHeapBuffer::type_idx()), false, {}, nullptr};
     GPUSelection() {
         shader_runtime_initialize();
-        const char* requested = std::getenv("ALLIGATOR_GPU_BACKEND");
-        const std::string_view choice = requested == nullptr ? "auto" : requested;
+        selection_started.store(true, std::memory_order_seq_cst);
+        const char* environment = std::getenv("ALLIGATOR_GPU_BACKEND");
+        const int selected = requested_backend.load(std::memory_order_seq_cst);
+        /// A set environment choice other than auto overrides GPU::select, which overrides the auto order.
+        const std::string_view choice = environment != nullptr && std::string_view(environment) != "auto"
+            ? std::string_view(environment)
+            : selected >= 0 ? backend_name(static_cast<GPUBackend>(selected)) : std::string_view("auto");
         if (choice == "cpu") return;
         if (choice != "auto" && choice != "metal" && choice != "vulkan"
             && choice != "cuda") {
@@ -36,18 +54,7 @@ struct GPUSelection {
         if (choice == "cuda") {
             ALLIGATOR_GPU_THROW("This build has no qualified CUDA backend");
         }
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-        if ((choice == "auto" || choice == "metal") && metal_available()) {
-            device = {GPUBackend::Metal, metal_placement(), metal_unified(),
-                metal_device_name(), &metal_prepare, metal_max_buffer_bytes(), metal_capacity_bytes()};
-            LOG_INFO_STREAM << "GPU backend=metal; device=" << device.name;
-            return;
-        }
-#endif
-        if (choice == "metal") {
-            ALLIGATOR_GPU_THROW("No compatible native Metal compute device is available");
-        }
-        if (VulkanContext::device_present()) {
+        if ((choice == "auto" || choice == "vulkan") && VulkanContext::device_present()) {
             const DeviceProperties& properties = VulkanContext::device_properties();
             device = {GPUBackend::Vulkan, VulkanContext::buffer_placement(),
                 VulkanContext::device_unified(), VulkanKernel::device_name(), &vulkan_prepare,
@@ -57,8 +64,13 @@ struct GPUSelection {
             LOG_INFO_STREAM << "GPU backend=vulkan; device=" << device.name
                 << "; max single allocation=" << device.placement_max_bytes << " bytes"
                 << "; placement capacity=" << device.placement_capacity_bytes << " bytes";
-        } else if (choice == "vulkan") {
+            return;
+        }
+        if (choice == "vulkan") {
             ALLIGATOR_GPU_THROW("No compatible Vulkan compute device is available");
+        }
+        if (choice == "metal") {
+            ALLIGATOR_GPU_THROW("No compatible native Metal compute device is available");
         }
     }
 };
@@ -67,18 +79,24 @@ const GPUDevice& gpu_device() {
     static RuntimeFinalizer lifetime(new GPUSelection, &RuntimeFinalizer::delete_owner<GPUSelection>);
     return static_cast<GPUSelection*>(lifetime.object)->device;
 }
+/** --------------------------------------------------------------------------------------------------------- GPU Select
+ * @brief Records the choice first, so a freeze that starts concurrently either reads it or is seen here.
+ */
+void gpu_select(GPUBackend backend) {
+    requested_backend.store(static_cast<int>(backend), std::memory_order_seq_cst);
+    if (selection_started.load(std::memory_order_seq_cst) && gpu_device().kind != backend) {
+        ALLIGATOR_GPU_THROW("GPU::select(" + std::string(backend_name(backend))
+            + ") arrived after the process froze on " + std::string(backend_name(gpu_device().kind))
+            + "; select the backend before the first Slice or GPU operation");
+    }
+}
 DeviceMemoryUsage gpu_memory_usage() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return MetalBuffer::memory_usage();
-#endif
-    if (device.kind == GPUBackend::Vulkan) {
-        const auto& properties = VulkanContext::instance().device_properties();
-        return {properties.device_local_memory_bytes,
-            properties.supports_memory_budget
-                ? std::optional<uint64_t>(VulkanContext::device_free_bytes()) : std::nullopt,
-            std::nullopt, std::nullopt};
-    }
+    const auto& properties = VulkanContext::instance().device_properties();
+    return {properties.device_local_memory_bytes,
+        properties.supports_memory_budget
+            ? std::optional<uint64_t>(VulkanContext::device_free_bytes()) : std::nullopt,
+        std::nullopt, std::nullopt};
     return {};
 }
 /** --------------------------------------------------------------------------------------------------------- GPU Thread Limit X
@@ -86,9 +104,7 @@ DeviceMemoryUsage gpu_memory_usage() {
  */
 uint32_t gpu_thread_limit_x() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return metal_thread_limit_x();
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
     if (device.kind == GPUBackend::CUDA) return CudaBuffer::thread_limit_x();
 #endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_size[0];
@@ -99,9 +115,7 @@ uint32_t gpu_thread_limit_x() {
  */
 uint32_t gpu_thread_limit_y() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return metal_thread_limit_y();
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
     if (device.kind == GPUBackend::CUDA) return CudaBuffer::thread_limit_y();
 #endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_size[1];
@@ -112,9 +126,7 @@ uint32_t gpu_thread_limit_y() {
  */
 uint32_t gpu_thread_limit_z() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return metal_thread_limit_z();
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
     if (device.kind == GPUBackend::CUDA) return CudaBuffer::thread_limit_z();
 #endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_size[2];
@@ -125,9 +137,7 @@ uint32_t gpu_thread_limit_z() {
  */
 uint32_t gpu_workgroup_limit_x() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return metal_workgroup_limit_x();
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
     if (device.kind == GPUBackend::CUDA) return CudaBuffer::workgroup_limit_x();
 #endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_count[0];
@@ -138,9 +148,7 @@ uint32_t gpu_workgroup_limit_x() {
  */
 uint32_t gpu_workgroup_limit_y() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return metal_workgroup_limit_y();
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
     if (device.kind == GPUBackend::CUDA) return CudaBuffer::workgroup_limit_y();
 #endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_count[1];
@@ -151,9 +159,7 @@ uint32_t gpu_workgroup_limit_y() {
  */
 uint32_t gpu_workgroup_limit_z() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) return metal_workgroup_limit_z();
-#elif defined(BUFFETALLIGATOR_HAS_CUDA)
+#if defined(BUFFETALLIGATOR_HAS_CUDA)
     if (device.kind == GPUBackend::CUDA) return CudaBuffer::workgroup_limit_z();
 #endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::device_properties().max_workgroup_count[2];
@@ -164,12 +170,6 @@ uint32_t gpu_workgroup_limit_z() {
  */
 uint64_t gpu_placement_headroom() {
     const auto& device = gpu_device();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    if (device.kind == GPUBackend::Metal) {
-        const DeviceMemoryUsage usage = MetalBuffer::memory_usage();
-        return usage.available_bytes.value_or(UINT64_MAX);
-    }
-#endif
     if (device.kind == GPUBackend::Vulkan) return VulkanContext::buffer_heap_headroom();
     return UINT64_MAX;
 }

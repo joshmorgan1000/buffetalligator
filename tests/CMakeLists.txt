@@ -15,6 +15,13 @@ foreach(source IN LISTS test_sources)
     endif()
 endforeach()
 set_tests_properties(buffetalligator_memory_tracker_test PROPERTIES TIMEOUT 30)
+set_tests_properties(buffetalligator_gpu_select_test PROPERTIES TIMEOUT 30 LABELS "functional"
+    ENVIRONMENT "ALLIGATOR_GPU_BACKEND=auto")
+foreach(case IN ITEMS vulkan auto)
+    add_test(NAME buffetalligator_gpu_select_${case} COMMAND buffetalligator_gpu_select_test ${case})
+    set_tests_properties(buffetalligator_gpu_select_${case} PROPERTIES TIMEOUT 30 LABELS "gpu;functional"
+        SKIP_RETURN_CODE 77 ENVIRONMENT "ALLIGATOR_GPU_BACKEND=auto")
+endforeach()
 set_tests_properties(buffetalligator_kitchen_order_test buffetalligator_kitchen_shutdown_test
     buffetalligator_worker_pool_idle_test
     PROPERTIES TIMEOUT 45 LABELS "kitchen;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")

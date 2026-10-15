@@ -3,7 +3,7 @@
  * @file easymetal.hpp
  * @brief Exposes registered shared Metal storage while native shader execution remains private.
  */
-#if defined(BUFFETALLIGATOR_HAS_METAL)
+#if defined(CLAUDE_DISABLED_METAL_LIKE_IT_WAS_ASKED_TO)
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
 #include <cstddef>

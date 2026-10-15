@@ -17,6 +17,8 @@
 
 namespace buffetalligator {
 ShaderProgram::~ShaderProgram() { if (ops) ops->destroy(*this); }
+void GPU::select(GPUBackend backend) { gpu_select(backend); }
+GPUBackend GPU::backend() { return gpu_device().kind; }
 bool GPU::exists() { return gpu_device().kind != GPUBackend::CPU; }
 bool GPU::unified_memory() { return gpu_device().unified; }
 std::string GPU::device_name() { return gpu_device().name; }
@@ -600,4 +602,5 @@ ShaderAwaiter GPU::dispatch(const Slice& program, const Slice* streams, size_t c
     Shader prepared = decode(program);
     return prepared.dispatch(streams, count, 1, dependencies);
 }
+
 } // namespace buffetalligator

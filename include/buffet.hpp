@@ -12,9 +12,6 @@
 #if defined(BUFFETALLIGATOR_HAS_CUDA)
 #include <alligator/easycuda.hpp>
 #endif
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-#include <alligator/easymetal.hpp>
-#endif
 #if defined(BUFFETALLIGATOR_HAS_VULKAN)
 #include <alligator/easyvulkan.hpp>
 #endif

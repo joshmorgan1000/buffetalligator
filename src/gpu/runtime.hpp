@@ -11,7 +11,6 @@
 namespace buffetalligator {
 struct ShaderProgram;
 struct ShaderPrepareInfo;
-enum class GPUBackend { CPU, Vulkan, Metal, CUDA };
 /** --------------------------------------------------------------------------------------------------------- GPU Device
  * @brief Holds the selected device's immutable placement and preparation entry point.
  */
@@ -28,6 +27,11 @@ struct GPUDevice {
  * @brief Probes and freezes the process compute backend on first use.
  */
 const GPUDevice& gpu_device();
+/** --------------------------------------------------------------------------------------------------------- GPU Select
+ * @brief Records the backend the next freeze takes, or throws when the process already froze on another.
+ * @param backend The backend to freeze on.
+ */
+void gpu_select(GPUBackend backend);
 /** --------------------------------------------------------------------------------------------------------- GPU Memory Usage
  * @brief Returns available native memory counters for the selected backend.
  */

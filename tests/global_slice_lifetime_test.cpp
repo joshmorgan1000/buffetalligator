@@ -6,9 +6,6 @@
 #include <alligator/atomics.hpp>
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-#include <alligator/easymetal.hpp>
-#endif
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -47,9 +44,6 @@ struct GlobalOwner {
     Slice view;
     std::optional<Shader> shader;
     ShaderResult result;
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-    std::optional<MetalBuffer> metal;
-#endif
     /** ------------------------------------------------------------------------------------------- Dispatch
      * @brief Exercises retained shader and Slice owners using only their public completion channel.
      */
@@ -77,9 +71,6 @@ struct GlobalOwner {
             || view.get_as<uint32_t>() != 137 || chained.get_as<uint32_t>() != 211)
             std::abort();
         if (registered->load<Slice>().get_as<uint32_t>() != 419) std::abort();
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-        if (metal && *static_cast<const uint32_t*>(metal->raw()) != 313) std::abort();
-#endif
         LOG_INFO_STREAM << "Late global Slice and Shader ownership verified during static teardown";
     }
 };
@@ -127,12 +118,6 @@ int main(int count, char** arguments) {
     if (mode == "native" || mode == "translated") {
         owner.shader.emplace(mode == "native" ? ShaderSource{{}, body, {}} : ShaderSource{body, {}, {}},
             "global_lifetime");
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-        if (mode == "native") {
-            owner.metal.emplace(64);
-            *static_cast<uint32_t*>(owner.metal->raw()) = 313;
-        }
-#endif
         owner.dispatch();
     }
     LOG_INFO_STREAM << "Leaving pre-main owners populated; backend lifetime mode=" << mode;

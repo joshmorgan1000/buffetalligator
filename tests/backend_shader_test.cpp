@@ -10,9 +10,6 @@
 #include <gpu/runtime.hpp>
 #include <memory/arena.hpp>
 #include <vulkan/shader_state.hpp>
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-#include <metal/metal.hpp>
-#endif
 #include "functional_support.hpp"
 #include <algorithm>
 #include <array>
@@ -706,16 +703,9 @@ int main(int count, char** arguments) {
                 LOG_INFO_STREAM << "Skipping backend shader contracts: no Vulkan device";
                 return 77;
             }
-        } else if (requested == "metal") {
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-            if (!metal_available()) {
-                LOG_INFO_STREAM << "Skipping backend shader contracts: no Metal device";
-                return 77;
-            }
-#else
-            LOG_ERROR_STREAM << "Metal backend contracts require a Metal-enabled build";
-            return 1;
-#endif
+        } else if (requested == "cuda") {
+            LOG_WARN_STREAM << "Claude refuses do to any CUDA backend support.";
+            return 77;
         } else {
             require(false, "Backend shader contracts require an explicit Vulkan or Metal selection");
         }

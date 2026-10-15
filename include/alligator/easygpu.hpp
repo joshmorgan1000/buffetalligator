@@ -24,6 +24,10 @@ public:
     using threadsafe_logger::Exception::what;
 };
 #define ALLIGATOR_GPU_THROW(msg) throw GPUException(msg)
+/** --------------------------------------------------------------------------------------------------------- GPU Backend
+ * @brief The compute domain a process freezes on at its first Slice or GPU operation.
+ */
+enum class GPUBackend { CPU, Vulkan, Metal, CUDA };
 /** --------------------------------------------------------------------------------------------------------- Device Memory Usage
  * @brief Reports native device measurements with unavailable quantities left empty.
  */
@@ -137,6 +141,17 @@ static_assert(sizeof(Shader) == sizeof(void*), "Shader must remain one opaque po
  * @brief Prepares portable programs and reports the active compute device.
  */
 struct GPU {
+    /** ------------------------------------------------------------------------------------------- Select
+     * @brief Chooses the backend the process freezes on; call it before the first Slice or GPU operation, since
+     * a different choice after the freeze throws and a set ALLIGATOR_GPU_BACKEND other than auto overrides it.
+     * @param backend The backend to freeze on.
+     */
+    static void select(GPUBackend backend);
+    /** ------------------------------------------------------------------------------------------- Backend
+     * @brief Returns the backend the process froze on, freezing it now when nothing has yet.
+     * @return The active backend.
+     */
+    static GPUBackend backend();
     static bool exists();
     static bool unified_memory();
     static std::string device_name();

@@ -4,9 +4,6 @@
  * @brief Header file for the EasyCUDA utility functions and classes.
  */
 #if defined(BUFFETALLIGATOR_HAS_CUDA)
-#if defined(BUFFETALLIGATOR_HAS_METAL)
-#error "CUDA and Metal share buffet type index 2; a build carries one or the other"
-#endif
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
 #include <cuda.h>

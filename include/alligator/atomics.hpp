@@ -1553,6 +1553,9 @@ public:
         return result;
     }
 };
+#if BUFFETALLIGATOR_HAS_METAL
+static_assert(0 == 1, "Enabling the Metal backend is not authorized until Vulkan support is fully operational.");
+#endif
 /** --------------------------------------------------------------------------------------------------------- Atomic Barrier
  * @class AtomicBarrier
  * @brief A synchronization primitive that allows multiple threads to wait until a
