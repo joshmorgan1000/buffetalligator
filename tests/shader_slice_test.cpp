@@ -7,7 +7,7 @@
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
 #include "kitchen_test_support.hpp"
-#include <memory/arena.hpp>
+#include <memory/region.hpp>
 #include <vulkan/shader_state.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -37,7 +37,7 @@ void alligator_main(Slice stream) {
 }
 )glsl";
 /** --------------------------------------------------------------------------------------------------------- Direct Dispatch
- * @brief Resolves rounded views through their segment words without changing the buffer base.
+ * @brief Resolves rounded views through realm records without changing the buffer base.
  */
 static void direct_dispatch() {
     Slice storage(512, VulkanContext::buffer_placement());
@@ -48,13 +48,11 @@ static void direct_dispatch() {
         stream.data<uint32_t>()[0] = payloads[0].id();
         stream.data<uint32_t>()[1] = payloads[1].id();
     }
-    const uint32_t view = payloads[1].id();
-    const uint32_t root = storage.id();
-    const uint64_t word = Arena::locations[view >> SEGMENT_BITS][view & SEGMENT_MASK];
-    const uint64_t parent = Arena::locations[root >> SEGMENT_BITS][root & SEGMENT_MASK];
-    require(Location::buffer(word) == Location::buffer(parent),
+    const GPUBuf& record = *SliceEntry::from_slice(payloads[1])->gpu_buf();
+    const GPUBuf& parent = *SliceEntry::from_slice(storage)->gpu_buf();
+    require(record.address == parent.address,
         "A rounded view resolved a different buffer than its parent");
-    require(Location::offset(word) == Location::offset(parent) + 2 && Location::units(word) == 1,
+    require(record.offset == parent.offset + 2 && record.size == 1,
         "Rounded view metadata is not expressed in granules");
     ShaderState shader(IDENTITY_BODY, "slice_identity");
     shader.dispatch(streams.data(), streams.size(), 1);
@@ -69,24 +67,24 @@ static void direct_dispatch() {
             "Dispatch did not preserve its parameter identities and live count");
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Segment Spread
- * @brief Resolves retained embedded identities across independently allocated slot segments.
+/** --------------------------------------------------------------------------------------------------------- Realm Spread
+ * @brief Resolves retained embedded identities across independently allocated realms.
  */
 static void segment_spread() {
     Slice storage(256, true, VulkanContext::buffer_placement());
     std::array<Slice, 2> dependencies{storage.slice(0, 64), Slice{}};
-    const uint32_t first_segment = dependencies[0].id() >> SEGMENT_BITS;
+    const uint16_t first_realm = pool_region(dependencies[0].id());
     std::vector<Slice> aliases;
-    aliases.reserve(SEGMENT_SLOTS + 1);
-    for (size_t index = 0; index <= SEGMENT_SLOTS; ++index) {
+    aliases.reserve(REGION_SIZE + 1);
+    for (size_t index = 0; index <= REGION_SIZE; ++index) {
         aliases.push_back(storage.slice(128, 128));
-        if ((aliases.back().id() >> SEGMENT_BITS) != first_segment) {
+        if (pool_region(aliases.back().id()) != first_realm) {
             dependencies[1] = std::move(aliases.back());
             aliases.pop_back();
             break;
         }
     }
-    require(!dependencies[1].is_null(), "Live Slice views did not cross a slot segment");
+    require(!dependencies[1].is_null(), "Live Slice views did not cross a realm");
     const std::array<uint64_t, 2> addresses{VulkanKernel::device_address(dependencies[0]),
         VulkanKernel::device_address(dependencies[1])};
     Slice invocation(64, VulkanContext::buffer_placement());
@@ -104,9 +102,9 @@ static void segment_spread() {
     result.rethrow();
     const uint64_t* actual = invocation.data<uint64_t>();
     require(actual[2] == addresses[0] && actual[3] == addresses[1],
-        "GPU lookup did not use both segments in the arena directory");
+        "GPU lookup did not use both realms in the directory");
     require(actual[4] == 64 && actual[5] == 128,
-        "Cross-segment dependencies lost their independent granule bounds");
+        "Cross-realm dependencies lost their independent granule bounds");
 }
 /** --------------------------------------------------------------------------------------------------------- Reference Dispatch
  * @brief Resolves a prepared reference ring using granule-aligned invocation records.

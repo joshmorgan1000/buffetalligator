@@ -3,7 +3,6 @@
  * @brief Retires globally owned values while Slice metadata and detached accounting remain live.
  */
 #include <alligator/atomics.hpp>
-#include <memory/lifetime.hpp>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Global Registry
@@ -11,15 +10,14 @@ namespace buffetalligator {
  */
 std::unordered_map<std::string, std::unique_ptr<AtomicContainer>>* AtomicRegistry::global_registry() {
     using Registry = std::unordered_map<std::string, std::unique_ptr<AtomicContainer>>;
-    static RuntimeFinalizer lifetime(new Registry, &RuntimeFinalizer::delete_owner<Registry>,
-        RuntimeFinalizer::Phase::Registry);
-    return static_cast<Registry*>(lifetime.object);
+    static Registry instance;
+    return &instance;
 }
 /** --------------------------------------------------------------------------------------------------------- Global Gate
  * @brief Keeps the registry gate alive through tracker detachment and global-value destruction.
  */
 AtomicMutex& AtomicRegistry::global_gate() {
-    static RuntimeFinalizer lifetime(new AtomicMutex, &RuntimeFinalizer::delete_owner<AtomicMutex>);
-    return *static_cast<AtomicMutex*>(lifetime.object);
+    static AtomicMutex instance;
+    return instance;
 }
 } // namespace buffetalligator

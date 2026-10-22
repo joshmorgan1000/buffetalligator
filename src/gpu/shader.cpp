@@ -6,7 +6,6 @@
 #include <alligator/kitchen.hpp>
 #include <vulkan/shader_state.hpp>
 #include <gpu/runtime.hpp>
-#include <memory/lifetime.hpp>
 #include <algorithm>
 #include <array>
 #include <condition_variable>
@@ -45,8 +44,8 @@ struct ShaderRuntime {
     std::vector<CacheEntry> cache;
 };
 ShaderRuntime& shader_runtime() {
-    static RuntimeFinalizer lifetime(new ShaderRuntime, &RuntimeFinalizer::delete_owner<ShaderRuntime>);
-    return *static_cast<ShaderRuntime*>(lifetime.object);
+    static ShaderRuntime* runtime = new ShaderRuntime;
+    return *runtime;
 }
 /** --------------------------------------------------------------------------------------------------------- Shader Preparation
  * @brief Counts in-progress preparation before final shutdown closes admission.

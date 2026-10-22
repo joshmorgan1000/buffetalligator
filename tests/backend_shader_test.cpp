@@ -8,7 +8,7 @@
 #include <alligator/kitchen.hpp>
 #include "kitchen_test_support.hpp"
 #include <gpu/runtime.hpp>
-#include <memory/arena.hpp>
+#include <memory/region.hpp>
 #include <vulkan/shader_state.hpp>
 #include "functional_support.hpp"
 #include <algorithm>
@@ -634,13 +634,17 @@ void alligator_main(Slice source, Slice destination) {
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Whole Buffer Size
- * @brief Resolves the exact length of a dedicated buffer too long for the 20-bit location field.
+ * @brief Resolves exact granule lengths of dedicated buffers and retained views beyond 64 MiB.
  */
 void whole_buffer_size(bool native, const BuffetDescriptor* placement) {
-    LOG_INFO_STREAM << "Checking backend whole-buffer length past the location length field";
-    Slice large(size_t{64} * 1024 * 1024 + 64, true, placement);
-    require(large.size_bytes() == size_t{64} * 1024 * 1024 + 64,
+    LOG_INFO_STREAM << "Checking backend exact buffer and view lengths beyond 64 MiB";
+    constexpr size_t view_bytes = size_t{64} * 1024 * 1024 + 64;
+    Slice large(view_bytes + 128, true, placement);
+    require(large.size_bytes() == view_bytes + 128,
         "A whole-buffer Slice lost its exact length");
+    Slice view = large.slice(64, view_bytes);
+    require(view.size_bytes() == view_bytes && view.data() == large.data() + 64,
+        "A large view rounded its granule length or changed its buffer offset");
     Shader shader(source(identity_body, native), "backend_whole_buffer");
     ShaderResult result;
     std::latch finished{1};
@@ -648,26 +652,32 @@ void whole_buffer_size(bool native, const BuffetDescriptor* placement) {
     finished.wait();
     result.rethrow();
     check_identity(large);
+    large.free();
+    kitchen_test::rearm_latch(finished, 1);
+    shader(view, result, &kitchen_test::latch_arrive, &finished);
+    finished.wait();
+    result.rethrow();
+    check_identity(view);
 }
-/** --------------------------------------------------------------------------------------------------------- Segment Directory
- * @brief Resolves a view in a later slot segment after its parent and sibling views have retired.
+/** --------------------------------------------------------------------------------------------------------- Realm Directory
+ * @brief Resolves a view in a later realm after its parent and sibling views have retired.
  */
 void segment_directory(bool native, const BuffetDescriptor* placement) {
-    LOG_INFO_STREAM << "Checking backend segment directory lookup after other owners retire";
+    LOG_INFO_STREAM << "Checking backend realm directory lookup after other owners retire";
     Slice original(128, true, placement);
-    const uint32_t first_segment = original.id() >> SEGMENT_BITS;
+    const uint16_t first_realm = pool_region(original.id());
     std::vector<Slice> views;
-    views.reserve(SEGMENT_SLOTS);
+    views.reserve(REGION_SIZE);
     Slice retained;
     while (retained.is_null()) {
         Slice view = original.slice(64, 64);
-        if ((view.id() >> SEGMENT_BITS) != first_segment) {
+        if (pool_region(view.id()) != first_realm) {
             retained = std::move(view);
         } else {
             views.push_back(std::move(view));
         }
         if ((views.size() & 65535) == 65535)
-            LOG_INFO_STREAM << "Retained segment views: " << views.size();
+            LOG_INFO_STREAM << "Retained realm views: " << views.size();
     }
     retained.get_as<uint32_t>() = 707;
     views.clear();

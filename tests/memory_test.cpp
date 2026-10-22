@@ -4,7 +4,7 @@
  */
 #include <alligator.hpp>
 #include <alligator/atomics.hpp>
-#include <memory/arena.hpp>
+#include <memory/region.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <array>
@@ -84,8 +84,7 @@ void claim_worker(std::atomic<bool>* failed) {
  * @brief Returns the buffet handle behind a live Slice's buffer record.
  */
 static void* backing_of(const Slice& slice) {
-    const uint64_t word = Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
-    return Arena::buffers[Location::buffer(word)].native;
+    return SliceEntry::from_slice(slice)->buffet();
 }
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Exercises registered descriptors through the public Slice and tracking contracts.

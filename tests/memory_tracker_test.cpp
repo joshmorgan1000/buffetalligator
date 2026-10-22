@@ -3,7 +3,7 @@
  * @brief Checks descriptor counters, retained views, failed allocations, and completed releases.
  */
 #include <alligator/containers.hpp>
-#include <memory/arena.hpp>
+#include <memory/region.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <atomic>
@@ -106,8 +106,7 @@ void tracking() {
         "failed allocation did not preserve counters and its exception");
     const uint_least32_t novel_line = std::source_location::current().line() + 1;
     Slice novel(novel_bytes, true, &placement);
-    const uint64_t word = Arena::locations[novel.id() >> SEGMENT_BITS][novel.id() & SEGMENT_MASK];
-    const void* handle = Arena::buffers[Location::buffer(word)].native;
+    const void* handle = SliceEntry::from_slice(novel)->buffet();
     const auto details = Memory::allocation_info(handle);
     if constexpr (BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING) {
         require(details.has_value() && details->size == novel_bytes

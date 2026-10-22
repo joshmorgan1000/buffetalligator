@@ -11,6 +11,7 @@ inline constexpr std::string_view METAL_SHADER_CORE = R"metal(
 using namespace metal;
 struct KernelPush { ulong vulkan_table_address; ulong vulkan_pool_address; };
 struct Slice { uint id; };
+struct GPUBufRef { ulong address; uint size; uint offset; };
 struct AlligatorProgram {
     KernelPush vulkan_push;
     uint3 gl_WorkGroupID;
@@ -19,22 +20,18 @@ struct AlligatorProgram {
     uint gl_LocalInvocationIndex;
     uint3 gl_GlobalInvocationID;
     Slice gpu_slice(uint index) { return Slice{index}; }
-    ulong slice_word(Slice slice) {
-        device const ulong* directory = reinterpret_cast<device const ulong*>(vulkan_push.vulkan_pool_address);
-        return reinterpret_cast<device const ulong*>(directory[slice.id >> 16u])[slice.id & 0xFFFFu];
+    ulong slice_table(Slice slice) {
+        return reinterpret_cast<device const ulong*>(vulkan_push.vulkan_pool_address)[(slice.id >> 3u) & 63u];
+    }
+    GPUBufRef slice_ref(Slice slice) {
+        return reinterpret_cast<device const GPUBufRef*>(slice_table(slice))[slice.id >> 9u];
     }
     ulong slice_address(Slice slice) {
-        ulong word = slice_word(slice);
-        return reinterpret_cast<device const ulong*>(vulkan_push.vulkan_pool_address)[256u + uint(word >> 48u)]
-            + (((word >> 20u) & 0x3FFFFFFul) << 6u);
+        GPUBufRef record = slice_ref(slice);
+        return record.address + (ulong(record.offset) << 6u);
     }
     bool slice_is_null(Slice slice) { return slice.id == 0xFFFFFFFFu; }
-    ulong slice_size(Slice slice) {
-        ulong word = slice_word(slice);
-        ulong units = word & 0xFFFFFul;
-        if (units == 0ul) return ulong(reinterpret_cast<device const uint*>(vulkan_push.vulkan_pool_address + 526336ul)[uint(word >> 48u)]) << 6u;
-        return units << (6u + 2u * (uint(word >> 46u) & 3u));
-    }
+    ulong slice_size(Slice slice) { return ulong(slice_ref(slice).size) << 6u; }
     Slice slice_read(ulong address) { return gpu_slice(*reinterpret_cast<device const uint*>(address)); }
     ulong gpu_slice_address(uint index) { return slice_address(gpu_slice(index)); }
     ulong gpu_slice_size(uint index) { return slice_size(gpu_slice(index)); }

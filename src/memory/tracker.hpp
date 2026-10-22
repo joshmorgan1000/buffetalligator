@@ -7,7 +7,6 @@
  */
 #include <alligator.hpp>
 #include <alligator/atomics.hpp>
-#include <memory/lifetime.hpp>
 #include <optional>
 #include <source_location>
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
@@ -80,10 +79,8 @@ private:
      * @return Reference to the Memory tracker instance.
      */
     static Memory& instance() {
-        static RuntimeFinalizer lifetime(new Memory, &RuntimeFinalizer::delete_owner<Memory>);
-        static RuntimeFinalizer counters(lifetime.object, &Memory::retain_counters,
-            RuntimeFinalizer::Phase::TrackerDetach);
-        return *static_cast<Memory*>(lifetime.object);
+        static Memory instance;
+        return instance;
     }
     /** ------------------------------------------------------------------------------------------- Retain Counters
      * @brief Transfers accounting ownership before global values release their arena-backed payloads.

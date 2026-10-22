@@ -5,8 +5,8 @@
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
 #include <gpu/runtime.hpp>
-#include <memory/arena.hpp>
 #include <memory/tracker.hpp>
+#include "functional_support.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -38,36 +38,23 @@
 #endif
 
 using namespace buffetalligator;
+using functional::require;
 namespace {
 constexpr size_t slab_bytes = 64ull << 20;  ///< The built-in placements' slab size.
 constexpr size_t rounds = 4;                ///< Churn rounds per placement.
 constexpr size_t ring_length = 4;           ///< Slices each thread keeps alive at once.
-/** --------------------------------------------------------------------------------------------------------- Require
- * @brief Stops the test on a violated contract.
- */
-void require(bool condition, const char* message) {
-    if (!condition) { std::fprintf(stderr, "FAILED: %s\n", message); std::abort(); }
-}
-/** --------------------------------------------------------------------------------------------------------- Live Usage
- * @brief Backing bytes held by live Slices and chains, excluding slabs parked for reuse.
- */
-size_t live_usage(const BuffetDescriptor& placement) {
-    Spares& spare = Arena::spares[placement.type_idx];
-    return Memory::placement_usage(placement)
-        - std::atomic_ref<uint32_t>(spare.count).load(std::memory_order_relaxed) * slab_bytes;
-}
 /** --------------------------------------------------------------------------------------------------------- Settle
  * @brief Waits up to ten seconds for retired backing usage to recover.
  */
 bool settle(const BuffetDescriptor& placement, size_t usage) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     auto report_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    while (live_usage(placement) != usage) {
+    while (Memory::placement_usage(placement) != usage) {
         const auto now = std::chrono::steady_clock::now();
         if (now > deadline) return false;
         if (now >= report_at) {
             LOG_INFO_STREAM << placement.type_name << ": waiting for backing usage "
-                << live_usage(placement) << " to recover to " << usage << " bytes";
+                << Memory::placement_usage(placement) << " to recover to " << usage << " bytes";
             report_at = now + std::chrono::seconds(1);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -193,16 +180,14 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
     size_t resident_before = 0;
     std::optional<size_t> malloc_before;
     DeviceMemoryUsage device_before;
-    size_t parked_before = 0;
     for (size_t round = 0; round <= rounds; ++round) {
         LOG_INFO_STREAM << placement->type_name << ": ownership churn round "
             << (round + 1) << '/' << (rounds + 1);
         if (round == 1) {
-            usage_before = live_usage(*placement);  // Warmup has opened every lane's chain.
+            usage_before = Memory::placement_usage(*placement);
             resident_before = settled_residency();
             malloc_before = malloc_in_use();
             if (device_memory) device_before = GPU::memory_usage();
-            parked_before = Arena::spares[placement->type_idx].count;
         }
         std::vector<std::thread> team;
         for (size_t thread = 0; thread < threads; ++thread) {
@@ -214,23 +199,19 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
     require(churned > 4 * slab_bytes, "churn did not cycle enough slabs to expose a leak");
     if (!settle(*placement, usage_before)) {
         LOG_ERROR_STREAM << placement->type_name << ": retained backing bytes changed from "
-            << usage_before << " to " << live_usage(*placement);
+            << usage_before << " to " << Memory::placement_usage(*placement);
         require(false, "retired backing bytes leaked");
     }
-    // Slabs parked for reuse stay allocated and resident, so the checks exclude their growth.
-    const long long parked_growth = (static_cast<long long>(
-        Arena::spares[placement->type_idx].count) - static_cast<long long>(parked_before))
-        * static_cast<long long>(slab_bytes);
     const std::optional<size_t> malloc_after = malloc_in_use();
     const size_t resident_after = settled_residency();
     const long long resident_growth = static_cast<long long>(resident_after)
-        - static_cast<long long>(resident_before) - parked_growth;
+        - static_cast<long long>(resident_before);
     LOG_INFO_STREAM << placement->type_name << ": churned " << (churned >> 20)
         << " MiB, live " << (usage_before >> 20) << " MiB, residency change "
         << (resident_growth >> 20) << " MiB";
     if (malloc_before && malloc_after) {
         const long long malloc_growth = static_cast<long long>(*malloc_after)
-            - static_cast<long long>(*malloc_before) - parked_growth;
+            - static_cast<long long>(*malloc_before);
         LOG_INFO_STREAM << placement->type_name << ": application-owned heap change "
             << malloc_growth << " bytes";
         require(malloc_growth < (1ll << 20), "the application heap kept memory the churn released");
@@ -239,7 +220,7 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
         const DeviceMemoryUsage device_after = GPU::memory_usage();
         if (device_before.process_bytes && device_after.process_bytes) {
             const long long device_growth = static_cast<long long>(*device_after.process_bytes)
-                - static_cast<long long>(*device_before.process_bytes) - parked_growth;
+                - static_cast<long long>(*device_before.process_bytes);
             LOG_INFO_STREAM << placement->type_name << ": native process allocation change "
                 << device_growth << " bytes";
             require(device_growth < static_cast<long long>(slab_bytes),
@@ -291,6 +272,6 @@ int main() {
     if (GPU::exists()) {
         exercise(gpu_device().placement, live_budget, churn_budget, true);
     }
-    std::printf("memory leak test passed\n");
+    LOG_INFO_STREAM << "Memory leak test passed";
     return 0;
 }

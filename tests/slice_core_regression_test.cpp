@@ -3,10 +3,9 @@
  * @brief Exercises granule views, allocation ownership, rollover, and retry through production Slices.
  */
 #include <alligator.hpp>
-#include <memory/arena.hpp>
+#include <memory/region.hpp>
 #include <memory/tracker.hpp>
 #include "functional_support.hpp"
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <barrier>
@@ -23,7 +22,7 @@ std::atomic<size_t> factory_calls{0};
 std::atomic<size_t> last_factory_bytes{0};
 std::atomic<size_t> allocation_count{0};
 std::atomic<size_t> fail_at{SIZE_MAX};
-std::array<std::atomic<size_t>, 16384> releases{};
+std::array<std::atomic<size_t>, 32768> releases{};
 /** --------------------------------------------------------------------------------------------------------- Tracked Backing
  * @brief Associates real aligned storage with an independently counted allocation identity.
  */
@@ -71,18 +70,11 @@ uint64_t tracked_address(void* pointer) {
     return UINT64_C(0x10000000000)
         + static_cast<TrackedBacking*>(pointer)->identity * UINT64_C(0x100000);
 }
-/** --------------------------------------------------------------------------------------------------------- Location Of
- * @brief Reads a live Slice's location word from its slot segment.
- */
-uint64_t location_of(const Slice& slice) {
-    return Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
-}
 /** --------------------------------------------------------------------------------------------------------- Backing Of
  * @brief Returns the tracked allocation behind a live Slice's buffer record.
  */
 TrackedBacking* backing_of(const Slice& slice) {
-    const BufferRecord& record = Arena::buffers[Location::buffer(location_of(slice))];
-    return static_cast<TrackedBacking*>(record.native);
+    return static_cast<TrackedBacking*>(SliceEntry::from_slice(slice)->buffet());
 }
 const BuffetDescriptor small_placement{
     "SliceCoreSmall", tracked_deleter, tracked_host, tracked_size, tracked_factory, 2, 256,
@@ -125,14 +117,14 @@ void null_and_granules() {
     std::array<Slice, requests.size()> claims;
     for (size_t index = 0; index < requests.size(); ++index) {
         claims[index] = Slice(requests[index], &small_placement);
-        const uint64_t word = location_of(claims[index]);
+        const GPUBuf& record = *SliceEntry::from_slice(claims[index])->gpu_buf();
         require(claims[index].size_bytes() == ((requests[index] + 63) & ~size_t(63))
-            && Location::scale(word) == 0 && Location::units(word) == (requests[index] + 63) / 64,
+            && record.size == (requests[index] + 63) / 64,
             "public length and location granules disagree");
         auto* backing = backing_of(claims[index]);
-        const uint64_t base = Arena::directory[SEGMENT_COUNT + Location::buffer(word)];
+        const uint64_t base = record.address;
         require(base == tracked_address(backing)
-            && claims[index].raw() == tracked_host(backing, Location::offset(word) << 6),
+            && claims[index].raw() == tracked_host(backing, size_t(record.offset) << 6),
             "claim address or granule offset resolves another allocation");
     }
     require(claims[1].data() == claims[0].data() + 64
@@ -197,9 +189,8 @@ void copies_and_views() {
     Slice copied(original);
     require(copied.id() == original.id() && copied.raw() == original.raw()
         && copied.size_bytes() == 256, "copy did not share its source slot");
-    const uint32_t slot = original.id();
-    const SlotState& shared = Arena::states[slot >> SEGMENT_BITS][slot & SEGMENT_MASK];
-    require(shared.references == 2,
+    const SliceEntry& shared = *SliceEntry::from_slice(original);
+    require(shared.owners() == 2,
         "copy did not count one more handle on the shared slot");
     Slice view = original.slice(65, 65);
     Slice nested = view.slice(63, 2);
@@ -228,17 +219,17 @@ void copies_and_views() {
 void stack_ownership() {
     LOG_INFO_STREAM << "Checking Slice backing after stack ChainBuffet destruction";
     const auto* heap = BuffetDescriptors::descriptor_for(static_cast<AlignedHeapBuffer*>(nullptr));
-    const size_t before = Memory::placement_freed(*heap);
     Slice retained;
     {
         ChainBuffet stack(size_t(256));
         retained = stack.claim(64);
         retained.get_as<uint64_t>() = 123;
     }
-    require(retained.get_as<uint64_t>() == 123 && Memory::placement_freed(*heap) == before + 512,
-        "stack ChainBuffet destruction did not release exactly its two unused buffers ahead");
+    require(retained.get_as<uint64_t>() == 123,
+        "stack ChainBuffet destruction invalidated its retained backing");
+    const size_t released = Memory::placement_freed(*heap);
     retained.free();
-    require(Memory::placement_freed(*heap) == before + 768,
+    require(Memory::placement_freed(*heap) == released + 256,
         "last stack-buffer Slice did not release its backing exactly once");
 }
 /** --------------------------------------------------------------------------------------------------------- Dedicated Ownership
@@ -251,10 +242,10 @@ void dedicated_ownership() {
         Slice original(requests[index], index == 0, &small_placement);
         auto* backing = backing_of(original);
         const size_t identity = backing->identity;
-        const uint64_t word = location_of(original);
+        const GPUBuf& record = *SliceEntry::from_slice(original)->gpu_buf();
         require(original.is_novel()
-            && Arena::directory[SEGMENT_COUNT + Location::buffer(word)] == tracked_address(backing)
-            && Location::offset(word) == 0 && original.raw() == backing->memory.raw()
+            && record.address == tracked_address(backing)
+            && record.offset == 0 && original.raw() == backing->memory.raw()
             && original.size_bytes() == backing->memory.size(),
             "dedicated claim published the chain slab's allocation metadata");
         Slice retained(original);
@@ -263,16 +254,8 @@ void dedicated_ownership() {
             "dedicated backing retired while a copied owner remained");
         std::memset(retained.raw(), 0xA5, retained.size_bytes());
         retained.free();
-        // A slab-sized dedicated buffer parks for reuse instead of releasing.
-        const bool slab_sized = requests[index] == small_placement.default_size;
-        require(releases[identity].load(std::memory_order_relaxed) == (slab_sized ? 0 : 1),
-            "dedicated backing retained an abandoned token wrapper");
-        if (!slab_sized) continue;
-        Slice reused(requests[index], false, &small_placement);
-        const auto* bytes = static_cast<const unsigned char*>(reused.raw());
-        require(backing_of(reused) == backing
-            && size_t(std::count(bytes, bytes + reused.size_bytes(), 0)) == reused.size_bytes(),
-            "a parked slab-sized buffer was not reused zeroed");
+        require(releases[identity].load(std::memory_order_relaxed) == 1,
+            "dedicated backing did not release with its last owner");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Factory Retry
@@ -354,10 +337,8 @@ void rollover_ownership() {
     size_t released = 0;
     for (size_t identity = first_allocation; identity < last_allocation; ++identity)
         released += releases[identity].load(std::memory_order_relaxed);
-    const size_t parked = Arena::spares[rollover_placement.type_idx].count;
-    require(released + parked + 3 * CHAIN_LANES == last_allocation - first_allocation
-        && parked <= SPARE_LIMIT,
-        "retired slabs remain pinned beyond each lane's chain and the parked spares");
+    require(released > 0 && last_allocation - first_allocation - released <= 3,
+        "retired slabs remain pinned beyond the current chain and its prepared successors");
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Churn
  * @brief Claims, checks, copies, and frees on small slabs so buffers retire and indices recycle.
@@ -400,10 +381,8 @@ void churn_ownership() {
     size_t released = 0;
     for (size_t identity = first_allocation; identity < last_allocation; ++identity)
         released += releases[identity].load(std::memory_order_relaxed);
-    const size_t parked = Arena::spares[churn_placement.type_idx].count;
-    require(released + parked + 3 * CHAIN_LANES == last_allocation - first_allocation
-        && parked <= SPARE_LIMIT,
-        "churned buffers remain pinned beyond each lane's chain and the parked spares");
+    require(released > 0 && last_allocation - first_allocation - released <= 3,
+        "churned buffers remain pinned beyond the current chain and its prepared successors");
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main

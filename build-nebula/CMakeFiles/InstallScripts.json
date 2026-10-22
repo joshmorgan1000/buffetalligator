@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/joshmorgan/manifoldb/buffetalligator/build-nebula/cmake_install.cmake",
+		"/Users/joshmorgan/manifoldb/buffetalligator/build-nebula/deps/threadsafe-logger/cmake_install.cmake",
+		"/Users/joshmorgan/manifoldb/buffetalligator/build-nebula/deps/threadsafe-logger/tests/cmake_install.cmake",
+		"/Users/joshmorgan/manifoldb/buffetalligator/build-nebula/tests/benchmarks/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -6,7 +6,7 @@
 #include <alligator/easygpu.hpp>
 #include <alligator/easyvulkan.hpp>
 #include <alligator/kitchen.hpp>
-#include <memory/arena.hpp>
+#include <memory/region.hpp>
 #include "../kitchen_test_support.hpp"
 #include "../functional_support.hpp"
 #include <cstdint>
@@ -42,22 +42,21 @@ void alligator_main(Slice addresses) {
     result.rethrow();
     require(output[0] == 42 && output[1] == 0, "GPU writes did not preserve mapped buffer boundaries");
 }
-/** --------------------------------------------------------------------------------------------------------- Location Of
- * @brief Reads a live Slice's location word from its slot segment.
+/** --------------------------------------------------------------------------------------------------------- Record Of
+ * @brief Reads a live Slice's shared GPU record from its realm.
  */
-static uint64_t location_of(const Slice& slice) {
-    return Arena::locations[slice.id() >> SEGMENT_BITS][slice.id() & SEGMENT_MASK];
+static const GPUBuf& record_of(const Slice& slice) {
+    return *SliceEntry::from_slice(slice)->gpu_buf();
 }
 /** --------------------------------------------------------------------------------------------------------- Claims
- * @brief Checks location words and directory lookup for successive slab claims.
+ * @brief Checks shared GPU records and directory lookup for successive slab claims.
  */
 static void vulkan_claims() {
     Slice first(4096, VulkanContext::buffer_placement());
     Slice following(4096, VulkanContext::buffer_placement());
-    const uint64_t before = location_of(first);
-    const uint64_t after = location_of(following);
-    require(Location::buffer(before) == Location::buffer(after)
-        && Location::offset(after) == Location::offset(before) + 64,
+    const GPUBuf& before = record_of(first);
+    const GPUBuf& after = record_of(following);
+    require(before.address == after.address && after.offset == before.offset + 64,
         "Successive claims did not retain granule-based slab offsets");
     require(VulkanKernel::device_address(following) == VulkanKernel::device_address(first) + 4096,
         "Device addressing did not widen granules into bytes");
@@ -67,14 +66,12 @@ static void vulkan_claims() {
         "A requested byte window did not round outward");
     require(nested.size_bytes() == 64 && nested.data() == following.data() + 64,
         "A nested view did not preserve rounded parent bounds");
-    require(Location::units(location_of(nested)) == 1
-        && Location::offset(location_of(nested)) == Location::offset(after) + 1,
+    require(record_of(nested).size == 1 && record_of(nested).offset == after.offset + 1,
         "Nested views stored byte counts in granule fields");
-    require(Arena::directory[SEGMENT_COUNT + Location::buffer(location_of(nested))]
-        + (Location::offset(location_of(nested)) << 6) == VulkanKernel::device_address(nested),
-        "Directory lookup addressed the wrong buffer base");
+    require(record_of(nested).address + (uint64_t(record_of(nested).offset) << 6)
+        == VulkanKernel::device_address(nested), "Realm lookup addressed the wrong buffer base");
     require(Alligator::gpu_directory_address() == VulkanKernel::gpu_pool_address()
-        && VulkanKernel::gpu_pool_address() != 0, "The GPU arena directory is unavailable");
+        && VulkanKernel::gpu_pool_address() != 0, "The GPU realm directory is unavailable");
     nested.get_as<uint32_t>() = 77;
     require(following.data<uint32_t>()[16] == 77, "A rounded view wrote the wrong host offset");
     Slice heap(64, BuffetDescriptors::get(0));
@@ -88,7 +85,7 @@ static void vulkan_novel_views() {
     Slice separate(256, true, VulkanContext::buffer_placement());
     const uint64_t address = VulkanKernel::device_address(root);
     require(address != VulkanKernel::device_address(separate), "Dedicated claims share their device address");
-    require(Location::units(location_of(root)) == 4 && Location::offset(location_of(root)) == 0,
+    require(record_of(root).size == 4 && record_of(root).offset == 0,
         "Dedicated claim metadata is not expressed in granules");
     Slice view = root.slice(70, 80);
     Slice nested = view.slice(67, 4);

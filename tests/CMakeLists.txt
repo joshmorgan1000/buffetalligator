@@ -130,3 +130,5 @@ add_test(NAME buffetalligator_installed_consumer
         "-DALLIGATOR_EXPECTED_DEFINITIONS=$<JOIN:$<TARGET_GENEX_EVAL:alligator,$<TARGET_PROPERTY:alligator,INTERFACE_COMPILE_DEFINITIONS>>,|>"
         -P "${PROJECT_SOURCE_DIR}/cmake/VerifyInstalledConsumer.cmake")
 set_tests_properties(buffetalligator_installed_consumer PROPERTIES TIMEOUT 300 LABELS packaging)
+set_tests_properties(buffetalligator_realm_allocation_test PROPERTIES TIMEOUT 120
+    LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")

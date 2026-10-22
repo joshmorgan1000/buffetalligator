@@ -323,11 +323,10 @@ void run(const Configuration& config, const BuffetDescriptor* placement, const c
     const double median = seconds[seconds.size() / 2];
     const double total_claims = double(claims * config.workers);
     LOG_INFO_STREAM << name << (Timed ? " latency" : " throughput") << " workers=" << config.workers
-        << " tracking=" << (BuffetDescriptors::allocation_tracking() ? "on" : "off")
+        << " tracking=on"
         << ": median " << median * 1000 << " ms per " << config.gib << " GiB, "
         << total_claims / median / 1e6 << " M claims/s, " << double(config.gib << 30) / median / 1e9
-        << " GB/s claimed, " << opened_total / config.repetitions << " slabs opened per sample"
-        << (counted || BuffetDescriptors::allocation_tracking() ? "" : " (unknown while untracked)");
+        << " GB/s claimed, " << opened_total / config.repetitions << " slabs opened per sample";
     if constexpr (Timed) {
         const char* scope = counted ? " without a buffer allocation or free" : " including device buffers";
         LOG_INFO_STREAM << name << " claims" << scope << ", ns: " << describe(claim_latencies);
@@ -353,7 +352,6 @@ void run(const Configuration& config, const BuffetDescriptor* placement, const c
 int main(int count, char** arguments) {
     try {
         const Configuration config = parse(count, arguments);
-        if (config.untracked) BuffetDescriptors::set_allocation_tracking(false);
         const BuffetDescriptor* device = Slice::default_placement();
         Counted::descriptor = {"SlabChurnCounted", &Counted::deleter, &Counted::host,
             &Counted::size_of, &Counted::factory,
@@ -364,8 +362,7 @@ int main(int count, char** arguments) {
             << " GiB claimed per sample, "
             << (config.size ? std::to_string(config.size) + " B" : std::string("mixed 64 B-64 KiB"))
             << " claims, " << config.live << " live Slices per worker, slab="
-            << (SLAB_BYTES >> 20) << " MiB, tracking="
-            << (BuffetDescriptors::allocation_tracking() ? "on" : "off") << ", device placement="
+            << (SLAB_BYTES >> 20) << " MiB, tracking=on, device placement="
             << device->type_name;
         if (config.counted) {
             run<false>(config, &Counted::descriptor, "counted-heap");

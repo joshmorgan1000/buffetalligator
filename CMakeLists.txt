@@ -63,7 +63,6 @@ add_library(alligator STATIC
     src/gpu/shader_source.cpp
     src/memory/slice.cpp
     src/memory/alligator.cpp
-    src/memory/lifetime.cpp
     src/memory/registry.cpp
     src/memory/chainbuffet.cpp
     src/kitchen/kitchen.cpp

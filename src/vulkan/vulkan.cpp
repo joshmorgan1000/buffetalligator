@@ -9,7 +9,6 @@
 #include <alligator/easyvulkan.hpp>
 #include <vulkan/shader_state.hpp>
 #include <memory/tracker.hpp>
-#include <memory/lifetime.hpp>
 #include <condition_variable>
 #include <mutex>
 #include <exception>
@@ -25,8 +24,8 @@ namespace buffetalligator {
  * @brief Retains the lazily probed context until static owners and arena storage have retired.
  */
 VulkanContext& VulkanContext::instance() {
-    static RuntimeFinalizer lifetime(new VulkanContext, &RuntimeFinalizer::delete_owner<VulkanContext>);
-    return *static_cast<VulkanContext*>(lifetime.object);
+    static VulkanContext* context = new VulkanContext;
+    return *context;
 }
 /** --------------------------------------------------------------------------------------------------------- unified_from_memory_properties
  * @brief Detects shared device-local host access separately from physical device topology.

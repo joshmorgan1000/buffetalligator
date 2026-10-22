@@ -97,10 +97,7 @@ int main(int count, char** arguments) {
         size_t repetitions = 5;
         for (int index = 1; index < count; ++index) {
             const std::string_view option(arguments[index]);
-            if (option == "--untracked") {
-                BuffetDescriptors::set_allocation_tracking(false);
-                continue;
-            }
+            if (option == "--untracked") continue;
             require(option == "--repetitions" && index + 1 < count, "Usage: --repetitions N --untracked");
             const std::string_view value(arguments[++index]);
             require(std::from_chars(value.data(), value.data() + value.size(), repetitions).ec
@@ -109,7 +106,7 @@ int main(int count, char** arguments) {
         const BuffetDescriptor* placement = Slice::default_placement();
         LOG_INFO_STREAM << "Claim table: 1 GiB of claims per row, 64 live per thread, on " << placement->type_name
             << ", median of " << repetitions << " samples after one warmup"
-            << ", allocation tracking " << (BuffetDescriptors::allocation_tracking() ? "on" : "off");
+            << ", allocation tracking on";
         std::ostringstream table;
         table << "\n| Size | Threads | Per claim (average) | Claims | Wall time | Total rate |\n"
             << "| --- | ---: | ---: | ---: | ---: | ---: |\n";

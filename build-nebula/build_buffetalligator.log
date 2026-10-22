@@ -1,0 +1,163 @@
+
+=== Updating threadsafe-logger ===
+threadsafe-logger already at 818f7a8
+
+=== Preparing libuv TCP and UDP ===
+
+=== Preparing libsodium encryption ===
+libsodium (1.0.22-RELEASE) already built at /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium
+
+=== Preparing libfabric RDMA ===
+libfabric (v2.6.0) already built at /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric
+
+=== Staging moodycamel queues ===
+moodycamel queues (v1.0.7, v1.0.5) already staged
+
+=== Preparing Abseil ===
+Abseil (20260107.1) already built at /Users/joshmorgan/manifoldb/actian/nebula/deps/abseil
+
+=== Preparing simdjson ===
+
+=== Preparing curl ===
+
+=== Preparing Vulkan headers ===
+
+=== Preparing Vulkan runtime ===
+
+=== Preparing shaderc ===
+
+=== Configuring BuffetAlligator ===
+-- Verifying the applied logger static-label lifetime patch
+-- Logger static-label lifetime patch is already applied
+-- Link-time optimization enabled for Release and RelWithDebInfo
+-- Configuring done (0.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /Users/joshmorgan/manifoldb/buffetalligator/build-nebula
+
+=== Building BuffetAlligator ===
+[0/2] Re-checking globbed directories...
+[1/15] Linking CXX executable tests/benchmarks/buffetalligator_kitchen_benchmark
+[2/15] Linking CXX executable tests/benchmarks/buffetalligator_priority_slice_benchmark
+[3/15] Linking CXX executable tests/benchmarks/buffetalligator_queue_comparison_benchmark
+[4/15] Linking CXX executable tests/benchmarks/buffetalligator_slice_map_iteration_benchmark
+[5/15] Linking CXX executable tests/benchmarks/buffetalligator_priority_slice_showdown
+[6/15] Linking CXX executable tests/benchmarks/buffetalligator_gpu_dispatch_benchmark
+[7/15] Linking CXX executable tests/benchmarks/buffetalligator_slice_map_benchmark
+[8/15] Building CXX object tests/benchmarks/CMakeFiles/buffetalligator_claim_table_benchmark.dir/claim_table_benchmark.cpp.o
+[9/15] Building CXX object tests/benchmarks/CMakeFiles/buffetalligator_allocator_benchmark.dir/allocator_benchmark.cpp.o
+[10/15] Building CXX object tests/benchmarks/CMakeFiles/buffetalligator_slab_churn_benchmark.dir/slab_churn_benchmark.cpp.o
+[11/15] Linking CXX executable tests/benchmarks/buffetalligator_slicemapvsvecset
+[12/15] Linking CXX executable tests/benchmarks/buffetalligator_claim_table_benchmark
+[13/15] Linking CXX executable tests/benchmarks/buffetalligator_allocator_benchmark
+[14/15] Linking CXX executable tests/benchmarks/buffetalligator_slab_churn_benchmark
+
+=== Installing BuffetAlligator ===
+-- Install configuration: "Release"
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/liblogging.a
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/loggingutils.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/logging.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/cmake/logging/loggingTargets.cmake
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/cmake/logging/loggingTargets-release.cmake
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/alligator/libuv.a
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/alligator/libsodium.a
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/alligator/libfabric.a
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/libuv/LICENSE
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/libuv/LICENSE-docs
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/libuv/LICENSE-extra
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/libsodium/LICENSE
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/libfabric/COPYING
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/concurrentqueue/LICENSE.md
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/readerwriterqueue/LICENSE.md
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/vulkan-headers/LICENSE.md
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/vulkan-headers/LICENSES
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/vulkan-headers/LICENSES/MIT.txt
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/vulkan-headers/LICENSES/Apache-2.0.txt
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/MoltenVK/LICENSE
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/shaderc/LICENSE
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/shaderc/license-checker.cfg
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/shaderc/LICENSE.glslang
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/shaderc/LICENSE.spirv-tools
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/shaderc/LICENSE.spirv-headers
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/alligator/libMoltenVK.dylib
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/alligator/libshaderc_combined.a
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vk_layer.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vk_icd.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_vi.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_hash.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan.cppm
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_to_string.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_video.cppm
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vk_platform.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_enums.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_fuchsia.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_wayland.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_static_assertions.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_win32.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_macos.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_xlib_xrandr.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_funcs.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_xcb.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_shared.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_ggp.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_video.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_hpp_macros.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_format_traits.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_xlib.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_directfb.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_ios.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_extension_inspection.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_structs.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_core.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_raii.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_screen.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_android.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_ohos.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_metal.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_handles.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vulkan/vulkan_beta.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_av1std_decode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_h264std.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_av1std_encode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_h265std.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_h264std_decode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_vp9std_decode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_h264std_encode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_av1std.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_vp9std.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codecs_common.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_h265std_encode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/vk_video/vulkan_video_codec_h265std_decode.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/liballigator.a
+-- Up-to-date: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/buffet.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/dispatch.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/easygpu.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/atomics.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/easyvulkan.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/easymmap.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/containers.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/encryptionkey.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/easycuda.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/kitchen.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator/easymetal.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/alligator.hpp
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel/lightweightsemaphore.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel/blockingconcurrentqueue.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel/concurrentqueue.h
+-- Up-to-date: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel/readerwriterqueue.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel/readerwritercircularbuffer.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/include/moodycamel/atomicops.h
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/cmake/alligator/alligatorTargets.cmake
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/cmake/alligator/alligatorTargets-release.cmake
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/cmake/alligator/alligatorConfig.cmake
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/lib/cmake/alligator/alligatorConfigVersion.cmake
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/LICENSE
+-- Installing: /Users/joshmorgan/manifoldb/actian/nebula/deps/buffetalligator/share/licenses/alligator/THIRD_PARTY_NOTICES.md

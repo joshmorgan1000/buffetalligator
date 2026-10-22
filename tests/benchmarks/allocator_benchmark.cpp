@@ -250,9 +250,7 @@ int main(int count, char** arguments) {
 #ifndef NDEBUG
         throw std::runtime_error("Allocator performance runs require a Release build from ./run_build.sh.");
 #endif
-        if (config.untracked) BuffetDescriptors::set_allocation_tracking(false);
-        LOG_INFO_STREAM << "Allocation tracking: "
-            << (BuffetDescriptors::allocation_tracking() ? "on" : "off");
+        LOG_INFO_STREAM << "Allocation tracking: on";
         Reporter reporter(config.common);
         std::ofstream latency_csv(config.common.csv + ".latencies.csv");
         require(latency_csv.is_open(), "Cannot open allocator latency CSV output.");

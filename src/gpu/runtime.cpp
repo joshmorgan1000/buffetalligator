@@ -4,7 +4,6 @@
  */
 #include <gpu/runtime.hpp>
 #include <gpu/backend.hpp>
-#include <memory/lifetime.hpp>
 #include <alligator/easyvulkan.hpp>
 #if defined(BUFFETALLIGATOR_HAS_CUDA)
 #include <alligator/easycuda.hpp>
@@ -76,8 +75,8 @@ struct GPUSelection {
 };
 } // namespace
 const GPUDevice& gpu_device() {
-    static RuntimeFinalizer lifetime(new GPUSelection, &RuntimeFinalizer::delete_owner<GPUSelection>);
-    return static_cast<GPUSelection*>(lifetime.object)->device;
+    static GPUSelection* selection = new GPUSelection;
+    return selection->device;
 }
 /** --------------------------------------------------------------------------------------------------------- GPU Select
  * @brief Records the choice first, so a freeze that starts concurrently either reads it or is seen here.

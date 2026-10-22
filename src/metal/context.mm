@@ -4,7 +4,6 @@
  */
 #include <metal/context.hpp>
 #include <metal/metal.hpp>
-#include <memory/lifetime.hpp>
 #include <algorithm>
 #include <thread>
 
@@ -25,8 +24,8 @@ MetalContext::~MetalContext() {
  * @brief Returns context storage without recursively selecting a backend.
  */
 MetalContext& metal_context() {
-    static RuntimeFinalizer lifetime(new MetalContext, &RuntimeFinalizer::delete_owner<MetalContext>);
-    return *static_cast<MetalContext*>(lifetime.object);
+    static MetalContext* context = new MetalContext;
+    return *context;
 }
 /** --------------------------------------------------------------------------------------------------------- Initialize
  * @brief Probes the pointer ABI requirements and prepares the queue and supported residency mechanism.
