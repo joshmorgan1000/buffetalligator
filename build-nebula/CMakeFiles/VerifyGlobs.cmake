@@ -19,14 +19,14 @@ set(OLD_GLOB
   "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/claim_table_benchmark.cpp"
   "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/gpu_dispatch_benchmark.cpp"
   "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/kitchen_benchmark.cpp"
-  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_slice_benchmark.cpp"
-  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_slice_showdown.cpp"
+  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_chomp_benchmark.cpp"
+  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_chomp_showdown.cpp"
   "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/queue_comparison_benchmark.cpp"
   "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slab_churn_benchmark.cpp"
-  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slice_map_benchmark.cpp"
-  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slice_map_iteration_benchmark.cpp"
-  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slicemapvsvecset.cpp"
-  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slicemapvsvecset_backup.cpp"
+  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chomp_map_benchmark.cpp"
+  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chomp_map_iteration_benchmark.cpp"
+  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chompmapvsvecset.cpp"
+  "/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chompmapvsvecset_backup.cpp"
   )
 if(NOT "${NEW_GLOB}" STREQUAL "${OLD_GLOB}")
   message("-- GLOB mismatch!")

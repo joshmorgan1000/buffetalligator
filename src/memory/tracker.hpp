@@ -79,8 +79,9 @@ private:
      * @return Reference to the Memory tracker instance.
      */
     static Memory& instance() {
-        static Memory instance;
-        return instance;
+        /// Immortal: releases keep reporting here through the teardown phases and static destruction.
+        static Memory* instance = new Memory;
+        return *instance;
     }
     /** ------------------------------------------------------------------------------------------- Retain Counters
      * @brief Transfers accounting ownership before global values release their arena-backed payloads.
@@ -97,6 +98,11 @@ private:
         }
     }
 public:
+    /** ------------------------------------------------------------------------------------------- Detach
+     * @brief The teardown's tracker phase: takes the counters out of the registry before it clears, so the
+     * releases that follow still have counters to land in.
+     */
+    static void detach() { retain_counters(&instance()); }
     /** ------------------------------------------------------------------------------------------- Deleted Copy/Move
      * @brief Deleted copy and move constructors and assignment operators to prevent copying or
      * moving of the Memory tracker instance.
@@ -140,7 +146,7 @@ public:
         const std::source_location location = site_ ? *site_ : std::source_location();
         std::lock_guard<AtomicMutex> lock(tracker.allocations_mutex_);
         tracker.allocations_.emplace(handle, AllocationInfo{
-            static_cast<uint64_t>(timestamp), size, placement.type_idx, location
+            static_cast<uint64_t>(timestamp), size, *placement.type_idx_getter(), location
         });
 #else
         (void)placement;
@@ -189,7 +195,7 @@ public:
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
-        instance().placement_details_[placement.type_idx].total_allocations_->fetch_add<uint64_t>(
+        instance().placement_details_[*placement.type_idx_getter()].total_allocations_->fetch_add<uint64_t>(
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
@@ -204,7 +210,7 @@ public:
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
-        instance().placement_details_[placement.type_idx].total_freed_->fetch_add<uint64_t>(
+        instance().placement_details_[*placement.type_idx_getter()].total_freed_->fetch_add<uint64_t>(
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
@@ -229,7 +235,7 @@ public:
      * @return Allocated bytes for the placement.
      */
     static size_t placement_allocations(const BuffetDescriptor& placement) {
-        return instance().placement_details_[placement.type_idx].total_allocations_->load<uint64_t>(
+        return instance().placement_details_[*placement.type_idx_getter()].total_allocations_->load<uint64_t>(
             std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Placement Freed
@@ -238,7 +244,7 @@ public:
      * @return Freed bytes for the placement.
      */
     static size_t placement_freed(const BuffetDescriptor& placement) {
-        return instance().placement_details_[placement.type_idx].total_freed_->load<uint64_t>(
+        return instance().placement_details_[*placement.type_idx_getter()].total_freed_->load<uint64_t>(
             std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Placement Usage
@@ -255,7 +261,7 @@ public:
      * @return Reported available bytes for the placement.
      */
     static size_t placement_available(const BuffetDescriptor& placement) {
-        return instance().placement_details_[placement.type_idx].total_available_->load<uint64_t>(
+        return instance().placement_details_[*placement.type_idx_getter()].total_available_->load<uint64_t>(
             std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Set Placement Available
@@ -264,7 +270,7 @@ public:
      * @param size The reported available bytes.
      */
     static void set_placement_available(const BuffetDescriptor& placement, size_t size) {
-        instance().placement_details_[placement.type_idx].total_available_->store<uint64_t>(
+        instance().placement_details_[*placement.type_idx_getter()].total_available_->store<uint64_t>(
             static_cast<uint64_t>(size), std::memory_order_release);
     }
 };

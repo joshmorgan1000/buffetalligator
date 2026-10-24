@@ -76,10 +76,10 @@ build CMakeFiles/alligator.dir/src/gpu/shader_source.cpp.o: CXX_COMPILER__alliga
   OBJECT_DIR = CMakeFiles/alligator.dir
   OBJECT_FILE_DIR = CMakeFiles/alligator.dir/src/gpu
 
-build CMakeFiles/alligator.dir/src/memory/slice.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/memory/slice.cpp || cmake_object_order_depends_target_alligator
+build CMakeFiles/alligator.dir/src/memory/chomp.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/memory/chomp.cpp || cmake_object_order_depends_target_alligator
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = CMakeFiles/alligator.dir/src/memory/slice.cpp.o.d
+  DEP_FILE = CMakeFiles/alligator.dir/src/memory/chomp.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -fPIC -fblocks -Wall -Wextra -Wpedantic
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/buffetalligator/src -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/libshaderc/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/include
   OBJECT_DIR = CMakeFiles/alligator.dir
@@ -139,28 +139,28 @@ build CMakeFiles/alligator.dir/src/memory/mmap_allocator.cpp.o: CXX_COMPILER__al
   OBJECT_DIR = CMakeFiles/alligator.dir
   OBJECT_FILE_DIR = CMakeFiles/alligator.dir/src/memory
 
-build CMakeFiles/alligator.dir/src/containers/slicequeue.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/containers/slicequeue.cpp || cmake_object_order_depends_target_alligator
+build CMakeFiles/alligator.dir/src/containers/chompqueue.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/containers/chompqueue.cpp || cmake_object_order_depends_target_alligator
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = CMakeFiles/alligator.dir/src/containers/slicequeue.cpp.o.d
+  DEP_FILE = CMakeFiles/alligator.dir/src/containers/chompqueue.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -fPIC -fblocks -Wall -Wextra -Wpedantic
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/buffetalligator/src -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/libshaderc/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/include
   OBJECT_DIR = CMakeFiles/alligator.dir
   OBJECT_FILE_DIR = CMakeFiles/alligator.dir/src/containers
 
-build CMakeFiles/alligator.dir/src/containers/slicemap.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/containers/slicemap.cpp || cmake_object_order_depends_target_alligator
+build CMakeFiles/alligator.dir/src/containers/chompmap.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/containers/chompmap.cpp || cmake_object_order_depends_target_alligator
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = CMakeFiles/alligator.dir/src/containers/slicemap.cpp.o.d
+  DEP_FILE = CMakeFiles/alligator.dir/src/containers/chompmap.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -fPIC -fblocks -Wall -Wextra -Wpedantic
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/buffetalligator/src -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/libshaderc/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/include
   OBJECT_DIR = CMakeFiles/alligator.dir
   OBJECT_FILE_DIR = CMakeFiles/alligator.dir/src/containers
 
-build CMakeFiles/alligator.dir/src/containers/priorityslice.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/containers/priorityslice.cpp || cmake_object_order_depends_target_alligator
+build CMakeFiles/alligator.dir/src/containers/prioritychomp.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/containers/prioritychomp.cpp || cmake_object_order_depends_target_alligator
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = CMakeFiles/alligator.dir/src/containers/priorityslice.cpp.o.d
+  DEP_FILE = CMakeFiles/alligator.dir/src/containers/prioritychomp.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -fPIC -fblocks -Wall -Wextra -Wpedantic
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/buffetalligator/src -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/libshaderc/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/include
   OBJECT_DIR = CMakeFiles/alligator.dir
@@ -193,10 +193,10 @@ build CMakeFiles/alligator.dir/src/network/ba_fabric.c.o: C_COMPILER__alligator_
   OBJECT_DIR = CMakeFiles/alligator.dir
   OBJECT_FILE_DIR = CMakeFiles/alligator.dir/src/network
 
-build CMakeFiles/alligator.dir/src/network/slice_channel.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/network/slice_channel.cpp || cmake_object_order_depends_target_alligator
+build CMakeFiles/alligator.dir/src/network/chomp_channel.cpp.o: CXX_COMPILER__alligator_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/src/network/chomp_channel.cpp || cmake_object_order_depends_target_alligator
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = CMakeFiles/alligator.dir/src/network/slice_channel.cpp.o.d
+  DEP_FILE = CMakeFiles/alligator.dir/src/network/chomp_channel.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -fPIC -fblocks -Wall -Wextra -Wpedantic
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/buffetalligator/src -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/libshaderc/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/include
   OBJECT_DIR = CMakeFiles/alligator.dir
@@ -228,7 +228,7 @@ build CMakeFiles/alligator.dir/src/vulkan/vulkankernel.cpp.o: CXX_COMPILER__alli
 #############################################
 # Link the static library liballigator.a
 
-build liballigator.a: CXX_STATIC_LIBRARY_LINKER__alligator_Release CMakeFiles/alligator.dir/src/gpu/runtime.cpp.o CMakeFiles/alligator.dir/src/gpu/shader.cpp.o CMakeFiles/alligator.dir/src/gpu/shader_source.cpp.o CMakeFiles/alligator.dir/src/memory/slice.cpp.o CMakeFiles/alligator.dir/src/memory/alligator.cpp.o CMakeFiles/alligator.dir/src/memory/registry.cpp.o CMakeFiles/alligator.dir/src/memory/chainbuffet.cpp.o CMakeFiles/alligator.dir/src/kitchen/kitchen.cpp.o CMakeFiles/alligator.dir/src/kitchen/order.cpp.o CMakeFiles/alligator.dir/src/memory/mmap_allocator.cpp.o CMakeFiles/alligator.dir/src/containers/slicequeue.cpp.o CMakeFiles/alligator.dir/src/containers/slicemap.cpp.o CMakeFiles/alligator.dir/src/containers/priorityslice.cpp.o CMakeFiles/alligator.dir/src/network/ba_wire.c.o CMakeFiles/alligator.dir/src/network/ba_network.c.o CMakeFiles/alligator.dir/src/network/ba_fabric.c.o CMakeFiles/alligator.dir/src/network/slice_channel.cpp.o CMakeFiles/alligator.dir/src/vulkan/vulkan.cpp.o CMakeFiles/alligator.dir/src/vulkan/vulkankernel.cpp.o || deps/threadsafe-logger/liblogging.a
+build liballigator.a: CXX_STATIC_LIBRARY_LINKER__alligator_Release CMakeFiles/alligator.dir/src/gpu/runtime.cpp.o CMakeFiles/alligator.dir/src/gpu/shader.cpp.o CMakeFiles/alligator.dir/src/gpu/shader_source.cpp.o CMakeFiles/alligator.dir/src/memory/chomp.cpp.o CMakeFiles/alligator.dir/src/memory/alligator.cpp.o CMakeFiles/alligator.dir/src/memory/registry.cpp.o CMakeFiles/alligator.dir/src/memory/chainbuffet.cpp.o CMakeFiles/alligator.dir/src/kitchen/kitchen.cpp.o CMakeFiles/alligator.dir/src/kitchen/order.cpp.o CMakeFiles/alligator.dir/src/memory/mmap_allocator.cpp.o CMakeFiles/alligator.dir/src/containers/chompqueue.cpp.o CMakeFiles/alligator.dir/src/containers/chompmap.cpp.o CMakeFiles/alligator.dir/src/containers/prioritychomp.cpp.o CMakeFiles/alligator.dir/src/network/ba_wire.c.o CMakeFiles/alligator.dir/src/network/ba_network.c.o CMakeFiles/alligator.dir/src/network/ba_fabric.c.o CMakeFiles/alligator.dir/src/network/chomp_channel.cpp.o CMakeFiles/alligator.dir/src/vulkan/vulkan.cpp.o CMakeFiles/alligator.dir/src/vulkan/vulkankernel.cpp.o || deps/threadsafe-logger/liblogging.a
   ARCH_FLAGS = -arch arm64
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = -O3 -DNDEBUG -flto=thin
@@ -708,78 +708,78 @@ build tests/benchmarks/buffetalligator_kitchen_benchmark: CXX_EXECUTABLE_LINKER_
   TARGET_PDB = buffetalligator_kitchen_benchmark.dbg
 
 # =============================================================================
-# Object build statements for EXECUTABLE target buffetalligator_priority_slice_benchmark
+# Object build statements for EXECUTABLE target buffetalligator_priority_chomp_benchmark
 
 
 #############################################
-# Order-only phony target for buffetalligator_priority_slice_benchmark
+# Order-only phony target for buffetalligator_priority_chomp_benchmark
 
-build cmake_object_order_depends_target_buffetalligator_priority_slice_benchmark: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
+build cmake_object_order_depends_target_buffetalligator_priority_chomp_benchmark: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
 
-build tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_benchmark.dir/priority_slice_benchmark.cpp.o: CXX_COMPILER__buffetalligator_priority_slice_benchmark_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_slice_benchmark.cpp || cmake_object_order_depends_target_buffetalligator_priority_slice_benchmark
+build tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_benchmark.dir/priority_chomp_benchmark.cpp.o: CXX_COMPILER__buffetalligator_priority_chomp_benchmark_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_chomp_benchmark.cpp || cmake_object_order_depends_target_buffetalligator_priority_chomp_benchmark
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_benchmark.dir/priority_slice_benchmark.cpp.o.d
+  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_benchmark.dir/priority_chomp_benchmark.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -Wall -Wextra -Wpedantic -fblocks
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_benchmark.dir
-  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_benchmark.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_benchmark.dir
+  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_benchmark.dir
 
 
 # =============================================================================
-# Link build statements for EXECUTABLE target buffetalligator_priority_slice_benchmark
+# Link build statements for EXECUTABLE target buffetalligator_priority_chomp_benchmark
 
 
 #############################################
-# Link the executable tests/benchmarks/buffetalligator_priority_slice_benchmark
+# Link the executable tests/benchmarks/buffetalligator_priority_chomp_benchmark
 
-build tests/benchmarks/buffetalligator_priority_slice_benchmark: CXX_EXECUTABLE_LINKER__buffetalligator_priority_slice_benchmark_Release tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_benchmark.dir/priority_slice_benchmark.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
+build tests/benchmarks/buffetalligator_priority_chomp_benchmark: CXX_EXECUTABLE_LINKER__buffetalligator_priority_chomp_benchmark_Release tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_benchmark.dir/priority_chomp_benchmark.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG -flto=thin -arch arm64
   LINK_LIBRARIES = -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib  liballigator.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a  deps/threadsafe-logger/liblogging.a  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a
   LINK_PATH = -L/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_benchmark.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_benchmark.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_FILE = tests/benchmarks/buffetalligator_priority_slice_benchmark
-  TARGET_PDB = buffetalligator_priority_slice_benchmark.dbg
+  TARGET_FILE = tests/benchmarks/buffetalligator_priority_chomp_benchmark
+  TARGET_PDB = buffetalligator_priority_chomp_benchmark.dbg
 
 # =============================================================================
-# Object build statements for EXECUTABLE target buffetalligator_priority_slice_showdown
+# Object build statements for EXECUTABLE target buffetalligator_priority_chomp_showdown
 
 
 #############################################
-# Order-only phony target for buffetalligator_priority_slice_showdown
+# Order-only phony target for buffetalligator_priority_chomp_showdown
 
-build cmake_object_order_depends_target_buffetalligator_priority_slice_showdown: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
+build cmake_object_order_depends_target_buffetalligator_priority_chomp_showdown: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
 
-build tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_showdown.dir/priority_slice_showdown.cpp.o: CXX_COMPILER__buffetalligator_priority_slice_showdown_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_slice_showdown.cpp || cmake_object_order_depends_target_buffetalligator_priority_slice_showdown
+build tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_showdown.dir/priority_chomp_showdown.cpp.o: CXX_COMPILER__buffetalligator_priority_chomp_showdown_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/priority_chomp_showdown.cpp || cmake_object_order_depends_target_buffetalligator_priority_chomp_showdown
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_showdown.dir/priority_slice_showdown.cpp.o.d
+  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_showdown.dir/priority_chomp_showdown.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -Wall -Wextra -Wpedantic -fblocks
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_showdown.dir
-  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_showdown.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_showdown.dir
+  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_showdown.dir
 
 
 # =============================================================================
-# Link build statements for EXECUTABLE target buffetalligator_priority_slice_showdown
+# Link build statements for EXECUTABLE target buffetalligator_priority_chomp_showdown
 
 
 #############################################
-# Link the executable tests/benchmarks/buffetalligator_priority_slice_showdown
+# Link the executable tests/benchmarks/buffetalligator_priority_chomp_showdown
 
-build tests/benchmarks/buffetalligator_priority_slice_showdown: CXX_EXECUTABLE_LINKER__buffetalligator_priority_slice_showdown_Release tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_showdown.dir/priority_slice_showdown.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
+build tests/benchmarks/buffetalligator_priority_chomp_showdown: CXX_EXECUTABLE_LINKER__buffetalligator_priority_chomp_showdown_Release tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_showdown.dir/priority_chomp_showdown.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG -flto=thin -arch arm64
   LINK_LIBRARIES = -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib  liballigator.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a  deps/threadsafe-logger/liblogging.a  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a
   LINK_PATH = -L/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_slice_showdown.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_priority_chomp_showdown.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_FILE = tests/benchmarks/buffetalligator_priority_slice_showdown
-  TARGET_PDB = buffetalligator_priority_slice_showdown.dbg
+  TARGET_FILE = tests/benchmarks/buffetalligator_priority_chomp_showdown
+  TARGET_PDB = buffetalligator_priority_chomp_showdown.dbg
 
 # =============================================================================
 # Object build statements for EXECUTABLE target buffetalligator_queue_comparison_benchmark
@@ -856,115 +856,115 @@ build tests/benchmarks/buffetalligator_slab_churn_benchmark: CXX_EXECUTABLE_LINK
   TARGET_PDB = buffetalligator_slab_churn_benchmark.dbg
 
 # =============================================================================
-# Object build statements for EXECUTABLE target buffetalligator_slice_map_benchmark
+# Object build statements for EXECUTABLE target buffetalligator_chomp_map_benchmark
 
 
 #############################################
-# Order-only phony target for buffetalligator_slice_map_benchmark
+# Order-only phony target for buffetalligator_chomp_map_benchmark
 
-build cmake_object_order_depends_target_buffetalligator_slice_map_benchmark: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
+build cmake_object_order_depends_target_buffetalligator_chomp_map_benchmark: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
 
-build tests/benchmarks/CMakeFiles/buffetalligator_slice_map_benchmark.dir/slice_map_benchmark.cpp.o: CXX_COMPILER__buffetalligator_slice_map_benchmark_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slice_map_benchmark.cpp || cmake_object_order_depends_target_buffetalligator_slice_map_benchmark
+build tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_benchmark.dir/chomp_map_benchmark.cpp.o: CXX_COMPILER__buffetalligator_chomp_map_benchmark_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chomp_map_benchmark.cpp || cmake_object_order_depends_target_buffetalligator_chomp_map_benchmark
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_benchmark.dir/slice_map_benchmark.cpp.o.d
+  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_benchmark.dir/chomp_map_benchmark.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -Wall -Wextra -Wpedantic -fblocks
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_benchmark.dir
-  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_benchmark.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_benchmark.dir
+  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_benchmark.dir
 
 
 # =============================================================================
-# Link build statements for EXECUTABLE target buffetalligator_slice_map_benchmark
+# Link build statements for EXECUTABLE target buffetalligator_chomp_map_benchmark
 
 
 #############################################
-# Link the executable tests/benchmarks/buffetalligator_slice_map_benchmark
+# Link the executable tests/benchmarks/buffetalligator_chomp_map_benchmark
 
-build tests/benchmarks/buffetalligator_slice_map_benchmark: CXX_EXECUTABLE_LINKER__buffetalligator_slice_map_benchmark_Release tests/benchmarks/CMakeFiles/buffetalligator_slice_map_benchmark.dir/slice_map_benchmark.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
+build tests/benchmarks/buffetalligator_chomp_map_benchmark: CXX_EXECUTABLE_LINKER__buffetalligator_chomp_map_benchmark_Release tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_benchmark.dir/chomp_map_benchmark.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG -flto=thin -arch arm64
   LINK_LIBRARIES = -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib  liballigator.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a  deps/threadsafe-logger/liblogging.a  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a
   LINK_PATH = -L/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_benchmark.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_benchmark.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_FILE = tests/benchmarks/buffetalligator_slice_map_benchmark
-  TARGET_PDB = buffetalligator_slice_map_benchmark.dbg
+  TARGET_FILE = tests/benchmarks/buffetalligator_chomp_map_benchmark
+  TARGET_PDB = buffetalligator_chomp_map_benchmark.dbg
 
 # =============================================================================
-# Object build statements for EXECUTABLE target buffetalligator_slice_map_iteration_benchmark
+# Object build statements for EXECUTABLE target buffetalligator_chomp_map_iteration_benchmark
 
 
 #############################################
-# Order-only phony target for buffetalligator_slice_map_iteration_benchmark
+# Order-only phony target for buffetalligator_chomp_map_iteration_benchmark
 
-build cmake_object_order_depends_target_buffetalligator_slice_map_iteration_benchmark: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
+build cmake_object_order_depends_target_buffetalligator_chomp_map_iteration_benchmark: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
 
-build tests/benchmarks/CMakeFiles/buffetalligator_slice_map_iteration_benchmark.dir/slice_map_iteration_benchmark.cpp.o: CXX_COMPILER__buffetalligator_slice_map_iteration_benchmark_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slice_map_iteration_benchmark.cpp || cmake_object_order_depends_target_buffetalligator_slice_map_iteration_benchmark
+build tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_iteration_benchmark.dir/chomp_map_iteration_benchmark.cpp.o: CXX_COMPILER__buffetalligator_chomp_map_iteration_benchmark_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chomp_map_iteration_benchmark.cpp || cmake_object_order_depends_target_buffetalligator_chomp_map_iteration_benchmark
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_iteration_benchmark.dir/slice_map_iteration_benchmark.cpp.o.d
+  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_iteration_benchmark.dir/chomp_map_iteration_benchmark.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -Wall -Wextra -Wpedantic -fblocks
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_iteration_benchmark.dir
-  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_iteration_benchmark.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_iteration_benchmark.dir
+  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_iteration_benchmark.dir
 
 
 # =============================================================================
-# Link build statements for EXECUTABLE target buffetalligator_slice_map_iteration_benchmark
+# Link build statements for EXECUTABLE target buffetalligator_chomp_map_iteration_benchmark
 
 
 #############################################
-# Link the executable tests/benchmarks/buffetalligator_slice_map_iteration_benchmark
+# Link the executable tests/benchmarks/buffetalligator_chomp_map_iteration_benchmark
 
-build tests/benchmarks/buffetalligator_slice_map_iteration_benchmark: CXX_EXECUTABLE_LINKER__buffetalligator_slice_map_iteration_benchmark_Release tests/benchmarks/CMakeFiles/buffetalligator_slice_map_iteration_benchmark.dir/slice_map_iteration_benchmark.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
+build tests/benchmarks/buffetalligator_chomp_map_iteration_benchmark: CXX_EXECUTABLE_LINKER__buffetalligator_chomp_map_iteration_benchmark_Release tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_iteration_benchmark.dir/chomp_map_iteration_benchmark.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG -flto=thin -arch arm64
   LINK_LIBRARIES = -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib  liballigator.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a  deps/threadsafe-logger/liblogging.a  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a
   LINK_PATH = -L/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slice_map_iteration_benchmark.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chomp_map_iteration_benchmark.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_FILE = tests/benchmarks/buffetalligator_slice_map_iteration_benchmark
-  TARGET_PDB = buffetalligator_slice_map_iteration_benchmark.dbg
+  TARGET_FILE = tests/benchmarks/buffetalligator_chomp_map_iteration_benchmark
+  TARGET_PDB = buffetalligator_chomp_map_iteration_benchmark.dbg
 
 # =============================================================================
-# Object build statements for EXECUTABLE target buffetalligator_slicemapvsvecset
+# Object build statements for EXECUTABLE target buffetalligator_chompmapvsvecset
 
 
 #############################################
-# Order-only phony target for buffetalligator_slicemapvsvecset
+# Order-only phony target for buffetalligator_chompmapvsvecset
 
-build cmake_object_order_depends_target_buffetalligator_slicemapvsvecset: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
+build cmake_object_order_depends_target_buffetalligator_chompmapvsvecset: phony || cmake_object_order_depends_target_alligator cmake_object_order_depends_target_logging
 
-build tests/benchmarks/CMakeFiles/buffetalligator_slicemapvsvecset.dir/slicemapvsvecset.cpp.o: CXX_COMPILER__buffetalligator_slicemapvsvecset_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/slicemapvsvecset.cpp || cmake_object_order_depends_target_buffetalligator_slicemapvsvecset
+build tests/benchmarks/CMakeFiles/buffetalligator_chompmapvsvecset.dir/chompmapvsvecset.cpp.o: CXX_COMPILER__buffetalligator_chompmapvsvecset_unscanned_Release /Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/chompmapvsvecset.cpp || cmake_object_order_depends_target_buffetalligator_chompmapvsvecset
   CONFIG = Release
   DEFINES = -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=0 -DBUFFETALLIGATOR_HAS_VULKAN=1 -DLOGGING_LOG_LEVEL=0
-  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_slicemapvsvecset.dir/slicemapvsvecset.cpp.o.d
+  DEP_FILE = tests/benchmarks/CMakeFiles/buffetalligator_chompmapvsvecset.dir/chompmapvsvecset.cpp.o.d
   FLAGS = -O3 -DNDEBUG -std=c++20 -flto=thin -arch arm64 -Wall -Wextra -Wpedantic -fblocks
   INCLUDES = -I/Users/joshmorgan/manifoldb/buffetalligator/tests/benchmarks/../../src -I/Users/joshmorgan/manifoldb/buffetalligator/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/concurrentqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/readerwriterqueue/include -I/Users/joshmorgan/manifoldb/actian/nebula/deps/src/threadsafe-logger/include -isystem /Users/joshmorgan/manifoldb/actian/nebula/deps/vulkan-headers/include -isystem /opt/homebrew/Cellar/openssl@3/3.6.4_1/include
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slicemapvsvecset.dir
-  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slicemapvsvecset.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chompmapvsvecset.dir
+  OBJECT_FILE_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chompmapvsvecset.dir
 
 
 # =============================================================================
-# Link build statements for EXECUTABLE target buffetalligator_slicemapvsvecset
+# Link build statements for EXECUTABLE target buffetalligator_chompmapvsvecset
 
 
 #############################################
-# Link the executable tests/benchmarks/buffetalligator_slicemapvsvecset
+# Link the executable tests/benchmarks/buffetalligator_chompmapvsvecset
 
-build tests/benchmarks/buffetalligator_slicemapvsvecset: CXX_EXECUTABLE_LINKER__buffetalligator_slicemapvsvecset_Release tests/benchmarks/CMakeFiles/buffetalligator_slicemapvsvecset.dir/slicemapvsvecset.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
+build tests/benchmarks/buffetalligator_chompmapvsvecset: CXX_EXECUTABLE_LINKER__buffetalligator_chompmapvsvecset_Release tests/benchmarks/CMakeFiles/buffetalligator_chompmapvsvecset.dir/chompmapvsvecset.cpp.o | liballigator.a /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a deps/threadsafe-logger/liblogging.a /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a || deps/threadsafe-logger/liblogging.a liballigator.a
   CONFIG = Release
   FLAGS = -O3 -DNDEBUG -flto=thin -arch arm64
   LINK_LIBRARIES = -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib -Wl,-rpath,/Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib  liballigator.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/MoltenVK/lib/libMoltenVK.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/src/shaderc/build/libshaderc/libshaderc_combined.a  deps/threadsafe-logger/liblogging.a  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libssl.dylib  /opt/homebrew/Cellar/openssl@3/3.6.4_1/lib/libcrypto.dylib  /Users/joshmorgan/manifoldb/actian/nebula/deps/libuv/lib/libuv.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libsodium/lib/libsodium.a  /Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib/libfabric.a
   LINK_PATH = -L/Users/joshmorgan/manifoldb/actian/nebula/deps/libfabric/lib
-  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_slicemapvsvecset.dir
+  OBJECT_DIR = tests/benchmarks/CMakeFiles/buffetalligator_chompmapvsvecset.dir
   POST_BUILD = :
   PRE_LINK = :
-  TARGET_FILE = tests/benchmarks/buffetalligator_slicemapvsvecset
-  TARGET_PDB = buffetalligator_slicemapvsvecset.dbg
+  TARGET_FILE = tests/benchmarks/buffetalligator_chompmapvsvecset
+  TARGET_PDB = buffetalligator_chompmapvsvecset.dbg
 
 
 #############################################
@@ -1045,19 +1045,19 @@ build buffetalligator_gpu_dispatch_benchmark: phony tests/benchmarks/buffetallig
 
 build buffetalligator_kitchen_benchmark: phony tests/benchmarks/buffetalligator_kitchen_benchmark
 
-build buffetalligator_priority_slice_benchmark: phony tests/benchmarks/buffetalligator_priority_slice_benchmark
+build buffetalligator_priority_chomp_benchmark: phony tests/benchmarks/buffetalligator_priority_chomp_benchmark
 
-build buffetalligator_priority_slice_showdown: phony tests/benchmarks/buffetalligator_priority_slice_showdown
+build buffetalligator_priority_chomp_showdown: phony tests/benchmarks/buffetalligator_priority_chomp_showdown
 
 build buffetalligator_queue_comparison_benchmark: phony tests/benchmarks/buffetalligator_queue_comparison_benchmark
 
 build buffetalligator_slab_churn_benchmark: phony tests/benchmarks/buffetalligator_slab_churn_benchmark
 
-build buffetalligator_slice_map_benchmark: phony tests/benchmarks/buffetalligator_slice_map_benchmark
+build buffetalligator_chomp_map_benchmark: phony tests/benchmarks/buffetalligator_chomp_map_benchmark
 
-build buffetalligator_slice_map_iteration_benchmark: phony tests/benchmarks/buffetalligator_slice_map_iteration_benchmark
+build buffetalligator_chomp_map_iteration_benchmark: phony tests/benchmarks/buffetalligator_chomp_map_iteration_benchmark
 
-build buffetalligator_slicemapvsvecset: phony tests/benchmarks/buffetalligator_slicemapvsvecset
+build buffetalligator_chompmapvsvecset: phony tests/benchmarks/buffetalligator_chompmapvsvecset
 
 build liblogging.a: phony deps/threadsafe-logger/liblogging.a
 
@@ -1096,7 +1096,7 @@ build deps/threadsafe-logger/tests/all: phony deps/threadsafe-logger/tests/test_
 #############################################
 # Folder: /Users/joshmorgan/manifoldb/buffetalligator/build-nebula/tests/benchmarks
 
-build tests/benchmarks/all: phony tests/benchmarks/buffetalligator_allocator_benchmark tests/benchmarks/buffetalligator_claim_table_benchmark tests/benchmarks/buffetalligator_gpu_dispatch_benchmark tests/benchmarks/buffetalligator_kitchen_benchmark tests/benchmarks/buffetalligator_priority_slice_benchmark tests/benchmarks/buffetalligator_priority_slice_showdown tests/benchmarks/buffetalligator_queue_comparison_benchmark tests/benchmarks/buffetalligator_slab_churn_benchmark tests/benchmarks/buffetalligator_slice_map_benchmark tests/benchmarks/buffetalligator_slice_map_iteration_benchmark tests/benchmarks/buffetalligator_slicemapvsvecset
+build tests/benchmarks/all: phony tests/benchmarks/buffetalligator_allocator_benchmark tests/benchmarks/buffetalligator_claim_table_benchmark tests/benchmarks/buffetalligator_gpu_dispatch_benchmark tests/benchmarks/buffetalligator_kitchen_benchmark tests/benchmarks/buffetalligator_priority_chomp_benchmark tests/benchmarks/buffetalligator_priority_chomp_showdown tests/benchmarks/buffetalligator_queue_comparison_benchmark tests/benchmarks/buffetalligator_slab_churn_benchmark tests/benchmarks/buffetalligator_chomp_map_benchmark tests/benchmarks/buffetalligator_chomp_map_iteration_benchmark tests/benchmarks/buffetalligator_chompmapvsvecset
 
 # =============================================================================
 # Built-in targets

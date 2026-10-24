@@ -5,7 +5,7 @@
             "name": "Debug",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/tests/buffetalligator_atomic_container_test",
+            "program": "${workspaceFolder}/build/tests/buffetalligator_allocation_tracking_test",
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake Debug",

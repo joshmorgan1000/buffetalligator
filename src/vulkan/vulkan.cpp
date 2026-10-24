@@ -1,22 +1,21 @@
 /** --------------------------------------------------------------------------------------------------------- Vulkan Implementation
  * @file vulkan.cpp
- * @brief Implements Vulkan slabs, GLSL compilation, and the public prepared Shader interface.
+ * @brief Implements the Vulkan context, slabs, and the prepared Shader behind the public handle.
  */
 #include <logging.hpp>
 #include <alligator.hpp>
 #include <alligator/kitchen.hpp>
 #include <alligator/easygpu.hpp>
-#include <alligator/easyvulkan.hpp>
-#include <vulkan/shader_state.hpp>
-#include <memory/tracker.hpp>
-#include <condition_variable>
-#include <mutex>
-#include <exception>
+#include <gpu/easyvulkan.hpp>
+#include <gpu/backend.hpp>
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace buffetalligator {
@@ -86,7 +85,6 @@ uint32_t VulkanContext::try_find_memory_type(
  * @brief Probes compatible compute devices and freezes the process Vulkan context.
  */
 VulkanContext::VulkanContext() {
-    shader_runtime_initialize();
     try {
     const char* requested = std::getenv("ALLIGATOR_GPU_BACKEND");
     const std::string_view backend = requested == nullptr ? "auto" : requested;
@@ -162,7 +160,7 @@ VulkanContext::VulkanContext() {
             compute_families_.push_back(index);
     }
     if (compute_families_.empty()) {
-        ALLIGATOR_GPU_THROW("VulkanCompute::init_instance_and_device: no compute-capable queue family");
+        ALLIGATOR_GPU_THROW("VulkanContext: no compute-capable queue family");
     }
     vk::PhysicalDeviceVulkan12Features supported12{};
     vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR supported_isq{};
@@ -176,7 +174,10 @@ VulkanContext::VulkanContext() {
     }
     physical_device_.getFeatures2(&supported);
     if (!supported12.bufferDeviceAddress) {
-        ALLIGATOR_GPU_THROW("VulkanCompute::init_instance_and_device: device lacks bufferDeviceAddress; compute requires it");
+        ALLIGATOR_GPU_THROW("VulkanContext: device lacks bufferDeviceAddress; compute requires it");
+    }
+    if (!supported12.timelineSemaphore) {
+        ALLIGATOR_GPU_THROW("VulkanContext: device lacks timelineSemaphore; Vulkan 1.2 requires it");
     }
     std::vector<const char*> device_extensions;
     for (const vk::ExtensionProperties& ext : physical_device_.enumerateDeviceExtensionProperties()) {
@@ -196,6 +197,7 @@ VulkanContext::VulkanContext() {
     }
     vk::PhysicalDeviceVulkan12Features enabled12{};
     enabled12.bufferDeviceAddress = VK_TRUE;
+    enabled12.timelineSemaphore = VK_TRUE;
     enabled12.shaderBufferInt64Atomics = supported12.shaderBufferInt64Atomics;
     enabled12.shaderFloat16 = supported12.shaderFloat16;
     vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR enabled_isq{};
@@ -274,7 +276,7 @@ VulkanContext::VulkanContext() {
     device_props_.supports_int64 = supported.features.shaderInt64 == VK_TRUE;
     device_props_.supports_int64_atomics = supported12.shaderBufferInt64Atomics == VK_TRUE;
     device_props_.supports_float16 = supported12.shaderFloat16 == VK_TRUE;
-    device_props_.supports_timeline_semaphore = supported12.timelineSemaphore == VK_TRUE;
+    device_props_.supports_timeline_semaphore = true;
     uint64_t device_local_bytes = 0;
     for (uint32_t i = 0; i < memory_properties_.memoryHeapCount; ++i) {
         if (memory_properties_.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
@@ -385,8 +387,7 @@ uint64_t VulkanContext::buffer_heap_headroom() {
         ? budget.heapBudget[heap] - budget.heapUsage[heap] : 0ull;
 }
 /** --------------------------------------------------------------------------------------------------------- destructor
- * @brief Drain the device and tear down. Caller-owned buffers, rigs, and pipelines must
- * already be destroyed.
+ * @brief Drain the device and tear down. Caller-owned buffers and shaders must already be destroyed.
  */
 VulkanContext::~VulkanContext() {
     alive_.store(false, std::memory_order_release);
@@ -398,47 +399,52 @@ VulkanContext::~VulkanContext() {
     device_.destroy();
     instance_.destroy();
 }
-/** --------------------------------------------------------------------------------------------------------- Submission Queue
- * @brief Acquires one queue for the duration of a host submission.
+/** --------------------------------------------------------------------------------------------------------- Assign Queue
+ * @brief Hands a prepared shader its own compute queue, round-robin across the device's queues.
+ * @return The queue index.
  */
-uint32_t VulkanContext::submission_queue_index() {
+uint32_t VulkanContext::assign_queue() {
     VulkanContext& context = instance();
     const uint32_t count = uint32_t(context.compute_queues_.size());
-    const uint32_t first = context.next_queue_slot_.fetch_add(1, std::memory_order_relaxed) % count;
-    if (context.internally_synchronized_queues_) return first;
-    for (;;) {
-        const uint64_t epoch = context.queue_epoch_.load(std::memory_order_acquire);
-        for (uint32_t index = 0; index < count; ++index) {
-            const uint32_t slot = (first + index) % count;
-            if (!context.queue_claims_[slot].test_and_set(std::memory_order_acquire)) return slot;
-        }
-        context.queue_epoch_.wait(epoch, std::memory_order_acquire);
-    }
+    return context.next_queue_slot_.fetch_add(1, std::memory_order_relaxed) % count;
 }
-/** --------------------------------------------------------------------------------------------------------- Submit Command Buffer
- * @brief Submits the command matching one acquired queue's family and releases the queue on every path.
+/** --------------------------------------------------------------------------------------------------------- Queue Family
+ * @brief The queue family a queue index belongs to.
+ * @param queue The queue index.
+ * @return The family index.
  */
-void VulkanContext::submit_command_buffer(std::span<const vk::CommandBuffer> commands, vk::Fence fence) {
+uint32_t VulkanContext::queue_family(uint32_t queue) {
+    const VulkanContext& context = instance();
+    return context.compute_families_[context.queue_family_slots_[queue]];
+}
+/** --------------------------------------------------------------------------------------------------------- Submit
+ * @brief Submits to one queue under the per-queue atomic claim Vulkan's external synchronization rule for
+ * vkQueueSubmit requires, skipping the claim when the device synchronizes its queues internally.
+ * @param queue The queue index.
+ * @param info The submission.
+ */
+void VulkanContext::submit(uint32_t queue, const vk::SubmitInfo& info) {
     VulkanContext& context = instance();
-    const uint32_t queue = submission_queue_index();
-    try {
-        context.device_.resetFences(fence);
-        const vk::CommandBuffer command = commands[context.queue_family_slots_[queue]];
-        const vk::SubmitInfo submit({}, {}, command);
-        context.compute_queues_[queue].submit(submit, fence);
-    } catch (...) {
-        if (!context.internally_synchronized_queues_) {
-            context.queue_claims_[queue].clear(std::memory_order_release);
-            context.queue_epoch_.fetch_add(1, std::memory_order_release);
-            context.queue_epoch_.notify_all();
-        }
-        throw;
+    if (context.internally_synchronized_queues_) {
+        context.compute_queues_[queue].submit(info);
+        return;
     }
-    if (!context.internally_synchronized_queues_) {
-        context.queue_claims_[queue].clear(std::memory_order_release);
+    std::atomic_flag& claim = context.queue_claims_[queue];
+    while (claim.test_and_set(std::memory_order_acquire)) {
+        const uint64_t epoch = context.queue_epoch_.load(std::memory_order_acquire);
+        if (claim.test(std::memory_order_acquire)) context.queue_epoch_.wait(epoch, std::memory_order_acquire);
+    }
+    try {
+        context.compute_queues_[queue].submit(info);
+    } catch (...) {
+        claim.clear(std::memory_order_release);
         context.queue_epoch_.fetch_add(1, std::memory_order_release);
         context.queue_epoch_.notify_all();
+        throw;
     }
+    claim.clear(std::memory_order_release);
+    context.queue_epoch_.fetch_add(1, std::memory_order_release);
+    context.queue_epoch_.notify_all();
 }
 /** --------------------------------------------------------------------------------------------------------- buffer_create_info
  * @brief Shares a buffer across every compute family when the device exposes more than one.
@@ -451,7 +457,7 @@ vk::BufferCreateInfo VulkanContext::buffer_create_info(vk::DeviceSize bytes, vk:
  * @return The placement.
  */
 const BuffetDescriptor* VulkanContext::buffer_placement() {
-    return BuffetDescriptors::get(VulkanBuffer::type_idx());
+    return BuffetDescriptors::descriptor<VulkanBuffer>();
 }
 /** --------------------------------------------------------------------------------------------------------- queue_count
  * @brief Compute queues across all compute families, for GPU worker-count decisions.
@@ -469,19 +475,6 @@ uint64_t VulkanContext::device_free_bytes() {
     if (!instance().device_present_) return 0;
     return instance().poll_budget_headroom();
 }
-namespace {
-/** --------------------------------------------------------------------------------------------------------- Kernel Push
- * @struct KernelPush
- * @brief The host mirror of the kernel core's push block (vulkanglsl.hpp): the engine's table
- * address and the arena directory's device address, 16 bytes.
- */
-struct KernelPush {
-    uint64_t table;  ///< Job table (megakernel) or parameters list (public Shader)
-    uint64_t pool;   ///< The arena directory's device address
-};
-static_assert(sizeof(KernelPush) == 16, "KernelPush must mirror the GLSL push block");
-
-} // namespace
 /** --------------------------------------------------------------------------------------------------------- VulkanBuffer Constructor
  * @brief Allocates coherent device-visible storage through the probed placement.
  * @param size_bytes Buffer size in bytes.
@@ -575,267 +568,244 @@ void VulkanBuffer::release() {
     address_ = 0;
     size_ = 0;
 }
-#ifdef BUFFETALLIGATOR_SHADER_TESTING
-static std::atomic<bool> shader_test_fail_preparation{false};
-static std::atomic<bool> shader_test_fail_submission{false};
-static std::atomic<bool> shader_test_hold_submission{false};
-static std::atomic<uint32_t> shader_test_live_slots{0};
-#endif
-/** --------------------------------------------------------------------------------------------------------- Shader State Resources
- * @brief Shares immutable pipelines while preparing independent mapped submission slots.
+/** --------------------------------------------------------------------------------------------------------- Shader Implementation
+ * @struct Shader::Impl
+ * @brief One compiled pipeline, one queue, one timeline semaphore, and IN_FLIGHT command buffers; a dispatch
+ * records one Chomp id into its slot's command buffer and submits. Nothing is copied anywhere.
  */
-struct VulkanShaderResources {
-    using Format = ShaderFormat;
-    Format format;
-    std::vector<uint32_t> words;
-    std::string name;
-    size_t limit;
-    vk::Pipeline pipeline{};
-    std::vector<std::vector<uint32_t>> stage_words;
-    std::vector<KernelGpuStage> stages;
-    std::vector<vk::Pipeline> stage_pipelines;
-    uint32_t resources = 0;
-    vk::PipelineLayout layout{};
-    vk::ShaderModule module{};
-    /** ------------------------------------------------------------------------------------------- Submission Slot
-     * @brief Owns every mutable resource referenced by one admitted dispatch.
-     */
-    struct Slot {
-        std::unique_ptr<VulkanBuffer> storage;
-        uint8_t* mapped = nullptr;
-        Slice parameters;
-        std::vector<vk::CommandPool> command_pools;
-        std::vector<vk::CommandBuffer> commands;
-        vk::Fence fence{};
-#ifdef BUFFETALLIGATOR_SHADER_TESTING
-        Slot() { shader_test_live_slots.fetch_add(1, std::memory_order_relaxed); }
-#endif
-        /** ----------------------------------------------------------------------------- Destructor
-         * @brief Releases a retired slot's Vulkan resources.
-         */
-        ~Slot() {
-            const auto device = VulkanContext::device();
-            for (const auto pool : command_pools) device.destroyCommandPool(pool);
-            if (fence) device.destroyFence(fence);
-#ifdef BUFFETALLIGATOR_SHADER_TESTING
-            shader_test_live_slots.fetch_sub(1, std::memory_order_relaxed);
-#endif
-        }
-        /** ----------------------------------------------------------------------------- Submit
-         * @brief Submits prepared commands and waits for host-visible retirement on a waiter thread.
-         */
-        void submit(uint32_t width, uint32_t height, uint32_t depth) {
-#ifdef BUFFETALLIGATOR_SHADER_TESTING
-            shader_test_hold_submission.wait(true, std::memory_order_acquire);
-            if (shader_test_fail_submission.exchange(false, std::memory_order_acq_rel))
-                ALLIGATOR_GPU_THROW("Injected Shader submission failure");
-#endif
-            *reinterpret_cast<vk::DispatchIndirectCommand*>(mapped + 16) =
-                vk::DispatchIndirectCommand(width, height, depth);
-            VulkanContext::submit_command_buffer(commands, fence);
-        }
-        void wait() {
-            for (;;) {
-                const auto result = VulkanContext::device().waitForFences(fence, VK_TRUE, 1000000000ull);
-                if (result == vk::Result::eSuccess) return;
-                if (result != vk::Result::eTimeout)
-                    ALLIGATOR_GPU_THROW("Shader fence wait: " + vk::to_string(result));
-                LOG_INFO_STREAM << "Waiting for the GPU dispatch to retire";
-            }
-        }
+struct Shader::Impl {
+    /// @brief Host mirror of the GLSL push block: the Chomp, whether it lists the rows, and the directory.
+    struct Push { uint32_t chomp; uint32_t list; uint64_t pool; };
+    static_assert(sizeof(Push) == 16, "Push must mirror the GLSL AlligatorPush block");
+    /// @brief One dispatch handed to the retirement thread: which slot's timeline, which value, whose result.
+    struct Pending {
+        std::shared_ptr<ShaderResult::State> result;
+        uint32_t slot = 0;
+        uint64_t value = 0;
+        bool stop = false;
     };
-    std::vector<std::unique_ptr<Slot>> slots;
-    Slice references;
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Prepares one immutable program and all device-queue submission slots.
-     */
-    VulkanShaderResources(std::vector<uint32_t> code, std::string_view label, Format selected,
-        size_t capacity, const Slice* refs = nullptr)
-        : format(selected), words(std::move(code)), name(label), limit(capacity) {
-        if (refs) references = refs->slice();
-        try { prepare(refs); } catch (...) { release(); throw; }
-    }
-    /** ------------------------------------------------------------------------------------------- Staged Constructor
-     * @brief Prepares a reference program's immutable pipeline sequence and slots.
-     */
-    VulkanShaderResources(std::vector<std::vector<uint32_t>> code, std::span<const KernelGpuStage> sequence,
-        std::string_view label, const Slice& refs, uint32_t resource_ref)
-        : format(Format::References), words(code.front()), name(label), limit(refs.size<uint32_t>()),
-          stage_words(std::move(code)), stages(sequence.begin(), sequence.end()), resources(resource_ref),
-          references(refs.slice()) {
-        try { prepare(&refs); } catch (...) { release(); throw; }
-    }
-    ~VulkanShaderResources() { release(); }
-    /** ------------------------------------------------------------------------------------------- Release
-     * @brief Destroys retired slots before their shared pipelines and layout.
-     */
-    void release() {
-        slots.clear();
-        const auto device = VulkanContext::device();
-        if (pipeline) device.destroyPipeline(pipeline);
-        for (auto entry : stage_pipelines) device.destroyPipeline(entry);
-        if (layout) device.destroyPipelineLayout(layout);
-        if (module) device.destroyShaderModule(module);
-    }
-    /** ------------------------------------------------------------------------------------------- Prepare
-     * @brief Compiles immutable pipelines and records queue-family-compatible command buffers.
-     */
-    void prepare(const Slice* refs) {
-        const auto device = VulkanContext::device();
-        const auto& properties = VulkanContext::device_properties();
-        if (properties.max_workgroup_size[0] < 16 || properties.max_workgroup_size[1] < 4
-            || properties.max_workgroup_invocations < 64)
-            ALLIGATOR_GPU_THROW("Shader: device cannot execute the (16,4,1) local shape");
-        limit = std::min(limit, size_t(properties.max_workgroup_count[format == Format::Slices ? 1 : 2]));
-        const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(KernelPush));
+    /// @brief Dispatches that may be in flight before a caller waits for a slot to come back.
+    static constexpr uint32_t IN_FLIGHT = 8;
+    std::string name;
+    std::atomic<uint32_t> workgroups;
+    uint32_t queue = 0;                                       ///< This shader's compute queue.
+    uint64_t pool_address = 0;                                ///< The directory shaders resolve ids through.
+    vk::PipelineLayout layout{};
+    vk::Pipeline pipeline{};
+    std::array<vk::CommandPool, IN_FLIGHT> pools{};           ///< One pool per slot; recording needs no lock.
+    std::array<vk::CommandBuffer, IN_FLIGHT> commands{};
+    std::array<vk::Semaphore, IN_FLIGHT> timelines{};         ///< One timeline per slot, counting its uses.
+    std::atomic<uint64_t> next{0};                            ///< Picks the slot; its uses order themselves.
+    moodycamel::BlockingConcurrentQueue<Pending> pending;     ///< Dispatches awaiting the retirement thread.
+    std::thread retirement;
+    Impl(std::string_view glsl, std::string_view label, uint32_t groups);
+    ~Impl();
+    void release();
+    void dispatch(uint32_t chomp, bool list, uint32_t rows, std::shared_ptr<ShaderResult::State> result);
+    static void retire(Impl* self) noexcept;
+};
+/** --------------------------------------------------------------------------------------------------------- Shader Preparation
+ * @brief Compiles the pipeline, makes one command pool, command buffer and timeline semaphore per slot, and
+ * starts the retirement thread; a dispatch creates nothing.
+ */
+Shader::Impl::Impl(std::string_view glsl, std::string_view label, uint32_t groups) : name(label) {
+    if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("Shader preparation requires a Vulkan compute device");
+    const DeviceProperties& properties = VulkanContext::device_properties();
+    if (properties.max_workgroup_size[0] < 16 || properties.max_workgroup_size[1] < 4
+        || properties.max_workgroup_invocations < 64)
+        ALLIGATOR_GPU_THROW("Shader: device cannot execute the (16,4,1) local shape");
+    workgroups.store(groups ? groups : std::max(1u, properties.max_workgroup_invocations / 64u),
+        std::memory_order_relaxed);
+    queue = VulkanContext::assign_queue();
+    pool_address = VulkanKernel::gpu_pool_address();
+    const vk::Device device = VulkanContext::device();
+    const std::vector<uint32_t> words =
+        shader_compile_glsl(public_shader_source(glsl), properties.supports_float16, name);
+    try {
+        const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(Push));
         layout = device.createPipelineLayout(vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1, &range));
-        stage_pipelines.reserve(stage_words.empty() ? 0 : stage_words.size() - 1);
         {
-            std::lock_guard cache_lock(VulkanContext::instance().pipeline_mutex_);
-            module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
+            // vkCreateComputePipelines requires host access to the VkPipelineCache to be externally synchronized.
+            std::lock_guard cache_lock(VulkanContext::pipeline_mutex());
+            const vk::ShaderModule module =
+                device.createShaderModule(vk::ShaderModuleCreateInfo({}, words.size() * 4, words.data()));
             const vk::PipelineShaderStageCreateInfo stage({}, vk::ShaderStageFlagBits::eCompute, module, "main");
             const auto built = device.createComputePipeline(VulkanContext::pipeline_cache(),
                 vk::ComputePipelineCreateInfo({}, stage, layout));
+            device.destroyShaderModule(module);
             if (built.result != vk::Result::eSuccess)
                 ALLIGATOR_GPU_THROW("Shader pipeline: " + vk::to_string(built.result));
             pipeline = built.value;
-            device.destroyShaderModule(module);
-            module = nullptr;
-            for (size_t index = 1; index < stage_words.size(); ++index) {
-                const auto& code = stage_words[index];
-                module = device.createShaderModule(vk::ShaderModuleCreateInfo({}, code.size() * 4, code.data()));
-                const vk::PipelineShaderStageCreateInfo pass({}, vk::ShaderStageFlagBits::eCompute, module, "main");
-                const auto created = device.createComputePipeline(VulkanContext::pipeline_cache(),
-                    vk::ComputePipelineCreateInfo({}, pass, layout));
-                if (created.result != vk::Result::eSuccess)
-                    ALLIGATOR_GPU_THROW("Shader stage pipeline: " + vk::to_string(created.result));
-                stage_pipelines.push_back(created.value);
-                device.destroyShaderModule(module);
-                module = nullptr;
-            }
         }
-        slots.reserve(VulkanContext::queue_count());
-        for (uint32_t slot_index = 0; slot_index < VulkanContext::queue_count(); ++slot_index) {
-            auto slot = std::make_unique<Slot>();
-            const size_t bytes = 32 + stages.size() * 16;
-            slot->storage = std::make_unique<VulkanBuffer>(bytes);
-#ifdef BUFFETALLIGATOR_SHADER_TESTING
-            if (shader_test_fail_preparation.exchange(false, std::memory_order_acq_rel))
-                ALLIGATOR_GPU_THROW("Injected Shader preparation failure");
-#endif
-            slot->mapped = static_cast<uint8_t*>(slot->storage->host());
-            if (format == Format::References) {
-                *reinterpret_cast<uint64_t*>(slot->mapped) = VulkanKernel::device_address(*refs);
-                reinterpret_cast<uint32_t*>(slot->mapped)[2] = uint32_t(refs->size<uint32_t>() - 1);
-                reinterpret_cast<uint32_t*>(slot->mapped)[7] = resources;
-            } else {
-                slot->parameters = Slice(limit * (format == Format::Jobs ? 32 : sizeof(Slice)),
-                    VulkanContext::buffer_placement());
-                *reinterpret_cast<uint32_t*>(slot->mapped) = slot->parameters.id();
-            }
-            slot->fence = device.createFence({});
-            slot->command_pools.reserve(VulkanContext::compute_families().size());
-            slot->commands.reserve(VulkanContext::compute_families().size());
-            for (const uint32_t family : VulkanContext::compute_families()) {
-                const auto pool = device.createCommandPool(vk::CommandPoolCreateInfo({}, family));
-                slot->command_pools.push_back(pool);
-                const auto command = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
-                    pool, vk::CommandBufferLevel::ePrimary, 1))[0];
-                slot->commands.push_back(command);
-                const KernelPush push{slot->storage->address(), VulkanKernel::gpu_pool_address()};
-                static_cast<void>(command.begin(vk::CommandBufferBeginInfo{}));
-                const vk::MemoryBarrier publication(vk::AccessFlagBits::eHostWrite,
-                    vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
-                    | vk::AccessFlagBits::eIndirectCommandRead);
-                command.pipelineBarrier(vk::PipelineStageFlagBits::eHost,
-                    vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
-                    {}, 1, &publication, 0, nullptr, 0, nullptr);
-                command.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
-                command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
-                if (stages.empty()) {
-                    command.dispatchIndirect(slot->storage->buffer_, 16);
-                } else {
-                    for (size_t index = 0; index < stages.size(); ++index) {
-                        command.bindPipeline(vk::PipelineBindPoint::eCompute,
-                            index == 0 ? pipeline : stage_pipelines[index - 1]);
-                        command.dispatchIndirect(slot->storage->buffer_, 32 + index * 16);
-                        const vk::MemoryBarrier dependency(vk::AccessFlagBits::eShaderWrite,
-                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite
-                            | vk::AccessFlagBits::eIndirectCommandRead);
-                        command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
-                            vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eDrawIndirect,
-                            {}, 1, &dependency, 0, nullptr, 0, nullptr);
-                    }
-                }
-                const vk::MemoryBarrier readback(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead);
-                command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
-                    vk::PipelineStageFlagBits::eHost, {}, 1, &readback, 0, nullptr, 0, nullptr);
-                command.end();
-            }
-            slots.push_back(std::move(slot));
+        const vk::SemaphoreTypeCreateInfo timeline_type(vk::SemaphoreType::eTimeline, 0);
+        vk::SemaphoreCreateInfo semaphore_info{};
+        semaphore_info.pNext = &timeline_type;
+        for (uint32_t slot = 0; slot < IN_FLIGHT; ++slot) {
+            pools[slot] = device.createCommandPool(vk::CommandPoolCreateInfo(
+                vk::CommandPoolCreateFlagBits::eResetCommandBuffer, VulkanContext::queue_family(queue)));
+            commands[slot] = device.allocateCommandBuffers(
+                vk::CommandBufferAllocateInfo(pools[slot], vk::CommandBufferLevel::ePrimary, 1))[0];
+            timelines[slot] = device.createSemaphore(semaphore_info);
         }
+        retirement = std::thread(&Impl::retire, this);
+    } catch (...) {
+        release();
+        throw;
     }
-};
-/** --------------------------------------------------------------------------------------------------------- Vulkan Prepared Operations
- * @brief Exposes native submission and retirement through concrete private backend functions.
+}
+/** --------------------------------------------------------------------------------------------------------- Shader Teardown
+ * @brief Stops the retirement thread after everything queued to it, waits for every slot's last use on the
+ * device, and releases.
  */
-struct VulkanPreparedOps {
-    static void destroy(ShaderProgram& program) noexcept {
-        delete static_cast<VulkanShaderResources*>(program.native);
-    }
-    static void submit(ShaderProgram&, ShaderSlot& slot, uint32_t width, uint32_t height, uint32_t depth) {
-        static_cast<VulkanShaderResources::Slot*>(slot.native)->submit(width, height, depth);
-    }
-    static void wait(ShaderProgram&, ShaderSlot& slot) {
-        static_cast<VulkanShaderResources::Slot*>(slot.native)->wait();
-    }
-};
-/** --------------------------------------------------------------------------------------------------------- Vulkan Prepare
- * @brief Builds immutable Vulkan pipelines and queue-compatible native submission slots.
- */
-std::unique_ptr<ShaderProgram> vulkan_prepare(const ShaderPrepareInfo& info) {
-    if (!VulkanContext::device_present()) ALLIGATOR_GPU_THROW("No compatible Vulkan compute device");
-    if (info.capacity == 0) ALLIGATOR_GPU_THROW("Shader preparation requires nonzero parameter capacity");
-    if (info.stages.empty() && info.words.empty() && info.source.glsl.empty())
-        ALLIGATOR_GPU_THROW("Vulkan Shader preparation requires GLSL or SPIR-V source");
-    const auto& properties = VulkanContext::device_properties();
-    std::unique_ptr<VulkanShaderResources> native;
-    if (!info.stages.empty()) {
-        std::vector<std::vector<uint32_t>> code;
-        code.reserve(info.stages.size());
-        for (const auto& stage : info.stages) {
-            if (!stage.workgroups_x || stage.workgroups_x > properties.max_workgroup_count[0]
-                || !stage.workgroups_y || stage.workgroups_y > properties.max_workgroup_count[1])
-                ALLIGATOR_GPU_THROW("Kernel stage dispatch exceeds the device shape");
-            ShaderPrepareInfo pass = info;
-            pass.source.glsl = stage.glsl;
-            code.push_back(shader_compile_glsl(shader_glsl_source(pass), properties.supports_float16, info.name));
+Shader::Impl::~Impl() {
+    if (retirement.joinable()) {
+        pending.enqueue(Pending{nullptr, 0, 0, true});
+        retirement.join();
+        const vk::Device device = VulkanContext::device();
+        const uint64_t issued = next.load(std::memory_order_acquire);
+        for (uint32_t slot = 0; slot < IN_FLIGHT && slot < issued; ++slot) {
+            const uint64_t uses = (issued - 1 - slot) / IN_FLIGHT + 1;
+            const vk::SemaphoreWaitInfo wait({}, 1, &timelines[slot], &uses);
+            static_cast<void>(device.waitSemaphores(wait, UINT64_MAX));
         }
-        native = std::make_unique<VulkanShaderResources>(std::move(code), info.stages,
-            info.name, *info.references, info.resources);
-    } else {
-        auto words = info.words.empty()
-            ? shader_compile_glsl(shader_glsl_source(info), properties.supports_float16, info.name)
-            : std::vector<uint32_t>(info.words.begin(), info.words.end());
-        native = std::make_unique<VulkanShaderResources>(std::move(words), info.name,
-            info.format, info.capacity, info.references);
     }
-    auto program = std::make_unique<ShaderProgram>();
-    program->capacity = native->limit;
-    program->max_workgroups_x = properties.max_workgroup_count[0];
-    program->spirv = std::move(native->words);
-    program->slots.reserve(native->slots.size());
-    for (const auto& owned : native->slots) {
-        auto slot = std::make_unique<ShaderSlot>();
-        slot->parameters = std::move(owned->parameters);
-        slot->mapped = owned->mapped;
-        slot->native = owned.get();
-        program->slots.push_back(std::move(slot));
+    release();
+}
+/** --------------------------------------------------------------------------------------------------------- Release
+ * @brief Destroys the Vulkan objects this shader created.
+ */
+void Shader::Impl::release() {
+    const vk::Device device = VulkanContext::device();
+    for (uint32_t slot = 0; slot < IN_FLIGHT; ++slot) {
+        if (pools[slot]) device.destroyCommandPool(pools[slot]);
+        if (timelines[slot]) device.destroySemaphore(timelines[slot]);
+        pools[slot] = nullptr;
+        timelines[slot] = nullptr;
     }
-    static const ShaderBackendOps operations{
-        &VulkanPreparedOps::destroy, &VulkanPreparedOps::submit, &VulkanPreparedOps::wait};
-    program->ops = &operations;
-    program->native = native.release();
-    return program;
+    if (pipeline) device.destroyPipeline(pipeline);
+    if (layout) device.destroyPipelineLayout(layout);
+    pipeline = nullptr;
+    layout = nullptr;
+}
+/** --------------------------------------------------------------------------------------------------------- Dispatch
+ * @brief Takes the next slot, waits on that slot's timeline for its previous use, records the one Chomp and
+ * the dimensions, and submits signaling the slot's next value.
+ * @param chomp The Chomp id, resolved by the shader through the directory.
+ * @param list Whether that Chomp holds one id per workgroup row.
+ * @param rows Workgroup rows along Y.
+ * @param result The shared state completed when the dispatch retires.
+ */
+void Shader::Impl::dispatch(
+    uint32_t chomp,
+    bool list,
+    uint32_t rows,
+    std::shared_ptr<ShaderResult::State> result
+) {
+    const uint64_t ticket = next.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t slot = uint32_t(ticket % IN_FLIGHT);
+    const uint64_t use = ticket / IN_FLIGHT;
+    const vk::Device device = VulkanContext::device();
+    if (use != 0) {
+        const vk::SemaphoreWaitInfo previous({}, 1, &timelines[slot], &use);
+        while (device.waitSemaphores(previous, UINT64_MAX) == vk::Result::eTimeout) {}
+    }
+    const vk::CommandBuffer command = commands[slot];
+    const Push push{chomp, list ? 1u : 0u, pool_address};
+    const vk::MemoryBarrier publication(vk::AccessFlagBits::eHostWrite,
+        vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
+    const vk::MemoryBarrier readback(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead);
+    // sync
+    command.reset();
+    command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eComputeShader,
+        {}, 1, &publication, 0, nullptr, 0, nullptr);
+    command.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
+    command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
+    command.dispatch(workgroups.load(std::memory_order_relaxed), rows, 1);
+    command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost,
+        {}, 1, &readback, 0, nullptr, 0, nullptr);
+    command.end();
+    // async
+    const uint64_t signal = use + 1;
+    const vk::TimelineSemaphoreSubmitInfo timeline_info(0, nullptr, 1, &signal);
+    vk::SubmitInfo info({}, {}, commands[slot], timelines[slot]);
+    info.pNext = &timeline_info;
+    pending.enqueue(Pending{std::move(result), slot, signal, false});
+    try {
+        // sync
+        VulkanContext::submit(queue, info);
+    } catch (...) {
+        // Nothing is pending on this slot's timeline, so the host signals the value the device never will.
+        device.signalSemaphore(vk::SemaphoreSignalInfo(timelines[slot], signal));
+        throw;
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Retirement Thread
+ * @brief Takes each dispatch as it was queued, waits on its slot's timeline for its value, and completes its
+ * result: the callback runs here and the result's semaphore is released.
+ * @param self The shader.
+ */
+void Shader::Impl::retire(Impl* self) noexcept {
+    const vk::Device device = VulkanContext::device();
+    try {
+        for (;;) {
+            Pending item;
+            self->pending.wait_dequeue(item);
+            if (item.stop) return;
+            const vk::SemaphoreWaitInfo wait({}, 1, &self->timelines[item.slot], &item.value);
+            while (device.waitSemaphores(wait, UINT64_MAX) == vk::Result::eTimeout) {}
+            if (item.result) ShaderResult::complete(*item.result);
+        }
+    } catch (const std::exception& error) {
+        LOG_ERROR_STREAM << "Shader " << self->name << " retirement stopped: " << error.what();
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Shader Construction
+ * @brief Prepares every Vulkan object behind the one-pointer public handle.
+ */
+Shader::Shader(const ShaderSource& source, std::string_view name, uint32_t workgroups)
+    : state_(std::make_unique<Impl>(source.glsl, name, workgroups)) {}
+Shader::Shader(std::string_view glsl, std::string_view name, uint32_t workgroups)
+    : Shader(ShaderSource{glsl, {}, {}}, name, workgroups) {}
+Shader::Shader(Shader&&) noexcept = default;
+Shader& Shader::operator=(Shader&&) noexcept = default;
+Shader::~Shader() = default;
+uint32_t Shader::workgroups() const { return state_->workgroups.load(std::memory_order_relaxed); }
+/** --------------------------------------------------------------------------------------------------------- Shader Set Workgroups
+ * @brief Sets the number of workgroups for the shader.
+ * @param count The number of workgroups to set.
+ */
+void Shader::set_workgroups(uint32_t count) {
+    state_->workgroups.store(count, std::memory_order_relaxed);
+}
+/** --------------------------------------------------------------------------------------------------------- Shader Dispatch
+ * @brief A list Chomp dispatches one row per id it holds; a single Chomp dispatches one row that is the
+ * Chomp.
+ * @param chomps The Chomp or list of Chomps to dispatch.
+ * @param count The number of rows to dispatch for a list Chomp; ignored for a single Chomp.
+ * @param done Callback to invoke when the dispatch completes.
+ * @param context Context to pass to the callback.
+ */
+ShaderResult Shader::operator()(
+    const Chomp& chomps,
+    size_t count,
+    void (*done)(std::shared_ptr<void>),
+    std::shared_ptr<void> context
+) const {
+    ShaderResult result(done, std::move(context));
+    state_->dispatch(chomps.id(), true, uint32_t(count), result.state_);
+    return result;
+}
+/** --------------------------------------------------------------------------------------------------------- Shader Dispatch (Single Chomp)
+ * @brief Dispatches a single Chomp.
+ * @param chomp The Chomp to dispatch.
+ * @param done Callback to invoke when the dispatch completes.
+ * @param context Context to pass to the callback.
+ */
+ShaderResult Shader::operator()(const Chomp& chomp, void (*done)(std::shared_ptr<void>),
+    std::shared_ptr<void> context) const {
+    ShaderResult result(done, std::move(context));
+    state_->dispatch(chomp.id(), false, 1, result.state_);
+    return result;
 }
 } // namespace buffetalligator

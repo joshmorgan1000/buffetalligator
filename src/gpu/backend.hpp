@@ -1,76 +1,192 @@
 #pragma once
-/** --------------------------------------------------------------------------------------------------------- Shader Backend
+/** --------------------------------------------------------------------------------------------------------- GPU Backend
  * @file backend.hpp
- * @brief Private prepared backend resources shared by the completion and admission engine.
+ * @brief Backend selection frozen at first use, and the GLSL assembly shared by prepared shaders.
  */
+#include <alligator.hpp>
 #include <alligator/easygpu.hpp>
+#include <gpu/easycuda.hpp>
+#include <gpu/easymetal.hpp>
+#include <gpu/easyvulkan.hpp>
+#include <atomic>
 #include <cstdint>
-#include <memory>
-#include <span>
+#include <cstdlib>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Shader Format
- * @brief Identifies the resident parameter layout consumed by a prepared program.
+/** --------------------------------------------------------------------------------------------------------- Backend Name
+ * @brief The ALLIGATOR_GPU_BACKEND spelling of a backend.
+ * @param backend The backend.
+ * @return Its name.
  */
-enum class ShaderFormat { Slices, Jobs, References };
-/** --------------------------------------------------------------------------------------------------------- GPU Stage
- * @brief Describes one dispatch in a private prepared reference sequence.
+constexpr std::string_view backend_name(GPUBackend backend) {
+    constexpr std::string_view names[] = {"cpu", "vulkan", "metal", "cuda"};
+    return names[static_cast<int>(backend)];
+}
+/** --------------------------------------------------------------------------------------------------------- Compile GLSL
+ * @brief Compiles GLSL compute source into SPIR-V words.
+ * @param source The complete GLSL source.
+ * @param float16 Whether to define VULKAN_FLOAT16 for the kernel prelude.
+ * @param name Diagnostic name for compile errors.
+ * @return The SPIR-V words.
  */
-struct KernelGpuStage {
-    std::string_view glsl;
-    uint32_t workgroups_x = 1;
-    uint32_t workgroups_y = 1;
-    bool per_request = true;
+std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16, std::string_view name);
+/** --------------------------------------------------------------------------------------------------------- Public Shader Source
+ * @brief Wraps a user body defining `void alligator_main(Chomp)` with the Chomp prelude and entry point.
+ * @param body The user's GLSL body.
+ * @return The complete GLSL source.
+ */
+std::string public_shader_source(std::string_view body);
+/** --------------------------------------------------------------------------------------------------------- GPU Device
+ * @brief Holds the selected device's immutable placement and probed capacities.
+ */
+struct GPUDevice {
+    GPUBackend kind;
+    const BuffetDescriptor* placement;
+    bool unified;
+    std::string name;
+    uint64_t placement_max_bytes = UINT64_MAX;      ///< Probed ceiling for one novel buffer in `placement`.
+    uint64_t placement_capacity_bytes = UINT64_MAX; ///< Probed total bytes `placement`'s memory domain holds.
 };
-/** --------------------------------------------------------------------------------------------------------- Shader Preparation Info
- * @brief Supplies borrowed preparation inputs before a backend creates its immutable program.
+/** --------------------------------------------------------------------------------------------------------- GPU Selection
+ * @brief Owns the immutable result of explicit selection or Vulkan-first capability probing.
  */
-struct ShaderPrepareInfo {
-    ShaderSource source;
-    std::string_view name;
-    ShaderFormat format = ShaderFormat::Slices;
-    size_t capacity = 1024;
-    const Slice* references = nullptr;
-    std::span<const KernelGpuStage> stages{};
-    uint32_t resources = 0;
-    std::span<const uint32_t> words{};
+struct GPUSelection {
+    GPUDevice device{GPUBackend::CPU, BuffetDescriptors::descriptor<AlignedHeapBuffer>(), false, {}};
+    GPUSelection();
 };
-/** --------------------------------------------------------------------------------------------------------- Shader Slot
- * @brief Keeps mutable parameters and a borrowed native slot stable through retirement.
+/** --------------------------------------------------------------------------------------------------------- GPU Static
+ * @struct GPUStatic
+ * @brief Static access to the selected GPU device and its probed limits.
  */
-struct ShaderSlot {
-    Slice parameters;
-    uint8_t* mapped = nullptr;
-    void* native = nullptr;
-    bool busy = false;
+struct GPUStatic {
+    /** ------------------------------------------------------------------------------------------- GPU Selection
+     * @brief Freezes the backend on first call and returns the selection.
+     */
+    static GPUSelection& gpu_selection() {
+        static GPUSelection* selection = new GPUSelection;
+        return *selection;
+    }
+    /** ------------------------------------------------------------------------------------------- GPU Device
+     * @brief Returns the selected GPU device.
+     */
+    static GPUDevice& gpu_device() { return gpu_selection().device; }
+    /** ------------------------------------------------------------------------------------------- Requested Backend
+     * @brief The backend GPU::select recorded, or -1 when the environment and the auto order decide.
+     */
+    static std::atomic<int>& requested_backend() {
+        static std::atomic<int>* backend = new std::atomic<int>(-1);
+        return *backend;
+    }
+    /** ------------------------------------------------------------------------------------------- Selection Started
+     * @brief Set as the freeze begins, so a later select can tell it arrived too late.
+     */
+    static std::atomic<bool>& selection_started() {
+        static std::atomic<bool>* started = new std::atomic<bool>(false);
+        return *started;
+    }
+    /** ------------------------------------------------------------------------------------------- GPU Select
+     * @brief Records the choice first, so a freeze that starts concurrently either reads it or is seen here.
+     */
+    static void gpu_select(GPUBackend backend) {
+        requested_backend().store(static_cast<int>(backend), std::memory_order_seq_cst);
+        if (selection_started().load(std::memory_order_seq_cst) && gpu_device().kind != backend) {
+            ALLIGATOR_GPU_THROW("GPU::select(" + std::string(backend_name(backend))
+                + ") arrived after the process froze on " + std::string(backend_name(gpu_device().kind))
+                + "; select the backend before the first Chomp or GPU operation");
+        }
+    }
+    /** ------------------------------------------------------------------------------------------- GPU Memory Usage
+     * @brief Device-local capacity and the live budget headroom the driver reports.
+     */
+    static DeviceMemoryUsage gpu_memory_usage() {
+        const DeviceProperties& properties = VulkanContext::device_properties();
+        return {properties.device_local_memory_bytes, VulkanContext::device_free_bytes()};
+    }
+    /** ------------------------------------------------------------------------------------------- GPU Capabilities
+     * @brief The frozen Vulkan device's probed facts as plain data.
+     */
+    static GPUCapabilities gpu_capabilities() {
+        GPUCapabilities capabilities;
+        if (gpu_device().kind != GPUBackend::Vulkan) return capabilities;
+        const DeviceProperties& properties = VulkanContext::device_properties();
+        capabilities.present = true;
+        capabilities.unified = properties.unified_memory;
+        capabilities.supports_float16 = properties.supports_float16;
+        capabilities.supports_int64 = properties.supports_int64;
+        capabilities.supports_memory_budget = properties.supports_memory_budget;
+        capabilities.supports_timeline_semaphore = properties.supports_timeline_semaphore;
+        capabilities.internally_synchronized_queues = VulkanContext::internally_synchronized_queues();
+        capabilities.queue_count = VulkanContext::queue_count();
+        capabilities.subgroup_size = properties.subgroup_size;
+        capabilities.max_workgroup_invocations = properties.max_workgroup_invocations;
+        capabilities.device_local_bytes = properties.device_local_memory_bytes;
+        capabilities.host_visible_bytes = properties.host_visible_memory_bytes;
+        capabilities.device_local_headroom_bytes = VulkanContext::device_free_bytes();
+        capabilities.device_name = properties.device_name;
+        return capabilities;
+    }
+    /** ------------------------------------------------------------------------------------------- Thread Limits
+     * @brief Probed invocation limits per workgroup along each dimension.
+     */
+    static uint32_t gpu_thread_limit_x() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_size[0] : 1;
+    }
+    static uint32_t gpu_thread_limit_y() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_size[1] : 1;
+    }
+    static uint32_t gpu_thread_limit_z() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_size[2] : 1;
+    }
+    /** ------------------------------------------------------------------------------------------- Workgroup Limits
+     * @brief Probed workgroup counts per dispatch along each dimension.
+     */
+    static uint32_t gpu_workgroup_limit_x() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_count[0] : 1;
+    }
+    static uint32_t gpu_workgroup_limit_y() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_count[1] : 1;
+    }
+    static uint32_t gpu_workgroup_limit_z() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_count[2] : 1;
+    }
+    /** ------------------------------------------------------------------------------------------- GPU Placement Headroom
+     * @brief Reports the live headroom of the frozen device placement's backing heap.
+     */
+    static uint64_t gpu_placement_headroom() {
+        return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::buffer_heap_headroom() : UINT64_MAX;
+    }
 };
-struct ShaderProgram;
-/** --------------------------------------------------------------------------------------------------------- Shader Backend Operations
- * @brief Binds concrete backend functions once during preparation.
+/** --------------------------------------------------------------------------------------------------------- GPU Selection Constructor
+ * @brief A set environment choice other than auto overrides GPU::select, which overrides the auto order.
  */
-struct ShaderBackendOps {
-    void (*destroy)(ShaderProgram&) noexcept;
-    void (*submit)(ShaderProgram&, ShaderSlot&, uint32_t, uint32_t, uint32_t);
-    void (*wait)(ShaderProgram&, ShaderSlot&);
-};
-/** --------------------------------------------------------------------------------------------------------- Shader Program
- * @brief Owns native resources until every admitted slot has retired.
- */
-struct ShaderProgram {
-    const ShaderBackendOps* ops = nullptr;
-    void* native = nullptr;
-    size_t capacity = 0;
-    uint32_t max_workgroups_x = 0;
-    std::vector<std::unique_ptr<ShaderSlot>> slots;
-    std::vector<uint32_t> spirv;
-    ~ShaderProgram();
-};
-std::unique_ptr<ShaderProgram> vulkan_prepare(const ShaderPrepareInfo& info);
-std::unique_ptr<ShaderProgram> metal_prepare(const ShaderPrepareInfo& info);
-std::string shader_glsl_source(const ShaderPrepareInfo& info);
-std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16,
-    std::string_view name);
-void shader_runtime_initialize();
+inline GPUSelection::GPUSelection() {
+    GPUStatic::selection_started().store(true, std::memory_order_seq_cst);
+    const char* environment = std::getenv("ALLIGATOR_GPU_BACKEND");
+    const int selected = GPUStatic::requested_backend().load(std::memory_order_seq_cst);
+    const std::string_view choice = environment != nullptr && std::string_view(environment) != "auto"
+        ? std::string_view(environment)
+        : selected >= 0 ? backend_name(static_cast<GPUBackend>(selected)) : std::string_view("auto");
+    if (choice == "cpu") return;
+    if (choice != "auto" && choice != "metal" && choice != "vulkan" && choice != "cuda") {
+        ALLIGATOR_GPU_THROW("ALLIGATOR_GPU_BACKEND must be auto, cpu, metal, vulkan, or cuda");
+    }
+    if (choice == "cuda") ALLIGATOR_GPU_THROW("This build has no qualified CUDA backend");
+    if ((choice == "auto" || choice == "vulkan") && VulkanContext::device_present()) {
+        const DeviceProperties& properties = VulkanContext::device_properties();
+        /// Chomps default to device-visible memory from here on, so a shader can read any of them.
+        BuffetDescriptors::register_descriptor<VulkanBuffer>(true);
+        device = {GPUBackend::Vulkan, VulkanContext::buffer_placement(), VulkanContext::device_unified(),
+            VulkanKernel::device_name(), properties.max_allocation_bytes,
+            properties.unified_memory ? properties.host_visible_memory_bytes : properties.device_local_memory_bytes};
+        LOG_INFO_STREAM << "GPU backend=vulkan; device=" << device.name
+            << "; max single allocation=" << device.placement_max_bytes << " bytes"
+            << "; placement capacity=" << device.placement_capacity_bytes << " bytes";
+        return;
+    }
+    if (choice == "vulkan") ALLIGATOR_GPU_THROW("No compatible Vulkan compute device is available");
+    if (choice == "metal") ALLIGATOR_GPU_THROW("No compatible native Metal compute device is available");
+}
 } // namespace buffetalligator

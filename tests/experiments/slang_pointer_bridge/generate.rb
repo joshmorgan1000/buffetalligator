@@ -21,7 +21,7 @@ native.gsub!(/layout\(buffer_reference,[^\n]*\)\s*(?:readonly\s+)?buffer\s+(\w+)
     if fields =~ /(\w+)\s+(\w+)\[\];/
         type, field = Regexp.last_match(1), Regexp.last_match(2)
         "struct #{name} { #{type}* #{field}; __init(uint64_t address) { #{field} = (#{type}*)address; } };"
-    elsif name == 'SliceRef' && fields == 'uint32_t id;'
+    elsif name == 'ChompRef' && fields == 'uint32_t id;'
         "struct #{name} { uint32_t id; __init(uint64_t address) { id = *((uint32_t*)address); } };"
     else
         abort "Unrecognized current buffer-reference fields: #{name}"
@@ -38,7 +38,7 @@ File.write(File.join(out, 'native_core.glsl'), native)
 File.write(File.join(out, 'unchanged_body.glsl'), body)
 File.write(File.join(out, 'body.sha256'), Digest::SHA256.hexdigest(body) + "\n")
 manifest = []
-[['public-list', public_tail, 'vulkan_count()', 'vulkan_slice(vulkan_index())'],
+[['public-list', public_tail, 'vulkan_count()', 'vulkan_chomp(vulkan_index())'],
  ['job-table', native_jobs + "\nlayout(local_size_x=16,local_size_y=4,local_size_z=1) in;\n", 'vulkan_job_count()', 'vulkan_job(vulkan_job_index())']].each do |name, tail, count, argument|
     generated = "#version 450\n" + native + tail + "\nuint gate_count() { return #{count}; }\n" + body + "\nvoid main(uniform AlligatorPush parameters) { vulkan_push = parameters; alligator_main(#{argument}); }\n"
     File.write(File.join(out, name + '.glsl'), generated)
@@ -49,7 +49,7 @@ interop = File.read(File.join(root, 'tests/vulkan_interop_functional_test.cpp'))
     application = interop[/#{constant}\s*=\s*R"glsl\((.*?)\)glsl"/m, 1]
     abort "Missing #{constant}" unless application
     name = constant.downcase
-    File.write(File.join(out, name + '.glsl'), "#version 450\n" + native + public_tail + application + "\nvoid main(uniform AlligatorPush parameters) { vulkan_push = parameters; alligator_main(vulkan_slice(vulkan_index())); }\n")
+    File.write(File.join(out, name + '.glsl'), "#version 450\n" + native + public_tail + application + "\nvoid main(uniform AlligatorPush parameters) { vulkan_push = parameters; alligator_main(vulkan_chomp(vulkan_index())); }\n")
     File.write(File.join(out, name + '.body.sha256'), Digest::SHA256.hexdigest(application) + "\n")
     manifest << {'name' => name, 'body_sha256' => Digest::SHA256.hexdigest(application)}
 end
@@ -58,16 +58,16 @@ abort 'Missing production reduction example' unless l2
 File.write(File.join(out, 'l2-reduction.glsl'), "#version 450\n" + native + native_jobs + "\nlayout(local_size_x=16,local_size_y=4,local_size_z=1) in;\n#define main alligator_application_main\n" + l2 + "\n#undef main\nvoid main(uniform AlligatorPush parameters) { vulkan_push = parameters; alligator_application_main(); }\n")
 manifest << {'name' => 'l2-reduction', 'body_sha256' => Digest::SHA256.hexdigest(l2)}
 helpers = File.read(File.join(__dir__, 'all_helpers.glsl'))
-File.write(File.join(out, 'all-helpers.glsl'), "#version 450\n" + native + public_tail + helpers + "\nvoid main(uniform AlligatorPush parameters) { vulkan_push = parameters; alligator_main(vulkan_slice(vulkan_index())); }\n")
+File.write(File.join(out, 'all-helpers.glsl'), "#version 450\n" + native + public_tail + helpers + "\nvoid main(uniform AlligatorPush parameters) { vulkan_push = parameters; alligator_main(vulkan_chomp(vulkan_index())); }\n")
 manifest << {'name' => 'all-helpers', 'body_sha256' => Digest::SHA256.hexdigest(helpers)}
 reference_section = source[/std::string reference_shader_source\(.*?return source;/m]
 reference_parts = reference_section.scan(/R"glsl\((.*?)\)glsl"/m).flatten
-reference_test = File.read(File.join(root, 'tests/shader_slice_test.cpp'))
+reference_test = File.read(File.join(root, 'tests/shader_chomp_test.cpp'))
 reference_body = reference_test[/static void reference_dispatch\(\).*?R"glsl\((.*?)\)glsl"/m, 1]
 abort 'Missing reference ABI or application' unless reference_parts.size == 2 && reference_body
 reference_entry = reference_parts[1].sub('void main() {',
     'void main(uniform AlligatorPush parameters) { vulkan_push = parameters;')
 File.write(File.join(out, 'references.glsl'), "#version 450\n" + native + reference_parts[0] + reference_body + reference_entry)
 manifest << {'name' => 'references', 'body_sha256' => Digest::SHA256.hexdigest(reference_body)}
-File.write(File.join(out, 'original-public-list.glsl'), "#version 450\n" + core + public_tail + "\nuint gate_count() { return vulkan_count(); }\n" + body + "\nvoid main() { alligator_main(vulkan_slice(vulkan_index())); }\n")
+File.write(File.join(out, 'original-public-list.glsl'), "#version 450\n" + core + public_tail + "\nuint gate_count() { return vulkan_count(); }\n" + body + "\nvoid main() { alligator_main(vulkan_chomp(vulkan_index())); }\n")
 File.write(File.join(out, 'manifest.json'), JSON.pretty_generate(manifest) + "\n")

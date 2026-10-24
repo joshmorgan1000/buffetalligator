@@ -1,5 +1,5 @@
 file(GLOB benchmark_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
-list(REMOVE_ITEM benchmark_sources "${CMAKE_CURRENT_SOURCE_DIR}/slicemapvsvecset_backup.cpp")
+list(REMOVE_ITEM benchmark_sources "${CMAKE_CURRENT_SOURCE_DIR}/chompmapvsvecset_backup.cpp")
 foreach(source IN LISTS benchmark_sources)
     get_filename_component(name "${source}" NAME_WE)
     set(target buffetalligator_${name})
@@ -9,15 +9,13 @@ foreach(source IN LISTS benchmark_sources)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endforeach()
-target_include_directories(buffetalligator_slicemapvsvecset
+target_include_directories(buffetalligator_chompmapvsvecset
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
-target_include_directories(buffetalligator_gpu_dispatch_benchmark
-    PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_include_directories(buffetalligator_slab_churn_benchmark
+target_include_directories(buffetalligator_chomp_churn_benchmark
     PRIVATE "${PROJECT_SOURCE_DIR}/src")
 if(BUFFETALLIGATOR_BUILD_TESTS)
     add_test(NAME buffetalligator_map_comparison_contracts
-        COMMAND buffetalligator_slicemapvsvecset --case contracts)
+        COMMAND buffetalligator_chompmapvsvecset --case contracts)
     set_tests_properties(buffetalligator_map_comparison_contracts PROPERTIES
         LABELS "containers;contracts" TIMEOUT 120)
 endif()

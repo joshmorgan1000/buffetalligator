@@ -3,6 +3,9 @@
  * @brief Runs the shared Order queue on the available hardware threads.
  */
 #include <alligator/kitchen.hpp>
+#include <alligator.hpp>
+#include <alligator/atomics.hpp>
+#include <memory/tracker.hpp>
 #include <logging.hpp>
 #include <loggingutils.hpp>
 #include <chrono>
@@ -45,9 +48,8 @@ void Kitchen::work(Kitchen* kitchen) {
         Order order;
         if (kitchen->order_queue_.wait_dequeue_timed(order, std::chrono::milliseconds(100))) {
             order.execute();
-        } else if (kitchen->stop_.load(std::memory_order_acquire)) {
-            return;
         }
+        if (kitchen->stop_.load(std::memory_order_acquire)) return;
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Submit Internal
@@ -87,7 +89,13 @@ KitchenInitializer::KitchenInitializer() {
  * @brief Releases Kitchen after its final public owner has been destroyed.
  */
 KitchenInitializer::~KitchenInitializer() {
-    if (--kitchen_initializer_count == 0) Kitchen::inst().~Kitchen();
+    if (--kitchen_initializer_count != 0) return;
+    /// The lifetime phases: the Kitchen joins, the tracker detaches its counters, the registry clears, and the
+    /// Alligator's current links let go.
+    Kitchen::inst().~Kitchen();
+    Memory::detach();
+    AtomicRegistry::global_clear();
+    Alligator::finalize();
 }
 /** --------------------------------------------------------------------------------------------------------- Instance
  * @brief Resolves the Kitchen retained by public initializers.

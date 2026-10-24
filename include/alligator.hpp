@@ -53,15 +53,10 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <iomanip>
-#include <iostream>
-#include <openssl/rand.h>
-#include <openssl/sha.h>
-#include <unordered_set>
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
-#include <vulkan/vulkan.hpp>
+#include <alligator/nutritionist.hpp>
 #include <moodycamel/concurrentqueue.h>
 #include <moodycamel/blockingconcurrentqueue.h>
 
@@ -73,23 +68,24 @@ namespace buffetalligator {
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 /** ------------------------------------------------------------------------------------- Forward Declarations */
-class Alligator; class Slice; class Memory; struct Region;
-class SliceQueue; class SliceChannel;
-struct SliceEntry; class PrioritySlice;
-class HeapSlice; struct SliceHandle; struct GPUBuf;
-class AlignedHeapBuffer; class VulkanBuffer;
+class Alligator; class Chomp; class Memory;
+struct Region; class ChompQueue; class ChompChannel;
+struct ChompEntry; class PriorityChomp; class HeapChomp;
+struct ChompHandle; struct GPUBuf; class AlignedHeapBuffer;
+class VulkanBuffer; struct BuffetDescriptor; struct ChompTypeRecord;
+class IBuffet; class SharedBuffet;
 /** --------------------------------------------------------------------------------------------------------- IsABuffetType
  * @brief Concept to check if a type T satisfies the requirements of a Buffet.
  */
 template<typename T>
 concept IsABuffetType = requires(T t) {
     { T::deleter() } -> std::same_as<void(*)(void*)>;
-    { T::host_ptr(std::declval<void*>(), std::declval<size_t>()) } -> std::same_as<void*>;
+    { T::host_ptr(std::declval<void*>()) } -> std::same_as<void*>;
     { t.raw() } -> std::same_as<void*>;
     { T::size_of(std::declval<void*>()) } -> std::same_as<size_t>;
     { t.size() } -> std::same_as<size_t>;
     { T::factory(std::declval<size_t>()) } -> std::same_as<void*>;
-    { T::type_idx() } -> std::same_as<size_t>;
+    { T::type_idx() } -> std::same_as<size_t*>;
     { T() == nullptr } -> std::same_as<bool>;
     { T::default_size() } -> std::same_as<size_t>;
     { T::type_name() } -> std::same_as<const char*>;
@@ -102,14 +98,89 @@ concept IsABuffetType = requires(T t) {
  * @brief Descriptor for a memory buffet, containing function pointers and metadata.
  */
 struct BuffetDescriptor {
-    const char* type_name;
-    void (*deleter)(void*);
-    void* (*host_ptr)(void*, size_t);
-    size_t (*size_of)(void*);
-    void* (*factory)(size_t);
-    uint8_t type_idx;
-    size_t default_size;
-    uint64_t (*device_address)(void*);
+    using TypeNameMethod = const char* (*)();
+    TypeNameMethod type_name_fn;
+    using DeleterMethod = void(*)(void*);
+    DeleterMethod untracked_deleter;
+    DeleterMethod tracked_deleter;
+    DeleterMethod active_deleter;
+    using HostPtrMethod = void* (*)(void*);
+    HostPtrMethod host_ptr;
+    using SizeOfMethod = size_t (*)(void*);
+    SizeOfMethod size_of;
+    using FactoryMethod = void*(*)(size_t); 
+    FactoryMethod untracked_factory;
+    FactoryMethod tracked_factory;
+    FactoryMethod active_factory;
+    size_t* (*type_idx_getter)();
+    using DefaultSizeMethod = size_t (*)();
+    DefaultSizeMethod default_size_method;
+    using DeviceAddressMethod = uint64_t (*)(void*);
+    DeviceAddressMethod device_address;
+    void* current_chain = nullptr;  ///< The placement's current chain link, advanced as links fill.
+};
+/** --------------------------------------------------------------------------------------------------------- IBuffet
+ * @class IBuffet
+ * @brief Interface for custom buffer definition, if you prefer to use virtual methods instead of
+ * descriptors.
+ */
+class IBuffet {
+public:
+    IBuffet() = default;
+    virtual ~IBuffet() { if (is_allocated()) deallocate(); }
+    virtual const char* get_type_name() const { return "Undefined"; }
+    virtual void allocate(size_t size) { (void)size; }
+    virtual bool is_allocated() const { return false; }
+    virtual void deallocate() { (void)0; }
+    virtual void* host_ptr() { return nullptr; }
+    virtual const void* host_ptr() const { return nullptr; }
+    virtual size_t size() const { return 0; }
+    virtual size_t default_size() const { return 0; }
+    virtual uint64_t device_address() const { return 0; }
+    virtual IBuffet* copy_of() const { return nullptr; }
+    using IFactoryMethod = IBuffet* (*)();
+    virtual IFactoryMethod ifactory() const { return nullptr; }
+};
+/** --------------------------------------------------------------------------------------------------------- IsAnIBuffetType
+ * @brief Concept to check if a type is a valid IBuffet derived type.
+ */
+template<typename T>
+concept IsAnIBuffetType = std::is_base_of_v<IBuffet, T> && !std::is_same_v<IBuffet, T> && !IsABuffetType<T>;
+/** --------------------------------------------------------------------------------------------------------- IBuffetProxy
+ * @class IBuffetProxy
+ * @tparam T The IBuffet derived class.
+ * @brief Wraps an IBuffet implementation so that it satisfies IsABuffetType like any other buffet.
+ */
+template<IsAnIBuffetType T>
+class IBuffetProxy {
+private:
+    IBuffet* buffer_ = nullptr;
+public:
+    IBuffetProxy(size_t size = 0) { if (size == 0) return; buffer_ = new T(); buffer_->allocate(size); }
+    IBuffetProxy(const IBuffetProxy&) = delete;
+    IBuffetProxy& operator=(const IBuffetProxy&) = delete;
+    IBuffetProxy(IBuffetProxy&& other) noexcept : buffer_(std::exchange(other.buffer_, nullptr)) {}
+    IBuffetProxy& operator=(IBuffetProxy&& other) noexcept {
+        std::swap(buffer_, other.buffer_); return *this;
+    }
+    ~IBuffetProxy() { delete buffer_; }
+    operator bool() const { return buffer_ != nullptr; }
+    bool operator==(std::nullptr_t) const { return buffer_ == nullptr; }
+    bool operator!=(std::nullptr_t) const { return buffer_ != nullptr; }
+    static void deleter_impl(void* ptr) { delete static_cast<IBuffetProxy*>(ptr); }
+    static void (*deleter())(void*) { return deleter_impl; }
+    static void* host_ptr(void* ptr) { return static_cast<IBuffetProxy*>(ptr)->buffer_->host_ptr(); }
+    static size_t size_of(void* ptr) { return static_cast<IBuffetProxy*>(ptr)->buffer_->size(); }
+    static void* factory(size_t size) { return new IBuffetProxy(size); }
+    static size_t default_size() { return T().default_size(); }
+    static size_t* type_idx() { static size_t idx = 0; return &idx; }
+    static const char* type_name() { return T().get_type_name(); }
+    static uint64_t device_address(void* ptr) {
+        return static_cast<IBuffetProxy*>(ptr)->buffer_->device_address();
+    }
+    size_t size() const { return buffer_->size(); }
+    void* raw() { return buffer_->host_ptr(); }
+    const void* raw() const { return buffer_->host_ptr(); }
 };
 /** --------------------------------------------------------------------------------------------------------- BuffetDescriptors
  * @struct BuffetDescriptors
@@ -117,64 +188,114 @@ struct BuffetDescriptor {
  */
 class BuffetDescriptors {
 private:
-    static std::atomic<size_t>& next_index();
-    static std::array<const BuffetDescriptor*, 8>& list();
-public:
-    /** --------------------------------------------------------------------------------------------------------- descriptor_for
-     * @brief Returns the BuffetDescriptor for a given buffet type T.
+    using Self = BuffetDescriptors; std::vector<BuffetDescriptor*> list_;
+    std::shared_mutex mutex_; std::unordered_map<const std::type_info*, size_t> map_;
+    BuffetDescriptors(); static Self& inst() { static Self* s = new Self; return *s; }
+    static void record_allocation(size_t type, size_t bytes, const void* buffet);
+    static void record_deallocation(size_t type, size_t bytes, const void* buffet);
+    template<IsABuffetType T> static void* tracked_factory(size_t size) { void* buffet = T::factory(size);
+        record_allocation(*T::type_idx(), T::size_of(buffet), buffet); return buffet; }
+    template<IsABuffetType T> static void tracked_deleter(void* buffet) {
+        record_deallocation(*T::type_idx(), T::size_of(buffet), buffet); T::deleter()(buffet); }
+    static std::atomic<const BuffetDescriptor*>& default_descriptor() {
+        static std::atomic<const BuffetDescriptor*> descriptor{nullptr}; return descriptor;
+    }
+    /** --------------------------------------------------------------------------------------------------------- add
+     * @brief Registers T on this registry under the write lock, unless another thread already did; the
+     * constructor seeds the heap through here, since `inst()` is still being built at that moment.
      * @tparam T The buffet type.
-     * @param T* A pointer to the buffet type (used for type deduction).
+     * @return A pointer to the descriptor for the type T.
+     */
+    template<IsABuffetType T>
+    const BuffetDescriptor* add() {
+        std::unique_lock write_lock(mutex_);
+        auto it = map_.find(&typeid(T));
+        if (it != map_.end()) return list_[it->second];
+        const size_t index = list_.size(); map_[&typeid(T)] = index;
+        list_.emplace_back(new BuffetDescriptor{
+            .type_name_fn = &T::type_name, .untracked_deleter = T::deleter(),
+            .tracked_deleter = &tracked_deleter<T>,
+            .active_deleter = allocation_tracking() ? &tracked_deleter<T> : T::deleter(),
+            .host_ptr = &T::host_ptr, .size_of = &T::size_of, .untracked_factory = &T::factory,
+            .tracked_factory = &tracked_factory<T>,
+            .active_factory = allocation_tracking() ? &tracked_factory<T> : &T::factory,
+            .type_idx_getter = &T::type_idx, .default_size_method = &T::default_size,
+            .device_address = &T::device_address,
+        });
+        *list_[index]->type_idx_getter() = index;
+        if (index == 0) default_descriptor().store(list_[0], std::memory_order_release);
+        return list_[index];
+    }
+public:
+    BuffetDescriptors(const BuffetDescriptors&) = delete;
+    BuffetDescriptors& operator=(const BuffetDescriptors&) = delete;
+    BuffetDescriptors(BuffetDescriptors&&) = delete;
+    BuffetDescriptors& operator=(BuffetDescriptors&&) = delete;
+    ~BuffetDescriptors() = default;
+    /** --------------------------------------------------------------------------------------------------------- descriptor
+     * @brief Returns the BuffetDescriptor for a given buffet type T. If the type has not yet been registered,
+     * it will register the allocator type and then return the descriptor.
+     * @tparam T The buffet type.
      * @return A pointer to the static BuffetDescriptor for the type T.
      */
     template<IsABuffetType T>
-    static const BuffetDescriptor* descriptor_for(T*) {
-        static const BuffetDescriptor descriptor = {
-            T::type_name(), &BuffetDescriptors::tracked_deleter<T>, T::host_ptr, T::size_of,
-            &BuffetDescriptors::tracked_factory<T>, static_cast<uint8_t>(T::type_idx()), T::default_size(),
-            T::device_address
-        };
-        return &descriptor;
+    static const BuffetDescriptor* descriptor() {
+        /// Resolved once per type; after that this is a guard check and a load, no lock and no map.
+        static const BuffetDescriptor* const resolved = inst().add<T>();
+        return resolved;
     }
-    /** --------------------------------------------------------------------------------------------------------- tracked_factory
-     * @brief The factory every descriptor binds: allocates through T and reports the bytes to the tracker.
+    /** --------------------------------------------------------------------------------------------------------- get
+     * @brief Returns the BuffetDescriptor for a given type index.
+     * @param type_idx The type index of the buffet.
+     * @return A pointer to the BuffetDescriptor, or nullptr if the type index is invalid.
+     */
+    static const BuffetDescriptor* get(size_t type_idx) {
+        std::shared_lock lock(inst().mutex_);
+        if (type_idx >= inst().list_.size()) [[unlikely]] return nullptr;
+        return inst().list_[type_idx];
+    }
+    /** --------------------------------------------------------------------------------------------------------- index_for
+     * @brief Returns the type index for a given buffet type. If the type has not been registered, it will be
+     * registered automatically.
      * @tparam T The buffet type.
-     * @param size The requested size in bytes.
-     * @return The new buffet handle.
+     * @return The type index of the buffet.
      */
-    template<IsABuffetType T>
-    static void* tracked_factory(size_t size) {
-        void* buffet = T::factory(size);
-        record_allocation(T::type_idx(), T::size_of(buffet), buffet);
-        return buffet;
-    }
-    /** --------------------------------------------------------------------------------------------------------- tracked_deleter
-     * @brief The deleter every descriptor binds: reports the bytes to the tracker, then releases through T.
+    template<IsABuffetType T> static size_t index_for() { return *descriptor<T>()->type_idx_getter(); }
+    /** --------------------------------------------------------------------------------------------------------- register_descriptor
+     * @brief Registers the descriptor for a given buffet type and optionally sets it as the default.
      * @tparam T The buffet type.
-     * @param buffet The buffet handle being released.
+     * @param make_default If true, sets this type as the default.
+     * @return The type index of the buffet.
      */
-    template<IsABuffetType T>
-    static void tracked_deleter(void* buffet) {
-        record_deallocation(T::type_idx(), T::size_of(buffet), buffet);
-        T::deleter()(buffet);
+    template<IsABuffetType T> static size_t register_descriptor(bool make_default = false) {
+        const BuffetDescriptor* desc = descriptor<T>();
+        if (make_default) default_descriptor().store(desc, std::memory_order_release);
+        return *desc->type_idx_getter();
     }
-    /** --------------------------------------------------------------------------------------------------------- record_allocation
-     * @brief Reports one completed buffet allocation to the memory tracker.
-     * @param type The buffet type index.
-     * @param bytes The allocation size in bytes.
-     * @param buffet The new buffet handle.
+    /** --------------------------------------------------------------------------------------------------------- default_placement
+     * @brief Returns the BuffetDescriptor for the default buffet type: the heap until a GPU probe moves it.
+     * @return A pointer to the BuffetDescriptor of the default buffet type.
      */
-    static void record_allocation(size_t type, size_t bytes, const void* buffet);
-    /** --------------------------------------------------------------------------------------------------------- record_deallocation
-     * @brief Reports one buffet release to the memory tracker.
-     * @param type The buffet type index.
-     * @param bytes The allocation size in bytes.
-     * @param buffet The buffet handle being released.
+    static const BuffetDescriptor* default_placement() {
+        return default_descriptor().load(std::memory_order_acquire);
+    }
+    /** --------------------------------------------------------------------------------------------------------- allocation_tracking
+     * @brief Returns whether allocation tracking is enabled.
+     * @return True if allocation tracking is enabled, false otherwise.
      */
-    static void record_deallocation(size_t type, size_t bytes, const void* buffet);
-    static const BuffetDescriptor* get(size_t type);
-    static size_t register_descriptor(const BuffetDescriptor* descriptor);
-    static size_t count();
-    static const BuffetDescriptor*& default_placement();
+    static bool& allocation_tracking() { static bool tracking = true; return tracking; }
+    /** --------------------------------------------------------------------------------------------------------- set_allocation_tracking
+     * @brief Sets whether allocation tracking is enabled.
+     * @param tracking True to enable allocation tracking, false to disable.
+     */
+    static void set_allocation_tracking(bool tracking) {
+        if (allocation_tracking() == tracking) return;
+        std::unique_lock lock(inst().mutex_); allocation_tracking() = tracking;
+        for (auto* desc : inst().list_) {
+            desc->active_deleter = tracking ? desc->tracked_deleter : desc->untracked_deleter;
+            desc->active_factory = tracking ? desc->tracked_factory : desc->untracked_factory;
+        }
+    }
 };
 /** --------------------------------------------------------------------------------------------------------- AlignedHeapBuffer
  * @class AlignedHeapBuffer
@@ -199,11 +320,8 @@ public:
     ~AlignedHeapBuffer() { if (buffer_) { free(buffer_); } size_ = 0; buffer_ = nullptr; }
     static void deleter_impl(void* ptr) { delete static_cast<AlignedHeapBuffer*>(ptr); }
     static void (*deleter())(void*) { return deleter_impl; }
-    static void* host_ptr_impl(void* ptr, size_t offset) {
-        return static_cast<uint8_t*>(static_cast<AlignedHeapBuffer*>(ptr)->buffer_) + offset;
-    }
-    static void* host_ptr(void* ptr, size_t offset) { return host_ptr_impl(ptr, offset); }
-    static void* (*host_ptr())(void*, size_t) { return host_ptr_impl; }
+    static void* host_ptr(void* ptr) { return static_cast<AlignedHeapBuffer*>(ptr)->buffer_; }
+    static const char* type_name() { return "AlignedHeapBuffer"; }
     static size_t size_of_impl(void* ptr) { return static_cast<AlignedHeapBuffer*>(ptr)->size_; }
     static size_t size_of(void* ptr) { return size_of_impl(ptr); }
     static size_t (*size_of())(void*) { return size_of_impl; }
@@ -211,8 +329,7 @@ public:
         return new AlignedHeapBuffer(size);
     }
     static size_t default_size() { return 64 * 1024 * 1024; }
-    static size_t type_idx() { return 0; }
-    static const char* type_name() { return "AlignedHeapBuffer"; }
+    static size_t* type_idx() { static size_t idx = 0; return &idx; }
     static uint64_t device_address(void* ptr) {
         return reinterpret_cast<uint64_t>(reinterpret_cast<AlignedHeapBuffer*>(ptr)->raw());
     }
@@ -222,59 +339,345 @@ public:
 };
 static_assert(IsABuffetType<AlignedHeapBuffer>, "AlignedHeapBuffer must satisfy IsABuffetType");
 static_assert(sizeof(AlignedHeapBuffer) == 16, "AlignedHeapBuffer must be 16 bytes");
-/** --------------------------------------------------------------------------------------------------------- ChainBuffet
- * @class ChainBuffet
- * @brief Abstract base class representing a bump pointer arena buffer that automatically pre-allocates
- * several memory blocks in advance to optimize allocation performance.
+/** --------------------------------------------------------------------------------------------------------- MultiAtomic
+ * @class MultiAtomic
+ * @brief Uses `thread_local` atomics for efficient reference counting in high-contention scenarios.
  */
-class alignas(64) ChainBuffet {
+class MultiAtomic {
 private:
-    void* buffer_;
-    const BuffetDescriptor* descriptor;
-    uint32_t atomic_id_;
-    std::atomic<size_t> bump_ptr_{0};
-    std::atomic<ChainBuffet*> next_{nullptr};
-    static int32_t fetch_add_ref_count(const ChainBuffet* buffet);
-    static int32_t fetch_sub_ref_count(const ChainBuffet* buffet);
-    ChainBuffet* next(bool allocate_next = true);
-    static std::atomic<ChainBuffet*>& current_for(size_t idx);
-    ChainBuffet(const BuffetDescriptor* desc, size_t size, bool allocate_next = true);
-    template<IsABuffetType T = AlignedHeapBuffer>
-    ChainBuffet(uint32_t atomic_id, size_t size = 0, bool allocate_next = true)
-    : buffer_(T::factory(size)), descriptor(&T::descriptor)
-    , atomic_id_(atomic_id) {
-        fetch_add_ref_count(this);
-        if (size > 0) { if (allocate_next) (void)next(false);}
-    }
-    void free();
-    [[nodiscard]] SliceEntry* claim(size_t size);
-    friend class Alligator;
-    friend struct SliceEntry;
+    int* refs_;
+    static std::atomic<size_t>& counter();
+    static size_t thread_id();
 public:
-    ChainBuffet() = default; bool valid() const { return buffer_ != nullptr; }
-    operator bool() const { return valid(); } ~ChainBuffet() { free(); }
-    ChainBuffet(const ChainBuffet&) = delete;
-    ChainBuffet& operator=(const ChainBuffet&) = delete;
-    ChainBuffet(ChainBuffet&&) = delete;
-    ChainBuffet& operator=(ChainBuffet&&) = delete;
+    MultiAtomic();
+    MultiAtomic(const MultiAtomic&) = delete;
+    int refcount() const;
+    MultiAtomic& operator=(const MultiAtomic&) = delete;
+    static size_t num_atomics(); 
+    MultiAtomic(MultiAtomic&&) = delete;
+    MultiAtomic& operator=(MultiAtomic&&) = delete;
+    ~MultiAtomic() { delete[] refs_; }
+    void increment_refcount();
+    int decrement_refcount();  
 };
-static_assert(sizeof(ChainBuffet) == 64, "ChainBuffet must be 64 bytes");
-/** --------------------------------------------------------------------------------------------------------- Pool Sizes
- * @brief Each `Slice` has a 32-bit identifier that represents a type and an index within a global buffer
- * pool.
+/** --------------------------------------------------------------------------------------------------------- SharedBuffet
+ * @class SharedBuffet
+ * @brief Wraps a buffet with reference counting for shared ownership.
  */
-inline static constexpr size_t POOL_BITS = 25;
-inline static constexpr size_t POOL_SIZE = 1 << POOL_BITS;
-inline static constexpr size_t REGION_SIZE = POOL_SIZE >> 6;
-inline static constexpr size_t POOL_MASK = POOL_SIZE - 1;
-inline static constexpr size_t pool_index(size_t id) { return id & POOL_MASK; }
-inline static constexpr size_t POOL_TYPE_BITS = 32 - POOL_BITS;
-inline static constexpr size_t POOL_TYPE_SIZE = 1 << POOL_TYPE_BITS;
-inline static constexpr size_t POOL_TYPE_MASK = POOL_TYPE_SIZE - 1;
-inline static constexpr size_t pool_type(size_t id) { return (id >> POOL_BITS) & POOL_TYPE_MASK; }
+class SharedBuffet {
+public:
+    /** ------------------------------------------------------------------------------------------- Use the static emplacement methods */
+    SharedBuffet(const SharedBuffet&) = delete;
+    SharedBuffet& operator=(const SharedBuffet&) = delete;
+    SharedBuffet(SharedBuffet&&) = delete;
+    SharedBuffet& operator=(SharedBuffet&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Destructor */
+    ~SharedBuffet();
+    /** ------------------------------------------------------------------------------------------- Raw Accessor
+     * @brief Retrieves the raw pointer to the ChainBuffet's buffer.
+     * @return The raw pointer to the buffer, or nullptr if it doesn't exist.
+     */
+    void* raw();
+    /** ------------------------------------------------------------------------------------------- Raw Accessor
+     * @brief Retrieves the raw pointer to the ChainBuffet's buffer.
+     * @return The raw pointer to the buffer, or nullptr if it doesn't exist.
+     */
+    const void* raw() const;
+    /** ------------------------------------------------------------------------------------------- Size Accessor
+     * @brief Retrieves the size of the ChainBuffet's buffer, if it exists.
+     * @return The size of the buffer.
+     */
+    size_t size() const;
+    /** ------------------------------------------------------------------------------------------- Descriptor Accessor
+     * @brief The placement the ChainBuffet's buffer came from, null when the link is gone.
+     * @return The descriptor.
+     */
+    const BuffetDescriptor* descriptor() const;
+    /** ------------------------------------------------------------------------------------------- Static Emplacement Method
+     * @brief Emplaces a SharedBuffet into the given target memory location. This should only be
+     * used for initial buffers or novel buffers.
+     * @param target The memory location to emplace the SharedBuffet into.
+     * @param descriptor The buffet descriptor.
+     * @param size The size of the buffer to allocate.
+     * @param novel_buffer Indicates whether this is a novel buffer.
+     */
+    static void emplace_into(
+        void* target,
+        const BuffetDescriptor* descriptor,
+        size_t size,
+        bool novel_buffer
+    ) {
+        new (target) SharedBuffet(descriptor, size, novel_buffer);
+    }
+    /** ------------------------------------------------------------------------------------------- Copy Into Method
+     * @brief Copies the current SharedBuffet into the given target memory location.
+     * @param target The memory location to copy the SharedBuffet into.
+     */
+    void copy_into(void* target) {
+        if (data_) data_->refs.increment_refcount();
+        else ALLIGATOR_THROW("SharedBuffet: Cannot copy an empty SharedBuffet");
+        SharedBuffet* sb = new (target) SharedBuffet();
+        sb->data_ = data_;
+    }
+private:
+    /** ------------------------------------------------------------------------------------------- Default Constructor
+     * @brief Default constructor for SharedBuffet. Initializes an empty instance. Should only
+     * be called by the copy_into method above.
+     */
+    SharedBuffet() = default;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a SharedBuffet with the given descriptor and size. Private to enforce
+     * the use of static emplacement methods. Should only be used for the initial buffers in the
+     * chain, or for novel buffers.
+     * @param descriptor The buffet descriptor.
+     * @param size The size of the buffet.
+     * @param novel_buffer Indicates whether this is a novel buffer.
+     */
+    SharedBuffet(const BuffetDescriptor* descriptor, size_t size, bool novel_buffer);
+    /** ------------------------------------------------------------------------------------------- Data Structure
+     * @struct Data
+     * @brief Holds the actual buffet pointer and the reference counter. Many slots may all point
+     * to the same Data*, which itself does not actually live in any slots. The slots merely hold
+     * the pointer reference to a shared Data instance.
+     */
+    struct Data {
+        /// @brief Pointer to the ChainBuffet.
+        void* chainbuffet;
+        /// @brief Reference counter for the shared Data instance.
+        MultiAtomic refs;
+    };
+    /// @brief Pointer to the shared Data instance.
+    Data* data_ = nullptr;
+    /// @brief Classes that may access the data member.
+    friend class Alligator;
+    friend class Chomp;
+    friend struct ChompEntry;
+};
+/** --------------------------------------------------------------------------------------------------------- Chomp Entry
+ * @struct ChompEntry
+ * @brief We pack a ChompEntry into 10 bytes. These store either a pointer to the SharedBuffet, or a pointer
+ * to another ChompEntry. We do the latter so that we don't have to have every single Chomp competing over
+ * a single atomic.
+ * THe exact way we do this is we create "anchor Chomps"
+ */
+struct ChompEntry {
+    SharedBuffet* buffet = nullptr;  ///< The link's handle every slot on that link shares; null when free.
+    size_t size() const { return buffet ? buffet->size() : 0; }
+};
+static_assert(sizeof(ChompEntry) == 8, "ChompEntry is one word of the atomics table");
+/** --------------------------------------------------------------------------------------------------------- Pool Sizes
+ * @brief Each `Chomp` has a 32-bit identifier. The region index describes which region the metadata lives
+ * in, the claim index describes which index within that region the chomp's metadata occupies.
+ * The chomp type is not used to locate the metadata, but rather it serves as a lookup for lifecycle
+ * behaviors.
+ */
+inline static constexpr size_t CHOMP_TYPE_BITS = 6u;
+inline static constexpr size_t REGION_BITS = 10u;
+inline static constexpr size_t NOVEL_REGION_BITS = 8u;
+inline static constexpr size_t CLAIM_BITS = 16u;
+static_assert(CLAIM_BITS + REGION_BITS + CHOMP_TYPE_BITS == 32u, "Pool, region, and type bits must sum to 32");
+static_assert(REGION_BITS > 0u, "Region bits must be greater than 0");
+static_assert(NOVEL_REGION_BITS < REGION_BITS, "Novel region bits must be less than region bits");
+/** --------------------------------------------------------------------------------------------------------- Chomp Type Bits
+ * @brief The chomp type is stored in the least-significant bits of the chomp identifier. How many of those
+ * bits are used is defined by the `CHOMP_TYPE_BITS` constant.
+ */
+inline static constexpr size_t NUMBER_OF_CHOMP_TYPES = 1u << CHOMP_TYPE_BITS;
+inline static constexpr size_t CHOMP_TYPES_MASK = NUMBER_OF_CHOMP_TYPES - 1u;
+/** --------------------------------------------------------------------------------------------------------- Get Chomp Type Index
+ * @brief Extracts the chomp type index from a chomp identifier.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return The index of the chomp type.
+ */
+inline static constexpr size_t get_chomp_type_index(const uint32_t& chomp_id) {
+    return chomp_id & CHOMP_TYPES_MASK;
+}
+/** --------------------------------------------------------------------------------------------------------- Get Chomp Type Record
+ * @brief Retrieves the chomp type record for a given chomp identifier.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return A pointer to the chomp type record.
+ */
+static const ChompTypeRecord* get_chomp_type_record(uint32_t chomp_id);
+/** --------------------------------------------------------------------------------------------------------- Combined Region Size
+ * @brief The bits that are the next-least-significant after the chomp type bits represent the combination
+ * of the transient chomps (short-lived, but fast, no allocation overhead) versus the novel claim regions
+ * (dedicated chomps, individually allocated). What defines how many of the combined region bits are
+ * allocated to novel claim regions is the `NOVEL_REGION_BITS` constant.
+ */
+inline static constexpr size_t COMBINED_REGION_SIZE = 1u << REGION_BITS;
+inline static constexpr size_t COMBINED_REGION_MASK = COMBINED_REGION_SIZE - 1u;
+inline static constexpr size_t NUMBER_OF_TRANSIENT_REGIONS =
+    (((1u << (REGION_BITS - 1u)) - 1u) & ~((1u << NOVEL_REGION_BITS) - 1u)) | (1u << (REGION_BITS - 1u));
+inline static constexpr size_t NOVEL_CLAIM_REGION_MASK =
+    COMBINED_REGION_MASK & ~((1u << NOVEL_REGION_BITS) - 1u);
+inline static constexpr size_t NUMBER_OF_NOVEL_CLAIM_REGIONS = (1u << REGION_BITS) - NUMBER_OF_TRANSIENT_REGIONS;
+inline static constexpr size_t NOVEL_CLAIM_MASK = (1u << NOVEL_REGION_BITS) - 1u;
+/** --------------------------------------------------------------------------------------------------------- Is Novel Claim
+ * @brief Checks if a chomp identifier corresponds to a novel claim region.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return True if the chomp is a novel claim, false otherwise.
+ */
+inline static constexpr bool is_novel_chomp_id(uint32_t chomp_id) {
+    return ((chomp_id >> CHOMP_TYPE_BITS) & NOVEL_CLAIM_REGION_MASK) == NOVEL_CLAIM_REGION_MASK;
+}
+/** --------------------------------------------------------------------------------------------------------- Is Transient Chomp
+ * @brief Checks if a chomp identifier corresponds to a transient region.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return True if the chomp is transient, false otherwise.
+ */
+inline static constexpr bool is_transient_chomp_id(uint32_t chomp_id) {
+    return !is_novel_chomp_id(chomp_id);
+}
+/** --------------------------------------------------------------------------------------------------------- Get Chomp Region Index
+ * @brief Retrieves the region index for a given chomp identifier, its slot in the combined region
+ * directory; novel claim regions occupy the top `NUMBER_OF_NOVEL_CLAIM_REGIONS` slots.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return The index of the region the chomp belongs to.
+ */
+inline static constexpr size_t get_chomp_region_index(uint32_t chomp_id) {
+    return (chomp_id >> CHOMP_TYPE_BITS) & COMBINED_REGION_MASK;
+}
+/** --------------------------------------------------------------------------------------------------------- Claims
+ * @brief Each region is made up of a collection of `ChompEntry`s, which are atomically claimed from that
+ * region. Hence, these `ChompEntry`s are sometimes referred to as "claims" within that region.
+ */
+inline static constexpr size_t CLAIMS_PER_REGION = 1u << CLAIM_BITS;
+inline static constexpr size_t CLAIM_MASK = CLAIMS_PER_REGION - 1u;
+/** --------------------------------------------------------------------------------------------------------- Get Claimed Entry
+ * @brief Returns an RValue pointer to the claimed entry corresponding to the given chomp identifier. If
+ * the identifier does not point to a valid, claimed entry, a nullptr will be returned.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return A pointer to the claimed entry, or nullptr if the entry is not valid or not claimed.
+ */
+inline static constexpr size_t get_chomp_claim_index(uint32_t chomp_id) {
+    return (chomp_id >> (CHOMP_TYPE_BITS + REGION_BITS)) & CLAIM_MASK;
+}
+/** --------------------------------------------------------------------------------------------------------- ChompTypeRecord
+ * @struct ChompTypeRecord
+ * @brief The lifecycle hooks a typed slot runs over its elements on the claim and on the last release.
+ */
+struct ChompTypeRecord {
+    /// @brief The element type's lifecycle method signature for construction and destruction.
+    using LifecycleMethodSignature = void(*)(uint32_t chomp_id, size_t count);
+    /// @brief The element type's C++ type information.
+    const std::type_info* const type;
+    /// @brief The size of each element in the chomp.
+    const size_t size_per_element;
+    /// @brief Method reference for construction behavior for a list of elements in a chomp.
+    const LifecycleMethodSignature construct;
+    /// @brief Method reference for destruction behavior for a list of elements in a chomp.
+    const LifecycleMethodSignature destroy;
+};
+/** --------------------------------------------------------------------------------------------------------- ChompTypes
+ * @class ChompTypes
+ * @brief The table of element types under the type byte each slot carries; index zero is raw bytes and
+ * index 255 marks a ChainBuffet's own slot, the one holding its reference count.
+ */
+class ChompTypes {
+private:
+    const ChompTypeRecord* records_[NUMBER_OF_CHOMP_TYPES];
+    static std::atomic<uint32_t>& count() { static std::atomic<uint32_t> c{1}; return c; }
+    std::unordered_map<const std::type_info*, uint32_t> type_to_index_;
+    std::shared_mutex type_to_index_mutex_;
+    static void raw_bytes_construct(uint32_t chomp_id, size_t count);
+    static void raw_bytes_destroy(uint32_t chomp_id, size_t count);
+    using Sig = ChompTypeRecord::LifecycleMethodSignature;
+    template<typename T> static Sig typed_construct(void (*construct_single)(void*));
+    template<typename T> static Sig typed_destroy(void (*destroy_single)(void*));
+    template<typename T> static Sig typed_construct_multi(void (*construct_multi)(void*, size_t));
+    template<typename T> static Sig typed_destroy_multi(void (*destroy_multi)(void*, size_t));
+    static uint32_t register_type(const ChompTypeRecord* const record);
+    inline static constexpr ChompTypeRecord RAW_BYTES_RECORD{
+        &typeid(uint8_t), sizeof(uint8_t), raw_bytes_construct, raw_bytes_destroy};
+    static ChompTypes& inst(); ChompTypes() = default; friend class Alligator; friend class Chomp;
+public:
+    ChompTypes(const ChompTypes&) = delete; ChompTypes& operator=(const ChompTypes&) = delete;
+    ChompTypes(ChompTypes&&) = delete; ChompTypes& operator=(ChompTypes&&) = delete;
+    ~ChompTypes() = default;
+    static const ChompTypeRecord* get(const uint32_t& id);
+    static const ChompTypeRecord* get(const std::type_info* type);
+    static const ChompTypeRecord* get(const std::type_info& type);
+    template<typename T> static const ChompTypeRecord* get() { return get(&typeid(T)); }
+    /** ------------------------------------------------------------------------------------------- Register Chomp Type
+     * @brief Registers a new chomp type with optional customized construct and destruct
+     * functions.
+     * @tparam T The type to register.
+     * @param construct Pointer to the construct function for a single instance of T.
+     * @param destruct Pointer to the destruct function for a single instance of T.
+     * @return The type index the registered record occupies, the type byte a slot carries.
+     */
+    template<typename T>
+    static uint32_t register_type(
+        void (*construct)(void*) = nullptr,
+        void (*destruct)(void*) = nullptr
+    ) {
+        const ChompTypeRecord* record = new ChompTypeRecord{
+            .type = &typeid(T),
+            .size_per_element = sizeof(T),
+            .construct = ChompTypes::typed_construct<T>(construct),
+            .destroy = ChompTypes::typed_destroy<T>(destruct)
+        };
+        return register_type(record);
+    }
+    /** ------------------------------------------------------------------------------------------- Register Chomp Type (Multiple)
+     * @brief Registers a new chomp type with optional customized construct and destruct functions
+     * for vectorized instances.
+     * @tparam T The type to register.
+     * @param construct_multiple Pointer to the construct function for multiple instances of T.
+     * @param destruct_multiple Pointer to the destruct function for multiple instances of T.
+     * @return The type index the registered record occupies, the type byte a slot carries.
+     */
+    template<typename T>
+    static uint32_t register_type(
+        void (*construct_multiple)(void*, size_t),
+        void (*destruct_multiple)(void*, size_t)
+    ) {
+        const ChompTypeRecord* record = new ChompTypeRecord{
+            .type = &typeid(T),
+            .size_per_element = sizeof(T),
+            .construct = ChompTypes::typed_construct_multi<T>(construct_multiple),
+            .destroy = ChompTypes::typed_destroy_multi<T>(destruct_multiple)
+        };
+        return register_type(record);
+    }
+};
+/** --------------------------------------------------------------------------------------------------------- Get Chomp Type Record
+ * @brief Retrieves the chomp type record for a given chomp identifier.
+ * @param chomp_id The 32-bit chomp identifier.
+ * @return A pointer to the chomp type record.
+ */
+inline const ChompTypeRecord* get_chomp_type_record(uint32_t chomp_id) {
+    return ChompTypes::get(get_chomp_type_index(chomp_id));
+}
+/** --------------------------------------------------------------------------------------------------------- ChompID
+ * @class ChompID
+ * @brief Represents a unique identifier for a chomp, encoding its type, region, and claim indices.
+ */
+class ChompID {
+private:
+    explicit ChompID(uint32_t region_index, uint32_t claim_index, uint32_t type_index, bool is_novel);
+    size_t claim_index() const { return get_chomp_claim_index(id_); } ChompEntry* entry();
+    const ChompEntry* entry() const; const ChompTypeRecord* lifecycle() const
+    { return get_chomp_type_record(id_); } GPUBuf* gpubuf(); const GPUBuf* gpubuf() const;
+    uint32_t* owners(); const uint32_t* owners() const;
+    uint32_t id_; friend class Alligator; friend class Chomp; friend struct Region;
+public:
+    ChompID() : id_(0xFFFFFFFFu) {}
+    template<typename T> requires std::is_convertible_v<T, uint32_t> && (!std::is_same_v<T, ChompID>)
+    explicit ChompID(T id) : id_(static_cast<uint32_t>(id)) {}
+    template<typename T> requires std::is_convertible_v<T, uint32_t> && (!std::is_same_v<T, ChompID>)
+    ChompID& operator=(T id) { id_ = static_cast<uint32_t>(id); return *this; }
+    ChompID(const ChompID& other); ChompID& operator=(const ChompID& other);
+    ChompID(ChompID&& other) : id_(other.id_) { other.id_ = 0xFFFFFFFFu; }
+    ChompID& operator=(ChompID&& other) { id_ = other.id_; other.id_ = 0xFFFFFFFFu; return *this; }
+    ~ChompID(); const uint32_t& id() const { return id_; } 
+    operator const uint32_t&() const { return id_; }
+    operator bool() const { return id_ != 0xFFFFFFFFu; }
+    bool is_null() const { return id_ == 0xFFFFFFFFu; }
+};
 /** --------------------------------------------------------------------------------------------------------- GPUBuf
  * @struct GPUBuf
- * @brief Stores a slice's slab base address, byte length, and slab-relative byte offset.
+ * @brief Stores a chomp's slab base address, byte length, and slab-relative byte offset.
  */
 struct alignas(16) GPUBuf {
     uint64_t address = 0;
@@ -287,94 +690,6 @@ struct alignas(16) GPUBuf {
 };
 static_assert(sizeof(GPUBuf) == 16 && offsetof(GPUBuf, size) == 8
     && offsetof(GPUBuf, offset) == 12, "GPUBuf must match the GLSL GPUBufRef record.");
-/** --------------------------------------------------------------------------------------------------------- SliceTypeRecord
- * @struct SliceTypeRecord
- * @brief The lifecycle hooks a typed slot runs over its elements on the claim and on the last release.
- */
-struct SliceTypeRecord {
-    void (*construct)(void* first, size_t count);  ///< Null when the claim constructs nothing.
-    void (*destroy)(void* first, size_t count);    ///< Null when destruction is trivial.
-    uint32_t size;                                 ///< Element size in bytes.
-};
-/** --------------------------------------------------------------------------------------------------------- SliceTypes
- * @class SliceTypes
- * @brief The table of element types under the type byte each slot carries; index zero is raw bytes and
- * index 255 marks a ChainBuffet's own slot, the one holding its reference count.
- */
-class SliceTypes {
-private:
-    static const SliceTypeRecord* records_[256];  ///< Index zero stays null for raw bytes.
-    static std::atomic<uint32_t> count_;          ///< Highest assigned type index.
-    friend class Alligator;
-public:
-    static constexpr uint8_t CHAIN_BUFFET = 255u;  ///< The type a ChainBuffet's own slot carries.
-    /** ------------------------------------------------------------------------------------------- Register Type
-     * @brief Assigns the next type index to a record and throws past 254 types.
-     * @param record The element type's lifecycle hooks, which must outlive the process.
-     * @return The assigned type index.
-     */
-    static uint8_t register_type(const SliceTypeRecord* record);
-};
-/** --------------------------------------------------------------------------------------------------------- Slice Entry
- * @struct SliceEntry
- * @brief One slot's own word in the atomics table: the handles on it and its type. Copies of a Slice touch
- * only this word. The slot's other elements live in the region's other tables at the same index.
- */
-struct SliceEntry {
-private:
-    static Region& region_holding(const SliceEntry* entry);
-    static ChainBuffet* chain_buffet_holding(const SliceEntry* entry);
-public:
-    static constexpr uint32_t OWNERS_MASK = 0x00FFFFFFu;  ///< Handles on the slot.
-    static constexpr uint32_t TYPE_SHIFT = 24u;           ///< The SliceTypes record index.
-    mutable uint32_t state = 0;  ///< [31:24] type, [23:0] owners, touched only through std::atomic_ref.
-    uint32_t owners() const {
-        return std::atomic_ref<uint32_t>(state).load(std::memory_order_acquire) & OWNERS_MASK;
-    }
-    uint8_t type() const {
-        return static_cast<uint8_t>(std::atomic_ref<uint32_t>(state).load(std::memory_order_acquire) >> TYPE_SHIFT);
-    }
-    void* buffet() const;
-    bool is_novel() const;
-    size_t size() const;
-    size_t offset() const;
-    void* host_ptr();
-    const void* host_ptr() const;
-    GPUBuf* gpu_buf();
-    const GPUBuf* gpu_buf() const;
-    static SliceEntry* from_slice(const Slice& slice);
-};
-static_assert(sizeof(SliceEntry) == 4, "SliceEntry is one word of the atomics table");
-/** --------------------------------------------------------------------------------------------------------- Region
- * @struct Region
- * @brief One region of slots, each element of a slot in its own table at the slot's index: the GPUBuf
- * records shaders read, the atomics, the host pointers, and the slot each one's release counts against,
- * which is its ChainBuffet's atomic id for a claim and its parent's slot for a sub-slice.
- */
-struct Region {
-    inline static constexpr size_t NUM_ATOMICS = (POOL_SIZE >> 12);
-    std::array<GPUBuf, (POOL_SIZE >> 6)> gpu_slots;
-    std::array<SliceEntry, (POOL_SIZE >> 6)> slots;
-    std::array<void*, (POOL_SIZE >> 6)> host_ptrs;
-    std::array<uint32_t, (POOL_SIZE >> 6)> parents;
-    std::array<std::atomic<uint64_t>, NUM_ATOMICS> occupancy{};
-    std::atomic<uint64_t> last_idx{0};
-    std::atomic<uint64_t> claimed{0};
-    std::atomic<uint64_t> freed{0};
-    uint8_t region;
-    size_t slots_available() const;
-    SliceEntry* claim(size_t skip_at_most);
-    bool release(SliceEntry* entry);
-    GPUBuf* gpu_table() { return gpu_slots.data(); }
-    const GPUBuf* gpu_table() const { return gpu_slots.data(); }
-    SliceEntry* slice_table() { return slots.data(); }
-    const SliceEntry* slice_table() const { return slots.data(); }
-};
-/** --------------------------------------------------------------------------------------------------------- Slice Entry Size and Pool Overhead
- * @brief Defines the size of a SliceEntry and the total overhead for the pool.
- */
-inline static constexpr size_t SLICE_ENTRY_SIZE = sizeof(SliceEntry);
-inline static constexpr size_t ALLIGATOR_POOL_OVERHEAD = SLICE_ENTRY_SIZE * POOL_SIZE;
 /** --------------------------------------------------------------------------------------------------------- Host Memory Usage
  * @struct HostMemoryUsage
  * @brief Reports physical capacity, estimated available memory, and this process's resident bytes.
@@ -418,18 +733,18 @@ static void enforce() { if (!armed()) { ALLIGATOR_THROW(error_message); } } };
  * @param name The name of the gate to unset.
  */
 #define unset_read_this(name) name##_struct::unset()
-/** --------------------------------------------------------------------------------------------------------- SliceType Concept
- * @brief Concept to check if a type conforms to the Slice interface. The full concept which includes the
- * conversion operator to other SliceType's is declared at the bottom of this file.
+/** --------------------------------------------------------------------------------------------------------- ChompType Concept
+ * @brief Concept to check if a type conforms to the Chomp interface. The full concept which includes the
+ * conversion operator to other ChompType's is declared at the bottom of this file.
  */
 template<typename T>
-concept PrimitiveSliceType = (
+concept PrimitiveChompType = (
     requires(T t) {
         { t.valid() } -> std::convertible_to<bool>;
-        { t.slice(std::declval<size_t>(), std::declval<size_t>()) } -> std::convertible_to<Slice>;
-        { t.slice() } -> std::convertible_to<Slice>;
+        { t.chomp(std::declval<size_t>(), std::declval<size_t>()) } -> std::convertible_to<Chomp>;
+        { t.chomp() } -> std::convertible_to<Chomp>;
         { t.raw() } -> std::convertible_to<void*>;
-        { T(std::declval<size_t>()) } -> std::convertible_to<Slice>;
+        { T(std::declval<size_t>()) } -> std::convertible_to<Chomp>;
         { t.template data<uint8_t>() } -> std::convertible_to<uint8_t*>;
         { t.template data<const uint8_t>() } -> std::convertible_to<const uint8_t*>;
         { t.template get_as<uint8_t>() } -> std::convertible_to<const uint8_t&>;
@@ -438,8 +753,8 @@ concept PrimitiveSliceType = (
         { t.template size<const uint8_t>() } -> std::convertible_to<size_t>;
         { t.size_bytes() } -> std::convertible_to<size_t>;
         { t.is_null() } -> std::convertible_to<bool>;
-        { t.root_slice() } -> std::convertible_to<Slice>;
-        { std::as_const(t).root_slice() } -> std::convertible_to<Slice>;
+        { t.root_chomp() } -> std::convertible_to<Chomp>;
+        { std::as_const(t).root_chomp() } -> std::convertible_to<Chomp>;
     } && (
         requires(T t) {
             { t.placement() } -> std::same_as<const BuffetDescriptor*>;
@@ -449,108 +764,108 @@ concept PrimitiveSliceType = (
             { t.placement() } -> std::same_as<nullptr_t>;
         }
     )
-) || std::is_same_v<T, Slice>;
-/** --------------------------------------------------------------------------------------------------------- Slice
- * @class Slice
- * @brief Represents a slice of memory in the buffet alligator.
+) || std::is_same_v<T, Chomp>;
+/** --------------------------------------------------------------------------------------------------------- Chomp
+ * @class Chomp
+ * @brief Represents a chomp of memory in the buffet alligator.
  * 
- * All operations in the buffet alligator are performed on slices of memory, represented by the `Slice`
+ * All operations in the buffet alligator are performed on chomps of memory, represented by the `Chomp`
  * class.
  * 
- * Memory slices are claims from pre-allocated memory buffers that are managed by the buffet alligator's
- * slab arena. On systems that support unified memory, they are always sliced from host-coherent GPU
+ * Memory chomps are claims from pre-allocated memory buffers that are managed by the buffet alligator's
+ * slab arena. On systems that support unified memory, they are always chompd from host-coherent GPU
  * buffers. For systems that do not support unified memory, transfers between host and device memory are
  * handled automatically by the buffet alligator.
  * 
- * Slices can be sub-sliced to create smaller slices, and they all share the same reference counter and
- * underlying memory. Slices can behave much like `std::shared_ptr` by calling the `slice()` method with
- * no parameters passed, essentially requesting a sub-slice that is the full size of the original. The copy
+ * Chomps can be sub-chompd to create smaller chomps, and they all share the same reference counter and
+ * underlying memory. Chomps can behave much like `std::shared_ptr` by calling the `chomp()` method with
+ * no parameters passed, essentially requesting a sub-chomp that is the full size of the original. The copy
  * constructor and assignment operators are deleted to cut down on unintended reference counting traffic
  * which can be expensive in high-performance scenarios.
  * 
- * In most cases, slices are meant to be short-lived since they are references to memory that is part of a
+ * In most cases, chomps are meant to be short-lived since they are references to memory that is part of a
  * larger slab in the arena's memory pool. Holding on to a small claim for a long time can lead to
- * fragmentation. For cases in which you need to hold on to a slice for longer than a transient operation,
- * you should specify the `novel_buffer` parameter when constructing the slob to `true` so that the slice
+ * fragmentation. For cases in which you need to hold on to a chomp for longer than a transient operation,
+ * you should specify the `novel_buffer` parameter when constructing the slob to `true` so that the chomp
  * is created as its own individual buffer that is not part of a larger slab. This is a slower operation
  * since it requires the buffer to be allocated and freed individually, so keep that in mind.
  */
-class Slice {
+class Chomp {
 public:
     /** ------------------------------------------------------------------------------------------- Default Placement
-     * @brief Returns the default placement for slices, which is determined by the system's
+     * @brief Returns the default placement for chomps, which is determined by the system's
      * capabilities.
-     * @return The default `Placement` enum value for slices.
+     * @return The default `Placement` enum value for chomps.
      */
     static const BuffetDescriptor* default_placement();
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
-     * slice is guaranteed to be zero-initialized.
-     * @param size The size of the slice in bytes.
+     * @brief Claims a chomp of pre-allocated memory in the buffet alligator's slab arena. The
+     * chomp is guaranteed to be zero-initialized.
+     * @param size The size of the chomp in bytes.
      */
-    Slice(size_t size = 0, const BuffetDescriptor* placement = default_placement());
+    Chomp(size_t size = 0, const BuffetDescriptor* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
-     * @brief Constructs a slice of memory with the specified size. If not a novel buffer, then
+     * @brief Constructs a chomp of memory with the specified size. If not a novel buffer, then
      * it will be claimed from a pre-allocated slab in the buffet alligator's arena.
-     * @param size The size of the slice in bytes.
-     * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
-     * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
+     * @param size The size of the chomp in bytes.
+     * @param novel_buffer If true, then the chomp is allocated as a novel buffer instead of being
+     * a claim of a pre-allocated slab. This is ideal for chomps that are long-lived to help
      * reduce fragmentation in the arena.
      */
-    Slice(size_t size, bool novel_buffer, const BuffetDescriptor* placement = default_placement());
+    Chomp(size_t size, bool novel_buffer, const BuffetDescriptor* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Copy from External Memory
-     * @brief Copies data from an external memory location into a new slice of memory in the
+     * @brief Copies data from an external memory location into a new chomp of memory in the
      * buffet alligator, ensuring the data is managed within the buffet alligator's memory system
      * and aligned properly for SIMD operations.
      * @param copy_from Pointer to the external memory to copy from.
      * @param size The size of the data to copy in bytes.
-     * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
-     * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
+     * @param novel_buffer If true, then the chomp is allocated as a novel buffer instead of being
+     * a claim of a pre-allocated slab. This is ideal for chomps that are long-lived to help
      * reduce fragmentation in the arena. Default is false.
      */
-    Slice(
+    Chomp(
         const void* copy_from,
         size_t size,
         bool novel_buffer = false,
         const BuffetDescriptor* placement = default_placement()
     );
     /** ------------------------------------------------------------------------------------------- Copy/move semantics
-     * @brief Copying a `Slice` does not actually copy the underlying memory, `Slice` objects act
+     * @brief Copying a `Chomp` does not actually copy the underlying memory, `Chomp` objects act
      * much like `std::shared_ptr` in that they share the same reference counter and underlying
      * memory. The copy constructor and assignment operators are deleted to cut down on unintended
      * reference counting traffic which can be expensive in high-performance scenarios. Move
      * semantics are supported to allow efficient transfer of ownership of the underlying memory.
      */
-    Slice(const Slice& other);
-    Slice& operator=(const Slice& other);
-    Slice(Slice&& other) noexcept;
-    Slice& operator=(Slice&& other) noexcept;
+    Chomp(const Chomp& other);
+    Chomp& operator=(const Chomp& other);
+    Chomp(Chomp&& other) noexcept;
+    Chomp& operator=(Chomp&& other) noexcept;
     /** ------------------------------------------------------------------------------------------- Destructor */
-    ~Slice() { free(); }
+    ~Chomp() { free(); }
     /** ------------------------------------------------------------------------------------------- Placement
-     * @brief Returns the memory placement type of the slice.
-     * @return The `Placement` enum value representing the slice's memory placement.
+     * @brief Returns the memory placement type of the chomp.
+     * @return The `Placement` enum value representing the chomp's memory placement.
      */
     const BuffetDescriptor* placement() const;
     /** ------------------------------------------------------------------------------------------- Raw accessors
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
+     * @brief Use the buffet alligator's internal memory arena system to resolve the chomp's
      * host-writable pointer to the underlying memory.
      */
     void* raw();
     /** ------------------------------------------------------------------------------------------- Raw accessors - const
-     * @brief Use the buffet alligator's internal memory arena system to resolve the slice's
+     * @brief Use the buffet alligator's internal memory arena system to resolve the chomp's
      * host-writable pointer to the underlying memory, but as a read-only pointer.
      */
     const void* raw() const;
     /** ------------------------------------------------------------------------------------------- Accessor - Typed
-     * @brief Returns a pointer to the underlying data of the slice, cast to the specified type.
+     * @brief Returns a pointer to the underlying data of the chomp, cast to the specified type.
      * @tparam T The type to cast the underlying data to. Default is uint8_t.
      * @return A pointer to the underlying data cast to type T.
      */
     template<typename T = uint8_t>
     T* data() { return static_cast<T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Accessor - Typed - const
-     * @brief Returns a const pointer to the underlying data of the slice, cast to the specified
+     * @brief Returns a const pointer to the underlying data of the chomp, cast to the specified
      * type.
      * @tparam T The type to cast the underlying data to. Default is uint8_t.
      * @return A const pointer to the underlying data cast to type T.
@@ -558,26 +873,34 @@ public:
     template<typename T = uint8_t>
     const T* data() const { return static_cast<const T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Create new view
-     * @brief Creates a new view of the slice, which is a sub-slice of the original slice. The new
-     * view shares the same underlying memory and reference counter as the original slice. Using
+     * @brief Creates a new view of the chomp, which is a sub-chomp of the original chomp. The new
+     * view shares the same underlying memory and reference counter as the original chomp. Using
      * the default parameters will create a new view that is essentially identical to the original
-     * slice - a shared view that increments the reference counter and will keep the underlying
+     * chomp - a shared view that increments the reference counter and will keep the underlying
      * memory alive until all views are destroyed.
-     * @param offset The offset in bytes from the start of the original slice to the start of the
+     * @param offset The offset in bytes from the start of the original chomp to the start of the
      * new view.
      * @param length The length in bytes of the new view.
-     * @return A new `Slice` object that is a view of the original slice.
+     * @return A new `Chomp` object that is a view of the original chomp.
      */
-    Slice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
+    Chomp chomp(size_t offset = 0, size_t length = SIZE_MAX) const;
+    /** ------------------------------------------------------------------------------------------- Create new view (consumer name)
+     * @brief `chomp` under the name consumers call it by.
+     * @param offset The offset in bytes from the start of the original chomp to the start of the
+     * new view.
+     * @param length The length in bytes of the new view.
+     * @return A new `Chomp` object that is a view of the original chomp.
+     */
+    Chomp slice(size_t offset = 0, size_t length = SIZE_MAX) const { return chomp(offset, length); }
     /** ------------------------------------------------------------------------------------------- Size in bytes
-     * @brief Returns the size of the slice in bytes.
-     * @return The size of the slice in bytes.
+     * @brief Returns the size of the chomp in bytes.
+     * @return The size of the chomp in bytes.
      */
     size_t size_bytes() const;
     /** ------------------------------------------------------------------------------------------- Size in elements
-     * @brief Returns the size of the slice in elements of type T.
-     * @tparam T The type of elements in the slice. Default is `uint8_t`.
-     * @return The size of the slice in elements of type T.
+     * @brief Returns the size of the chomp in elements of type T.
+     * @tparam T The type of elements in the chomp. Default is `uint8_t`.
+     * @return The size of the chomp in elements of type T.
      */
     template<typename T = uint8_t>
     size_t size() const {
@@ -591,14 +914,14 @@ public:
         return size_bytes() / sizeof(T);
     }
     /** ------------------------------------------------------------------------------------------- Resize
-     * @brief Resizes the slice to a new size. If `preserve_data` is true, the existing data in
-     * the slice will be preserved up to the minimum of the old and new sizes. If `preserve_data`
-     * is false, the existing data will be discarded and the slice will be reallocated. This can
-     * be called on a freed or null slice, in which case it will behave like a normal constructor
-     * and allocate a new slice of the specified size.
-     * @param new_size The new size of the slice in bytes.
-     * @param preserve_data Whether to preserve existing data in the slice. Default is true.
-     * @param novel_buffer Whether to allocate a novel buffer even if the slice is not null.
+     * @brief Resizes the chomp to a new size. If `preserve_data` is true, the existing data in
+     * the chomp will be preserved up to the minimum of the old and new sizes. If `preserve_data`
+     * is false, the existing data will be discarded and the chomp will be reallocated. This can
+     * be called on a freed or null chomp, in which case it will behave like a normal constructor
+     * and allocate a new chomp of the specified size.
+     * @param new_size The new size of the chomp in bytes.
+     * @param preserve_data Whether to preserve existing data in the chomp. Default is true.
+     * @param novel_buffer Whether to allocate a novel buffer even if the chomp is not null.
      * Default is false.
      * @param placement The memory placement strategy to use. Default is `default_placement()`.
      */
@@ -608,36 +931,36 @@ public:
         bool novel_buffer = false,
         const BuffetDescriptor* placement = default_placement()
     );
-    /** ------------------------------------------------------------------------------------------- Check if slice is null
-     * @brief Checks if the slice is null (i.e., has no underlying memory).
-     * @return True if the slice is null, false otherwise.
+    /** ------------------------------------------------------------------------------------------- Check if chomp is null
+     * @brief Checks if the chomp is null (i.e., has no underlying memory).
+     * @return True if the chomp is null, false otherwise.
      */
     bool is_null() const;
-    /** ------------------------------------------------------------------------------------------- Check if slice is valid
-     * @brief Checks if the slice is valid (i.e., has underlying memory).
-     * @return True if the slice is valid, false otherwise.
+    /** ------------------------------------------------------------------------------------------- Check if chomp is valid
+     * @brief Checks if the chomp is valid (i.e., has underlying memory).
+     * @return True if the chomp is valid, false otherwise.
      */
     bool valid() const;
     /** ------------------------------------------------------------------------------------------- Conversion to bool
-     * @brief Allows the slice to be used in boolean contexts.
-     * @return True if the slice is valid, false if it is null.
+     * @brief Allows the chomp to be used in boolean contexts.
+     * @return True if the chomp is valid, false if it is null.
      */
     operator bool() const;
     /** ------------------------------------------------------------------------------------------- Free
-     * @brief Frees the underlying memory of the slice. This is called automatically when the
-     * slice is destroyed, but can be called manually to free the memory early. After calling this
-     * method, the slice will be null.
+     * @brief Frees the underlying memory of the chomp. This is called automatically when the
+     * chomp is destroyed, but can be called manually to free the memory early. After calling this
+     * method, the chomp will be null.
      */
     void free();
     /** ------------------------------------------------------------------------------------------- Get as
-     * @brief Returns a reference to the underlying data of the slice, cast to the specified type.
+     * @brief Returns a reference to the underlying data of the chomp, cast to the specified type.
      * @tparam T The type to cast the underlying data to. Default is uint8_t.
      * @return A reference to the underlying data cast to type T.
      */
     template<typename T = uint8_t>
     T& get_as() { return *reinterpret_cast<T*>(data()); }
     /** ------------------------------------------------------------------------------------------- Get as (const)
-     * @brief Returns a const reference to the underlying data of the slice, cast to the specified
+     * @brief Returns a const reference to the underlying data of the chomp, cast to the specified
      * type.
      * @tparam T The type to cast the underlying data to. Default is uint8_t.
      * @return A const reference to the underlying data cast to type T.
@@ -645,35 +968,35 @@ public:
     template<typename T = uint8_t>
     const T& get_as() const { return *reinterpret_cast<const T*>(data()); }
     /** ------------------------------------------------------------------------------------------- Novel Backing
-     * @brief Reports whether this slice owns or views a dedicated novel buffer.
+     * @brief Reports whether this chomp owns or views a dedicated novel buffer.
      * @return True when the backing allocation is a novel buffer.
      */
     bool is_novel() const noexcept;
-    /** ------------------------------------------------------------------------------------------- Root slice
-     * @brief Returns a reference to the root slice. This is useful when dealing with nested
-     * slices or `SliceType` conceptual objects.
-     * @return A reference to the root slice.
+    /** ------------------------------------------------------------------------------------------- Root chomp
+     * @brief Returns a reference to the root chomp. This is useful when dealing with nested
+     * chomps or `ChompType` conceptual objects.
+     * @return A reference to the root chomp.
      */
-    Slice& root_slice() { return *this; }
-    /** ------------------------------------------------------------------------------------------- Root slice (const)
-     * @brief Returns a const reference to the root slice. This is useful when dealing with nested
-     * slices or `SliceType` conceptual objects.
-     * @return A const reference to the root slice.
+    Chomp& root_chomp() { return *this; }
+    /** ------------------------------------------------------------------------------------------- Root chomp (const)
+     * @brief Returns a const reference to the root chomp. This is useful when dealing with nested
+     * chomps or `ChompType` conceptual objects.
+     * @return A const reference to the root chomp.
      */
-    const Slice& root_slice() const { return *this; }
+    const Chomp& root_chomp() const { return *this; }
     /** ------------------------------------------------------------------------------------------- Adopt
-     * @brief Adopts the given slice, becoming another view of the same underlying data.
-     * @param other The slice to adopt.
+     * @brief Adopts the given chomp, becoming another view of the same underlying data.
+     * @param other The chomp to adopt.
      */
-    void adopt(Slice other);
+    void adopt(Chomp other);
     /** ------------------------------------------------------------------------------------------- Pool Index
-     * @brief The alligator pool slot this slice occupies; the id bits are all ones when null.
+     * @brief The alligator pool slot this chomp occupies; the id bits are all ones when null.
      * @return The pool slot index.
      */
     uint32_t pool_index() const { return id_; }
     /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
-     * @brief Implicitly converts the slice to its pool index.
-     * @return The pool index of the slice.
+     * @brief Implicitly converts the chomp to its pool index.
+     * @return The pool index of the chomp.
      */
     operator uint32_t() const { return pool_index(); }
     /** ------------------------------------------------------------------------------------------- Arrow Operator
@@ -684,7 +1007,7 @@ public:
     template<typename T>
     T* operator->() { return static_cast<T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Arrow Operator (const)
-     * @brief Provides access to the underlying data as a pointer of type T for const slices.
+     * @brief Provides access to the underlying data as a pointer of type T for const chomps.
      * @tparam T The type to cast the raw pointer to.
      * @return A const pointer to the underlying data cast to type T.
      */
@@ -698,121 +1021,121 @@ public:
     template<typename T>
     T& operator*() { return *static_cast<T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Dereference Operator (const)
-     * @brief Provides access to the underlying data as a reference of type T for const slices.
+     * @brief Provides access to the underlying data as a reference of type T for const chomps.
      * @tparam T The type to cast the raw pointer to.
      * @return A const reference to the underlying data cast to type T.
      */
     template<typename T>
     const T& operator*() const { return *static_cast<const T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- ID
-     * @brief Returns the ID of the slice.
-     * @return The ID of the slice.
+     * @brief Returns the ID of the chomp.
+     * @return The ID of the chomp.
      */
     uint32_t id() const { return id_; }
     /** ------------------------------------------------------------------------------------------- Discharge Unsafely
-     * @brief Releases the underlying ID of the slice without marking the slots as unallocated,
+     * @brief Releases the underlying ID of the chomp without marking the slots as unallocated,
      * which must be used carefully because it could lead to a memory leak if it is not re-adopted
-     * by another slice object later (e.g. by using `Slice::from_id`).
-     * @return The pool index of the discharged slice.
+     * by another chomp object later (e.g. by using `Chomp::from_id`).
+     * @return The pool index of the discharged chomp.
      */
     uint32_t discharge_unsafely();
     /** ------------------------------------------------------------------------------------------- From ID
-     * @brief Creates a slice from the given previously discharged ID, that will safely release
-     * the claim to memory when the `Slice` object is destroyed.
-     * @param id The ID to create the slice from.
-     * @return A slice corresponding to the given ID.
+     * @brief Creates a chomp from the given previously discharged ID, that will safely release
+     * the claim to memory when the `Chomp` object is destroyed.
+     * @param id The ID to create the chomp from.
+     * @return A chomp corresponding to the given ID.
      */
-    static Slice from_id(uint32_t id);
+    static Chomp from_id(uint32_t id);
 private:
     uint32_t id_ = UINT32_MAX;
     friend class Alligator;
-    friend struct SliceEntry;
-    friend class SliceQueue;
-    friend struct SliceHandle;
-    friend struct SliceNetworkAccess;
+    friend struct ChompEntry;
+    friend class ChompQueue;
+    friend struct ChompHandle;
+    friend struct ChompNetworkAccess;
 };
-static_assert(sizeof(Slice) == 4, "Slice must be 4 bytes in size.");
-/** --------------------------------------------------------------------------------------------------------- PotentialSlice
- * @class PotentialSlice
- * @brief A slice that gets filled lazily by the provided fulfillment method.
+static_assert(sizeof(Chomp) == 4, "Chomp must be 4 bytes in size.");
+/** --------------------------------------------------------------------------------------------------------- PotentialChomp
+ * @class PotentialChomp
+ * @brief A chomp that gets filled lazily by the provided fulfillment method.
  */
-class PotentialSlice {
+class PotentialChomp {
 private:
     struct Details;
-    /// @brief Shared pointer to the internal details of the PotentialSlice, created in slice.cpp where Details is complete.
+    /// @brief Shared pointer to the internal details of the PotentialChomp, created in chomp.cpp where Details is complete.
     std::shared_ptr<Details> details_;
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Default constructor for PotentialSlice.
+     * @brief Default constructor for PotentialChomp.
      */
-    PotentialSlice(
-        Slice (*fulfillment_method)(void* context) = nullptr,
+    PotentialChomp(
+        Chomp (*fulfillment_method)(void* context) = nullptr,
         void* context = nullptr,
         void (*context_deleter)(void* context) = nullptr
     );
     /** ------------------------------------------------------------------------------------------- Copy/move semantics */
-    PotentialSlice(const PotentialSlice& other);
-    PotentialSlice(PotentialSlice&& other) noexcept;
-    PotentialSlice& operator=(const PotentialSlice& other);
-    PotentialSlice& operator=(PotentialSlice&& other) noexcept;
+    PotentialChomp(const PotentialChomp& other);
+    PotentialChomp(PotentialChomp&& other) noexcept;
+    PotentialChomp& operator=(const PotentialChomp& other);
+    PotentialChomp& operator=(PotentialChomp&& other) noexcept;
     /** ------------------------------------------------------------------------------------------- Destructor */
-    ~PotentialSlice();
+    ~PotentialChomp();
     /** ------------------------------------------------------------------------------------------- Get Raw Pointer
-     * @brief Returns the raw pointer to the underlying slice's data, fulfilling the lazy
+     * @brief Returns the raw pointer to the underlying chomp's data, fulfilling the lazy
      * initialization if necessary.
-     * @return The raw pointer to the underlying slice's data.
+     * @return The raw pointer to the underlying chomp's data.
      */
     void* raw();
     /** ------------------------------------------------------------------------------------------- Get Raw Pointer (const)
-     * @brief Returns the raw pointer to the underlying slice's data, fulfilling the lazy
+     * @brief Returns the raw pointer to the underlying chomp's data, fulfilling the lazy
      * initialization if necessary.
-     * @return The raw pointer to the underlying slice's data.
+     * @return The raw pointer to the underlying chomp's data.
      */
     const void* raw() const;
     /** ------------------------------------------------------------------------------------------- Get Typed Data Pointer
-     * @brief Returns a typed pointer to the underlying slice's data, fulfilling the lazy
+     * @brief Returns a typed pointer to the underlying chomp's data, fulfilling the lazy
      * initialization if necessary.
      * @tparam T The type of the pointer to return.
-     * @return A typed pointer to the underlying slice's data.
+     * @return A typed pointer to the underlying chomp's data.
      */
     template<typename T>
     T* data() { return static_cast<T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Get Typed Data Pointer (const)
-     * @brief Returns a typed pointer to the underlying slice's data, fulfilling the lazy
+     * @brief Returns a typed pointer to the underlying chomp's data, fulfilling the lazy
      * initialization if necessary.
      * @tparam T The type of the pointer to return.
-     * @return A typed pointer to the underlying slice's data.
+     * @return A typed pointer to the underlying chomp's data.
      */
     template<typename T>
     const T* data() const { return static_cast<const T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Check Fulfillment
-     * @brief Checks if the slice has been fulfilled.
-     * @return `true` if the slice has been fulfilled, `false` otherwise.
+     * @brief Checks if the chomp has been fulfilled.
+     * @return `true` if the chomp has been fulfilled, `false` otherwise.
      */
     bool is_fulfilled() const;
-    /** ------------------------------------------------------------------------------------------- Fulfill Slice
-     * @brief Fulfills the slice by invoking its fulfillment method if it has not been fulfilled
+    /** ------------------------------------------------------------------------------------------- Fulfill Chomp
+     * @brief Fulfills the chomp by invoking its fulfillment method if it has not been fulfilled
      * yet.
      */
     void fulfill();
-    /** ------------------------------------------------------------------------------------------- Get Raw Slice
-     * @brief Returns a pointer to the underlying raw Slice object, which may be nullptr if the
-     * slice has not been fulfilled yet.
-     * @return A pointer to the underlying raw Slice object.
+    /** ------------------------------------------------------------------------------------------- Get Raw Chomp
+     * @brief Returns a pointer to the underlying raw Chomp object, which may be nullptr if the
+     * chomp has not been fulfilled yet.
+     * @return A pointer to the underlying raw Chomp object.
      */
-    Slice* raw_slice() const;
-    /** ------------------------------------------------------------------------------------------- Get Subslice
-     * @brief Returns a subslice of the current slice, starting at the specified offset and with
-     * the specified length. This will fulfill the current slice if it has not been fulfilled yet.
-     * @param offset The starting offset of the subslice.
-     * @param length The length of the subslice.
-     * @return A new Slice representing the subslice.
+    Chomp* raw_chomp() const;
+    /** ------------------------------------------------------------------------------------------- Get Subchomp
+     * @brief Returns a subchomp of the current chomp, starting at the specified offset and with
+     * the specified length. This will fulfill the current chomp if it has not been fulfilled yet.
+     * @param offset The starting offset of the subchomp.
+     * @param length The length of the subchomp.
+     * @return A new Chomp representing the subchomp.
      */
-    Slice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
+    Chomp chomp(size_t offset = 0, size_t length = SIZE_MAX) const;
     /** ------------------------------------------------------------------------------------------- Get Typed Size
-     * @brief Returns the size of the slice in terms of the number of elements of type T.
+     * @brief Returns the size of the chomp in terms of the number of elements of type T.
      * @tparam T The type of elements.
-     * @return The number of elements of type T in the slice.
+     * @return The number of elements of type T in the chomp.
      */
     template<typename T>
     size_t size() const {
@@ -828,408 +1151,482 @@ public:
             return size_bytes() / sizeof(T);
     }
     /** ------------------------------------------------------------------------------------------- Get Size in Bytes
-     * @brief Returns the size of the slice in bytes.
-     * @return The size of the slice in bytes.
+     * @brief Returns the size of the chomp in bytes.
+     * @return The size of the chomp in bytes.
      */
     size_t size_bytes() const;
-    /** ------------------------------------------------------------------------------------------- Free Slice
-     * @brief Frees the underlying memory of the slice if it has been allocated.
+    /** ------------------------------------------------------------------------------------------- Free Chomp
+     * @brief Frees the underlying memory of the chomp if it has been allocated.
      */
     void free();
-    /** ------------------------------------------------------------------------------------------- Null Slice
-     * @brief Checks if the slice is null.
-     * @return True if the slice is null, false otherwise.
+    /** ------------------------------------------------------------------------------------------- Null Chomp
+     * @brief Checks if the chomp is null.
+     * @return True if the chomp is null, false otherwise.
      */
     bool is_null() const;
-    /** ------------------------------------------------------------------------------------------- Valid Slice
-     * @brief Checks if the slice is valid.
-     * @return True if the slice is valid, false otherwise.
+    /** ------------------------------------------------------------------------------------------- Valid Chomp
+     * @brief Checks if the chomp is valid.
+     * @return True if the chomp is valid, false otherwise.
      */
     bool valid() const;
     /** ------------------------------------------------------------------------------------------- Bool Conversion
-     * @brief Converts the slice to a boolean value, indicating whether it is valid.
-     * @return True if the slice is valid, false otherwise.
+     * @brief Converts the chomp to a boolean value, indicating whether it is valid.
+     * @return True if the chomp is valid, false otherwise.
      */
     operator bool() const;
-    /** ------------------------------------------------------------------------------------------- Adopt Slice
-     * @brief Adopts the given Slice, becoming another view of the same underlying memory. This
-     * will complete the fulfillment contract for the PotentialSlice, overriding any fufillment
+    /** ------------------------------------------------------------------------------------------- Adopt Chomp
+     * @brief Adopts the given Chomp, becoming another view of the same underlying memory. This
+     * will complete the fulfillment contract for the PotentialChomp, overriding any fufillment
      * methods, and clean up the context if a deleter is set for it.
-     * @param slice The Slice to adopt.
+     * @param chomp The Chomp to adopt.
      */
-    void adopt(Slice slice);
+    void adopt(Chomp chomp);
 };
-/** --------------------------------------------------------------------------------------------------------- SliceT
- * @class SliceT
- * @brief A template class that wraps a Slice and provides type-safe access to its underlying memory.
- * @tparam T The type of elements in the slice.
+/** --------------------------------------------------------------------------------------------------------- ChompT
+ * @class ChompT
+ * @brief A template class that wraps a Chomp and provides type-safe access to its underlying memory.
+ * @tparam T The type of elements in the chomp.
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-class SliceT {
+class ChompT {
 private:
-    /// @brief The underlying Slice object that this SliceT wraps.
-    Slice slice_;
-    /// @brief Registers a destructor for the type T to be called when the slice is freed.
-    void register_destructor(const std::type_info& type, void(*destructor)(void*));
+    /// @brief The underlying Chomp object that this ChompT wraps.
+    Chomp chomp_;
+    /// @brief Claims one T's worth of bytes in a slot carrying T's type, so the last release runs ~T.
+    static Chomp claim_typed(bool novel_buffer);
 public:
     /** ------------------------------------------------------------------------------------------- Constructor with Initialization
-     * @brief Constructs a SliceT and optionally initializes it with the given arguments.
-     * @param initialize If true, allocates and initializes the slice.
-     * @param novel_buffer If true, allocates a novel buffer for the slice.
+     * @brief Constructs a ChompT and optionally initializes it with the given arguments.
+     * @param initialize If true, allocates and initializes the chomp.
+     * @param novel_buffer If true, allocates a novel buffer for the chomp.
      * @param args Arguments to forward to the constructor of T.
      */
     template <typename ...Args>
         requires std::is_constructible_v<T, Args...>
-    SliceT(bool initialize = false, bool novel_buffer = false, Args&&... args) {
+    ChompT(bool initialize = false, bool novel_buffer = false, Args&&... args) {
         if (initialize) {
-            slice_ = Slice(sizeof(T), novel_buffer);
-            new (slice_.raw()) T(std::forward<Args>(args)...);
-            register_destructor(typeid(T), [](void* ptr) { static_cast<T*>(ptr)->~T(); });
+            chomp_ = claim_typed(novel_buffer);
+            new (chomp_.raw()) T(std::forward<Args>(args)...);
         }
     }
     /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs a SliceT from a Slice. The Slice must have a size that is a multiple of
+     * @brief Constructs a ChompT from a Chomp. The Chomp must have a size that is a multiple of
      * the size of type T.
-     * @param slice The Slice to wrap.
+     * @param chomp The Chomp to wrap.
      */
-    explicit SliceT(Slice&& slice) : slice_(std::move(slice)) {}
+    explicit ChompT(Chomp&& chomp) : chomp_(std::move(chomp)) {}
     /** ------------------------------------------------------------------------------------------- Copy/Move semantics */
-    SliceT(const SliceT& other);
-    SliceT(SliceT&& other) noexcept;
-    SliceT& operator=(const SliceT& other);
-    SliceT& operator=(SliceT&& other) noexcept;
+    ChompT(const ChompT& other);
+    ChompT(ChompT&& other) noexcept;
+    ChompT& operator=(const ChompT& other);
+    ChompT& operator=(ChompT&& other) noexcept;
     /** ------------------------------------------------------------------------------------------- Destructor */
-    ~SliceT() { free(); }
+    ~ChompT() { free(); }
     /** ------------------------------------------------------------------------------------------- BuffetDescriptor
-     * @brief Returns the BuffetDescriptor of the slice.
-     * @return The `BuffetDescriptor` pointer representing the slice's memory placement.
+     * @brief Returns the BuffetDescriptor of the chomp.
+     * @return The `BuffetDescriptor` pointer representing the chomp's memory placement.
      */
     const BuffetDescriptor* placement() const;
     /** ------------------------------------------------------------------------------------------- Size in elements
-     * @brief Returns the size of the slice in elements of type T.
-     * @return The size of the slice in elements of type T.
+     * @brief Returns the size of the chomp in elements of type T.
+     * @return The size of the chomp in elements of type T.
      */
     template<typename U = T>
     size_t size() const {
-        return slice_.size_bytes() / sizeof(U);
+        return chomp_.size_bytes() / sizeof(U);
     }
     /** ------------------------------------------------------------------------------------------- Size in bytes
-     * @brief Returns the size of the slice in bytes.
-     * @return The size of the slice in bytes.
+     * @brief Returns the size of the chomp in bytes.
+     * @return The size of the chomp in bytes.
      */
     size_t size_bytes() const {
-        return slice_.size_bytes();
+        return chomp_.size_bytes();
     }
     /** ------------------------------------------------------------------------------------------- Raw pointer access
-     * @brief Returns a pointer to the underlying memory of the slice.
-     * @return A pointer to the underlying memory of the slice.
+     * @brief Returns a pointer to the underlying memory of the chomp.
+     * @return A pointer to the underlying memory of the chomp.
      */
-    void* raw() { return slice_.raw(); }
+    void* raw() { return chomp_.raw(); }
     /** ------------------------------------------------------------------------------------------- Raw pointer access - const
-     * @brief Returns a const pointer to the underlying memory of the slice.
-     * @return A const pointer to the underlying memory of the slice.
+     * @brief Returns a const pointer to the underlying memory of the chomp.
+     * @return A const pointer to the underlying memory of the chomp.
      */
-    const void* raw() const { return slice_.raw(); }
+    const void* raw() const { return chomp_.raw(); }
     /** ------------------------------------------------------------------------------------------- Data access
-     * @brief Returns a pointer to the underlying memory of the slice, cast to type U*.
-     * @return A pointer to the underlying memory of the slice.
+     * @brief Returns a pointer to the underlying memory of the chomp, cast to type U*.
+     * @return A pointer to the underlying memory of the chomp.
      */
     template<typename U = T>
     U* data() {
-        return reinterpret_cast<U*>(slice_.raw());
+        return reinterpret_cast<U*>(chomp_.raw());
     }
     /** ------------------------------------------------------------------------------------------- Data access - const
-     * @brief Returns a const pointer to the underlying memory of the slice, cast to type U*.
-     * @return A const pointer to the underlying memory of the slice.
+     * @brief Returns a const pointer to the underlying memory of the chomp, cast to type U*.
+     * @return A const pointer to the underlying memory of the chomp.
      */
     template<typename U = T>
-    const U* data() const { return reinterpret_cast<const U*>(slice_.raw()); }
+    const U* data() const { return reinterpret_cast<const U*>(chomp_.raw()); }
     /** ------------------------------------------------------------------------------------------- Get as
      * @brief Returns a zero-copy view for view types or a reference to type U.
-     * @return A view or reference to the underlying memory of the slice.
+     * @return A view or reference to the underlying memory of the chomp.
      */
     template<typename U = T>
     decltype(auto) get_as() {
         if constexpr (std::is_same_v<T, U> && std::is_same_v<U, std::string_view>) {
             return std::string_view(
-                reinterpret_cast<const char*>(slice_.raw()), slice_.size_bytes()
+                reinterpret_cast<const char*>(chomp_.raw()), chomp_.size_bytes()
             );
         } else if constexpr (std::is_same_v<T, U> && requires {
             typename U::element_type;
             requires std::is_same_v<U, std::span<typename U::element_type, U::extent>>;
         }) {
             return U(
-                reinterpret_cast<typename U::element_type*>(slice_.raw()),
-                slice_.size_bytes() / sizeof(typename U::element_type)
+                reinterpret_cast<typename U::element_type*>(chomp_.raw()),
+                chomp_.size_bytes() / sizeof(typename U::element_type)
             );
         } else {
-            return *reinterpret_cast<U*>(slice_.raw());
+            return *reinterpret_cast<U*>(chomp_.raw());
         }
     }
     /** ------------------------------------------------------------------------------------------- Get as - const
      * @brief Returns a read-only view for view types or a const reference to type U.
-     * @return A read-only view or reference to the underlying memory of the slice.
+     * @return A read-only view or reference to the underlying memory of the chomp.
      */
     template<typename U = T>
     decltype(auto) get_as() const {
         if constexpr (std::is_same_v<T, U> && std::is_same_v<U, std::string_view>) {
             return std::string_view(
-                reinterpret_cast<const char*>(slice_.raw()), slice_.size_bytes()
+                reinterpret_cast<const char*>(chomp_.raw()), chomp_.size_bytes()
             );
         } else if constexpr (std::is_same_v<T, U> && requires {
             typename U::element_type;
             requires std::is_same_v<U, std::span<typename U::element_type, U::extent>>;
         }) {
             return std::span<const typename U::element_type, U::extent>(
-                reinterpret_cast<const typename U::element_type*>(slice_.raw()),
-                slice_.size_bytes() / sizeof(typename U::element_type)
+                reinterpret_cast<const typename U::element_type*>(chomp_.raw()),
+                chomp_.size_bytes() / sizeof(typename U::element_type)
             );
         } else {
-            return *reinterpret_cast<const U*>(slice_.raw());
+            return *reinterpret_cast<const U*>(chomp_.raw());
         }
     }
     /** ------------------------------------------------------------------------------------------- Null check
-     * @brief Checks if the slice is null.
-     * @return True if the slice is null, false otherwise.
+     * @brief Checks if the chomp is null.
+     * @return True if the chomp is null, false otherwise.
      */
-    bool is_null() const { return slice_.is_null(); }
+    bool is_null() const { return chomp_.is_null(); }
     /** ------------------------------------------------------------------------------------------- Boolean conversion
-     * @brief Converts the slice to a boolean value indicating its validity.
-     * @return True if the slice is valid, false otherwise.
+     * @brief Converts the chomp to a boolean value indicating its validity.
+     * @return True if the chomp is valid, false otherwise.
      */
-    operator bool() const { return slice_.valid(); }
+    operator bool() const { return chomp_.valid(); }
     /** ------------------------------------------------------------------------------------------- Free
-     * @brief Frees the resources associated with the slice.
+     * @brief Frees the resources associated with the chomp.
      */
-    void free() { slice_.free(); }
+    void free() { chomp_.free(); }
     /** ------------------------------------------------------------------------------------------- Validity check
-     * @brief Checks if the slice is valid (i.e., not null).
-     * @return True if the slice is valid, false otherwise.
+     * @brief Checks if the chomp is valid (i.e., not null).
+     * @return True if the chomp is valid, false otherwise.
      */
-    bool valid() const { return !slice_.is_null(); }
-    /** ------------------------------------------------------------------------------------------- Underlying slice
-     * @brief Returns the underlying untyped Slice.
-     * @return The underlying Slice represented by this typed slice.
+    bool valid() const { return !chomp_.is_null(); }
+    /** ------------------------------------------------------------------------------------------- Underlying chomp
+     * @brief Returns the underlying untyped Chomp.
+     * @return The underlying Chomp represented by this typed chomp.
      */
-    Slice slice(size_t offset = 0, size_t length = SIZE_MAX) const {
-        return slice_.slice(offset, length);
+    Chomp chomp(size_t offset = 0, size_t length = SIZE_MAX) const {
+        return chomp_.chomp(offset, length);
     }
-    /** ------------------------------------------------------------------------------------------- Root slice
-     * @brief Returns a reference to the underlying root Slice.
-     * @return A reference to the underlying Slice.
+    /** ------------------------------------------------------------------------------------------- Root chomp
+     * @brief Returns a reference to the underlying root Chomp.
+     * @return A reference to the underlying Chomp.
      */
-    Slice& root_slice() { return slice_.root_slice(); }
-    /** ------------------------------------------------------------------------------------------- Root slice (const)
-     * @brief Returns a const reference to the underlying root Slice.
-     * @return A const reference to the underlying Slice.
+    Chomp& root_chomp() { return chomp_.root_chomp(); }
+    /** ------------------------------------------------------------------------------------------- Root chomp (const)
+     * @brief Returns a const reference to the underlying root Chomp.
+     * @return A const reference to the underlying Chomp.
      */
-    const Slice& root_slice() const { return slice_.root_slice(); }
+    const Chomp& root_chomp() const { return chomp_.root_chomp(); }
     /** ------------------------------------------------------------------------------------------- Raw pointer access
-     * @brief Returns a pointer to the underlying memory of the slice, cast to type T*.
-     * @return A pointer to the underlying memory of the slice.
+     * @brief Returns a pointer to the underlying memory of the chomp, cast to type T*.
+     * @return A pointer to the underlying memory of the chomp.
      */
     T& operator*() {
-        return *reinterpret_cast<T*>(slice_.raw());
+        return *reinterpret_cast<T*>(chomp_.raw());
     }
     /** ------------------------------------------------------------------------------------------- Raw pointer access - const
-     * @brief Returns a const pointer to the underlying memory of the slice, cast to const T*.
-     * @return A const pointer to the underlying memory of the slice.
+     * @brief Returns a const pointer to the underlying memory of the chomp, cast to const T*.
+     * @return A const pointer to the underlying memory of the chomp.
      */
     const T& operator*() const {
-        return *reinterpret_cast<const T*>(slice_.raw());
+        return *reinterpret_cast<const T*>(chomp_.raw());
     }
     /** ------------------------------------------------------------------------------------------- Pointer access
-     * @brief Returns a pointer to the underlying memory of the slice, cast to type T*.
-     * @return A pointer to the underlying memory of the slice.
+     * @brief Returns a pointer to the underlying memory of the chomp, cast to type T*.
+     * @return A pointer to the underlying memory of the chomp.
      */
     T* operator->() {
-        return reinterpret_cast<T*>(slice_.raw());
+        return reinterpret_cast<T*>(chomp_.raw());
     }
     /** ------------------------------------------------------------------------------------------- Pointer access - const
-     * @brief Returns a const pointer to the underlying memory of the slice, cast to const T*.
-     * @return A const pointer to the underlying memory of the slice.
+     * @brief Returns a const pointer to the underlying memory of the chomp, cast to const T*.
+     * @return A const pointer to the underlying memory of the chomp.
      */
     const T* operator->() const {
-        return reinterpret_cast<const T*>(slice_.raw());
+        return reinterpret_cast<const T*>(chomp_.raw());
     }
     /** ------------------------------------------------------------------------------------------- Conversion operator
-     * @brief Converts the SliceT to a Slice. This allows for implicit conversion to the
-     * underlying Slice type.
+     * @brief Converts the ChompT to a Chomp. This allows for implicit conversion to the
+     * underlying Chomp type.
      */
-    operator Slice() const {
-        return slice_;
+    operator Chomp() const {
+        return chomp_;
     }
-    /** ------------------------------------------------------------------------------------------- Length of the slice
-     * @brief Returns the length of the slice in terms of the number of elements of type T.
-     * @return The length of the slice.
+    /** ------------------------------------------------------------------------------------------- Length of the chomp
+     * @brief Returns the length of the chomp in terms of the number of elements of type T.
+     * @return The length of the chomp.
      */
     size_t length() const {
         if constexpr (std::is_same_v<T, std::string>) {
-            return slice_.size_bytes();
+            return chomp_.size_bytes();
         } else if constexpr (requires {
             typename T::value_type;
             requires std::is_same_v<std::vector<typename T::value_type>, T>;
         }) {
-            return slice_.size_bytes() / sizeof(typename T::value_type);
+            return chomp_.size_bytes() / sizeof(typename T::value_type);
         }
-        return slice_.size_bytes() / sizeof(T);
+        return chomp_.size_bytes() / sizeof(T);
     }
     /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
-     * @brief Implicitly converts the SliceT to its pool index.
-     * @return The pool index of the slice.
+     * @brief Implicitly converts the ChompT to its pool index.
+     * @return The pool index of the chomp.
      */
     uint32_t pool_index() const {
-        return slice_.pool_index();
+        return chomp_.pool_index();
     }
     /** ------------------------------------------------------------------------------------------- Conversion to uint32_t
-     * @brief Implicitly converts the SliceT to its pool index.
-     * @return The pool index of the slice.
+     * @brief Implicitly converts the ChompT to its pool index.
+     * @return The pool index of the chomp.
      */
     operator uint32_t() const {
         return pool_index();
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Copy Constructor
- * @brief Copy constructor for SliceT.
- * @param other The SliceT object to copy from.
+ * @brief Copy constructor for ChompT.
+ * @param other The ChompT object to copy from.
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>::SliceT(const SliceT& other) : slice_(other.slice_) {}
+ChompT<T>::ChompT(const ChompT& other) : chomp_(other.chomp_) {}
 /** --------------------------------------------------------------------------------------------------------- Operator= Copy
- * @brief Copy assignment operator for SliceT.
- * @param other The SliceT object to copy from.
- * @return Reference to the current SliceT object.
+ * @brief Copy assignment operator for ChompT.
+ * @param other The ChompT object to copy from.
+ * @return Reference to the current ChompT object.
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>::SliceT(SliceT&& other) noexcept : slice_(std::move(other.slice_)) {}
+ChompT<T>::ChompT(ChompT&& other) noexcept : chomp_(std::move(other.chomp_)) {}
 /** --------------------------------------------------------------------------------------------------------- Operator= Copy
- * @brief Copy assignment operator for SliceT.
- * @param other The SliceT object to copy from.
- * @return Reference to the current SliceT object.
+ * @brief Copy assignment operator for ChompT.
+ * @param other The ChompT object to copy from.
+ * @return Reference to the current ChompT object.
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>& SliceT<T>::operator=(const SliceT& other) {
-    if (this != &other) slice_ = other.slice_;
+ChompT<T>& ChompT<T>::operator=(const ChompT& other) {
+    if (this != &other) chomp_ = other.chomp_;
     return *this;
 }
 /** --------------------------------------------------------------------------------------------------------- Operator= Move
- * @brief Move assignment operator for SliceT.
- * @param other The SliceT object to move from.
- * @return Reference to the current SliceT object.
+ * @brief Move assignment operator for ChompT.
+ * @param other The ChompT object to move from.
+ * @return Reference to the current ChompT object.
  */
 template <typename T>
     requires (alignof(T) % 64 == 0)
-SliceT<T>& SliceT<T>::operator=(SliceT&& other) noexcept {
-    if (this != &other) slice_ = std::move(other.slice_);
+ChompT<T>& ChompT<T>::operator=(ChompT&& other) noexcept {
+    if (this != &other) chomp_ = std::move(other.chomp_);
     return *this;
 }
-/** --------------------------------------------------------------------------------------------------------- SliceType Concept
- * @brief Concept to check if a type conforms to the `Slice` conceptual interface, including the conversion
- * operator to other SliceType's.
+/** --------------------------------------------------------------------------------------------------------- ChompType Concept
+ * @brief Concept to check if a type conforms to the `Chomp` conceptual interface, including the conversion
+ * operator to other ChompType's.
  */
 template<typename T>
-concept SliceType = requires(T t) {
-    { t.slice(std::declval<size_t>(), std::declval<size_t>()) } -> std::same_as<Slice>;
-    { static_cast<Slice>(t) } -> std::same_as<Slice>;
-} || PrimitiveSliceType<T> || std::is_same_v<T, Slice>;
-static_assert(SliceType<Slice>, "Slice must satisfy the SliceType concept.");
+concept ChompType = requires(T t) {
+    { t.chomp(std::declval<size_t>(), std::declval<size_t>()) } -> std::same_as<Chomp>;
+    { static_cast<Chomp>(t) } -> std::same_as<Chomp>;
+} || PrimitiveChompType<T> || std::is_same_v<T, Chomp>;
+static_assert(ChompType<Chomp>, "Chomp must satisfy the ChompType concept.");
 class ConcurrentBitplane;
 /** --------------------------------------------------------------------------------------------------------- Arena
  * @class Alligator
- * @brief Owns every claim: the placement chains and their link table, the slot regions with their host entries
- * and the GPUBuf tables shaders resolve ids through, and the directory of those tables. A Slice claims,
- * copies, views, resolves and releases itself through here and nowhere else.
+ * @brief The "Allocator" manages memory allocation and ownership for Chomp claims.
  */
 class Alligator {
 private:
-    mutable std::array<std::atomic<Region*>, 64> regions{};
-    struct SliceRegion {
-        uint64_t device_address;
-        void* handle;
-        Region* host_ptr;
-        const BuffetDescriptor* descriptor;
-        SliceRegion(const BuffetDescriptor* desc, uint8_t index);
-        SliceRegion(const SliceRegion&) = delete;
-        SliceRegion& operator=(const SliceRegion&) = delete;
-        SliceRegion(SliceRegion&&) = delete;
-        SliceRegion& operator=(SliceRegion&&) = delete;
-        ~SliceRegion();
+    class ChainBuffet {
+    private:
+        void* buffer_;
+        const BuffetDescriptor* desc;
+        SharedBuffet* parent_ = nullptr;
+        std::atomic<uint32_t> bump_ptr_{0};
+        std::atomic<ChainBuffet*> next_{nullptr};
+        std::atomic<ChainBuffet*> prev_{nullptr};
+        ChainBuffet* next(bool allocate_next = false);
+        ChainBuffet(
+            SharedBuffet* parent,
+            const BuffetDescriptor* desc,
+            size_t size,
+            bool allocate_next = false
+        );
+        void free();
+        friend class Alligator; friend struct ChompEntry;
+        friend class SharedBuffet;
+    public:
+        ChainBuffet() = default; bool valid() const { return buffer_ != nullptr; }
+        operator bool() const { return valid(); } ~ChainBuffet() { free(); }
+        ChainBuffet(const ChainBuffet&) = delete;
+        ChainBuffet& operator=(const ChainBuffet&) = delete;
+        ChainBuffet(ChainBuffet&&) = delete;
+        ChainBuffet& operator=(ChainBuffet&&) = delete;
+        ChompEntry* claim_into(ChompEntry* slot, GPUBuf* record, size_t size);
     };
-    mutable std::array<std::unique_ptr<SliceRegion>, 64> region_backing;
-    const BuffetDescriptor* metadata_placement_ = nullptr;
-    void* directory_backing_ = nullptr;
-    uint64_t* directory_ = nullptr;
-    uint64_t directory_address_ = 0;
-    std::atomic<uint8_t> last_region{0};
-    std::atomic<size_t> skip_at_most{4};
-    /// @brief Set once teardown begins; a ChainBuffet then deletes in place since the Kitchen may be gone.
-    static std::atomic<bool> finalizing_;
-    uint32_t next_id(const BuffetDescriptor* placement);
-    SliceEntry& entry(const Slice& slice);
-    const SliceEntry& entry(const Slice& slice) const;
-    GPUBuf* gpubuf(const Slice& slice);
-    const GPUBuf* gpubuf(const Slice& slice) const;
-    static ChainBuffet* hold_current(const BuffetDescriptor* placement);
-    static void release_buffet(ChainBuffet* buffet);
-    static void retire_buffet(void* buffet);
-    void destroy(Slice& slice);
+    static void* current_for(const BuffetDescriptor* desc, void** expected = nullptr, void* desired = nullptr);
+    struct Region {
+        std::array<GPUBuf, CLAIMS_PER_REGION> gpu_slots;
+        std::array<ChompEntry, CLAIMS_PER_REGION> chomp_slots;
+        std::array<uint32_t, CLAIMS_PER_REGION> owner_slots;  ///< Chomps on each slot; the last out clears it.
+        std::atomic<uint32_t> next_index{0};
+        MultiAtomic refcounts;
+        GPUBuf* gpu_table() { return gpu_slots.data(); }
+        const GPUBuf* gpu_table() const { return gpu_slots.data(); }
+    };
+    static size_t& default_region_allocator();
+    struct ChompRegion {
+        uint64_t device_address = 0;
+        struct HostDetails {
+            Region* region;
+            void* handle;
+            const BuffetDescriptor* desc;
+        };
+        HostDetails* host_details = nullptr;
+        Region* region();
+        const Region* region() const;
+        Region* materialize();
+        ChompRegion();
+        ChompRegion(const ChompRegion&) = delete;
+        ChompRegion& operator=(const ChompRegion&) = delete;
+        ChompRegion(ChompRegion&&) = delete;
+        ChompRegion& operator=(ChompRegion&&) = delete;
+        ~ChompRegion();
+    };
+    uint64_t region_backing_device_address_ = 0;
+    void* region_backing_raw_ = nullptr;
+    void* region_backing_host_ = nullptr;
+    std::array<ChompRegion, COMBINED_REGION_SIZE>* region_backing();
+    mutable std::atomic<uint32_t> transient_idx{0};  ///< Region above CLAIM_BITS, claim below.
+    mutable std::atomic<uint32_t> novel_idx{0};  ///< Region above CLAIM_BITS, claim below.
+    ChompEntry* entry(Chomp& chomp);
+    const ChompEntry* entry(const Chomp& chomp) const;
+    GPUBuf* gpubuf(const Chomp& chomp);
+    const GPUBuf* gpubuf(const Chomp& chomp) const;
+    uint64_t gpu_directory_address() const;
+    void destroy(Chomp& chomp);
+    static SharedBuffet* buffer_of(const Chomp& chomp);
+    static void retain(const Chomp& chomp);
+    static void retire_handle(void* handle);
+    static void finalize();
     Alligator();
     ~Alligator();
-    friend class Slice; friend class Memory;
-    friend class VulkanKernel; friend struct SliceEntry;
-    friend struct AlligatorInitializer;
-    friend class ChainBuffet; friend class Kitchen;
+    friend class Chomp; friend class Memory;
+    friend class VulkanKernel; friend class ChompID;
+    friend class Kitchen; friend class ChompTypes;
+    friend class SharedBuffet; friend struct ChompEntry;
+    friend struct KitchenInitializer;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
     Alligator(Alligator&&) = delete;
     Alligator& operator=(Alligator&&) = delete;
     /** ------------------------------------------------------------------------------------------- Claim
-     * @brief The one way to get a Slice: whole 64-byte granules cut from the placement's current link,
+     * @brief The one way to get a Chomp: whole 64-byte granules cut from the placement's current link,
      * or a dedicated buffet for a novel or slab-sized request, in a fresh slot carrying the type.
      * @param size The size in bytes, rounded up to 64-byte granules; zero claims nothing.
-     * @param novel Whether the Slice gets a dedicated buffet.
+     * @param novel Whether the Chomp gets a dedicated buffet.
      * @param placement The placement to claim from.
-     * @param type The SliceTypes record index the slot carries, zero for raw bytes.
-     * @return The claimed Slice.
+     * @param type The ChompTypes record index the slot carries, zero for raw bytes.
+     * @return The claimed Chomp.
      */
-    static Slice claim(
+    static Chomp claim(
         size_t size,
         bool novel = false,
-        const BuffetDescriptor* placement = Slice::default_placement(),
-        uint8_t type = 0
+        const BuffetDescriptor* placement = Chomp::default_placement(),
+        uint32_t type = 0
     );
+    /** ------------------------------------------------------------------------------------------- Buffet Of
+     * @brief The buffet object behind a Chomp, the pointer its placement's static hooks take.
+     * @param chomp The Chomp.
+     * @return The buffet object.
+     */
+    static void* buffet_of(const Chomp& chomp);
     /** ------------------------------------------------------------------------------------------- Instance
-     * @brief Returns the singleton instance of the Alligator.
-     * @return The Alligator instance.
+     * @brief Retrieves the singleton instance of the Alligator.
+     * @return Reference to the Alligator instance.
      */
     static Alligator& inst();
-    /** ------------------------------------------------------------------------------------------- GPUBuf For
-     * @brief The writable GPUBuf half for a live slice.
-     * @param slice The slice to resolve.
-     * @return The slice's GPUBuf entry.
-     */
-    static GPUBuf* gpubuf_for(const Slice& slice);
-    /** ------------------------------------------------------------------------------------------- Device Address
-     * @brief The device address of a Slice's first byte.
-     * @param slice The slice to resolve.
-     * @return The device address.
-     */
-    static uint64_t device_address(const Slice& slice);
-    /** ------------------------------------------------------------------------------------------- GPU Directory
-     * @brief The stable device address of the region directory shaders index with a Slice's region bits.
-     * @return The directory's device address.
-     */
-    static uint64_t gpu_directory_address();
-    /** ------------------------------------------------------------------------------------------- GPU Table
-     * @brief One region's host mapping of the GPUBuf records reached through the directory.
-     * @param region_id The region ID of the GPU table.
-     * @return The table base.
-     */
-    static const GPUBuf* gpu_table(uint8_t region_id);
 };
+/** --------------------------------------------------------------------------------------------------------- Typed Lifecycle Hooks
+ * @brief Each registered T keeps its single-element hooks in one static pair; the record's hooks walk a
+ * slot's elements through them, or through T's own constructor and destructor when none were given.
+ */
+template<typename T> struct ChompTypeHooks {
+    inline static void (*construct_single)(void*) = nullptr;
+    inline static void (*destroy_single)(void*) = nullptr;
+    inline static void (*construct_multi)(void*, size_t) = nullptr;
+    inline static void (*destroy_multi)(void*, size_t) = nullptr;
+    static void construct(uint32_t chomp_id, size_t count) {
+        Chomp chomp = Chomp::from_id(chomp_id);
+        T* elements = chomp.data<T>();
+        if (construct_multi) construct_multi(elements, count);
+        else for (size_t index = 0; index < count; ++index) {
+            if (construct_single) construct_single(elements + index); else new (elements + index) T();
+        }
+        chomp.discharge_unsafely();
+    }
+    static void destroy(uint32_t chomp_id, size_t count) {
+        Chomp chomp = Chomp::from_id(chomp_id);
+        T* elements = chomp.data<T>();
+        if (destroy_multi) destroy_multi(elements, count);
+        else for (size_t index = 0; index < count; ++index) {
+            if (destroy_single) destroy_single(elements + index); else elements[index].~T();
+        }
+        chomp.discharge_unsafely();
+    }
+};
+template<typename T> ChompTypes::Sig ChompTypes::typed_construct(void (*construct_single)(void*)) {
+    ChompTypeHooks<T>::construct_single = construct_single;
+    return &ChompTypeHooks<T>::construct;
+}
+template<typename T> ChompTypes::Sig ChompTypes::typed_destroy(void (*destroy_single)(void*)) {
+    ChompTypeHooks<T>::destroy_single = destroy_single;
+    return &ChompTypeHooks<T>::destroy;
+}
+template<typename T> ChompTypes::Sig ChompTypes::typed_construct_multi(void (*construct_multi)(void*, size_t)) {
+    ChompTypeHooks<T>::construct_multi = construct_multi;
+    return &ChompTypeHooks<T>::construct;
+}
+template<typename T> ChompTypes::Sig ChompTypes::typed_destroy_multi(void (*destroy_multi)(void*, size_t)) {
+    ChompTypeHooks<T>::destroy_multi = destroy_multi;
+    return &ChompTypeHooks<T>::destroy;
+}
+/** --------------------------------------------------------------------------------------------------------- Typed Claim
+ * @brief One T claimed in a slot carrying T's registered type index.
+ */
+template <typename T>
+    requires (alignof(T) % 64 == 0)
+Chomp ChompT<T>::claim_typed(bool novel_buffer) {
+    return Alligator::claim(sizeof(T), novel_buffer, Chomp::default_placement(), ChompTypes::register_type<T>());
+}
 } // namespace buffetalligator

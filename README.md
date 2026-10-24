@@ -6,7 +6,7 @@
 
 *It was supposed to be "Buffer Allocator" but voice-to-text thought differently, and the name stuck.*
 
-BuffetAlligator is a C++20 memory arena that serves 32-bit `Slice` handles from preallocated, zeroed slabs. Claims are atomic bump-pointer operations aligned to the placement's bump alignment (64 bytes for the default placement); exhausted slabs advance through successors in a linked list pre-allocated ahead of necessity.
+BuffetAlligator is a C++20 memory arena that serves 32-bit `Chomp` handles from preallocated, zeroed slabs. Claims are atomic bump-pointer operations aligned to the placement's bump alignment (64 bytes for the default placement); exhausted slabs advance through successors in a linked list pre-allocated ahead of necessity.
 
 The project is pre-release. API and ABI compatibility are not guaranteed until 1.0.
 
@@ -14,19 +14,19 @@ The project is pre-release. API and ABI compatibility are not guaranteed until 1
 
 A registered `BuffetDescriptor` supplies allocation, release, host access, and device-address hooks for one `ChainBuffet`. Chains allocate on demand, prepare successors during rollover, and reclaim drained backing buffers after their last counted owner releases them. Custom descriptors must be registered before concurrent use and remain valid for the process lifetime.
 
-`Slice` is a four-byte owning handle naming one slot. A default Slice is null; copies share the slot and its 16-bit reference count, and moving leaves the source null. Allocation sizes round up to 64 bytes. Sub-slice starts round down and ends round up to cover the requested range within the represented parent. A sub-slice of a different span gets its own slot, which keeps the backing buffer alive after its parent is gone. `size_bytes()` reports the represented range, exact to 64 bytes for every claim; only sub-slices longer than 64 MiB round to 256, 1024, or 4096 bytes.
+`Chomp` is a four-byte owning handle naming one slot. A default Chomp is null; copies share the slot and its 16-bit reference count, and moving leaves the source null. Allocation sizes round up to 64 bytes. Sub-chomp starts round down and ends round up to cover the requested range within the represented parent. A sub-chomp of a different span gets its own slot, which keeps the backing buffer alive after its parent is gone. `size_bytes()` reports the represented range, exact to 64 bytes for every claim; only sub-chomps longer than 64 MiB round to 256, 1024, or 4096 bytes.
 
-Each slot costs 12 bytes: an 8-byte location word the GPU reads, holding the buffer, offset, and length, plus a 4-byte host-only reference count and element type. Slots grow in 64K-slot segments up to 16,777,216, and up to 65,536 buffers, dedicated novel buffers included, can be live at once; both limits fail loudly. `SliceT<T>` claims construct their elements, and the last handle to the slot destroys them; sub-slices of a typed Slice are untyped bytes.
+Each slot costs 12 bytes: an 8-byte location word the GPU reads, holding the buffer, offset, and length, plus a 4-byte host-only reference count and element type. Slots grow in 64K-slot segments up to 16,777,216, and up to 65,536 buffers, dedicated novel buffers included, can be live at once; both limits fail loudly. `ChompT<T>` claims construct their elements, and the last handle to the slot destroys them; sub-chomps of a typed Chomp are untyped bytes.
 
 ```cpp
 #include <alligator.hpp>
 
-buffetalligator::Slice bytes(65);
+buffetalligator::Chomp bytes(65);
 auto* values = bytes.data<uint32_t>(); // 128 represented bytes.
-buffetalligator::Slice long_lived(1024 * 1024, true);
+buffetalligator::Chomp long_lived(1024 * 1024, true);
 ```
 
-Dedicated allocations are useful for long-lived claims that should not retain an otherwise drained slab. Borrowed pointers remain valid only while an owning Slice or backing buffer remains alive.
+Dedicated allocations are useful for long-lived claims that should not retain an otherwise drained slab. Borrowed pointers remain valid only while an owning Chomp or backing buffer remains alive.
 
 ### File-backed storage
 
@@ -36,22 +36,22 @@ Dedicated allocations are useful for long-lived claims that should not retain an
 
 using namespace buffetalligator;
 const BuffetDescriptor* mapped = MmapBuffer::register_type("/path/to/scratch");
-Slice bytes(4096, mapped);
+Chomp bytes(4096, mapped);
 bytes.data<uint64_t>()[0] = 42;
 MmapBuffer::flush(bytes);
 ```
 
-`MmapBuffer` creates shared mappings backed by temporary files in the supplied directory. Files are unlinked immediately and their descriptors remain open through backing-buffer ownership. `file_descriptor(slice)` borrows the descriptor, `file_offset(slice)` includes the view offset, and `flush(slice)` writes the covered pages. These scratch files do not provide reopenable persistent storage.
+`MmapBuffer` creates shared mappings backed by temporary files in the supplied directory. Files are unlinked immediately and their descriptors remain open through backing-buffer ownership. `file_descriptor(chomp)` borrows the descriptor, `file_offset(chomp)` includes the view offset, and `flush(chomp)` writes the covered pages. These scratch files do not provide reopenable persistent storage.
 
 ### GPU execution
 
 Include `<alligator/easygpu.hpp>` for `GPU`, `Shader`, `ShaderSource`, and completion results; Vulkan interop is declared separately in `<alligator/easyvulkan.hpp>`. Backend SDK types are absent from the portable GPU header.
 
-Choose the backend before the first Slice or GPU operation, either in code with `GPU::select(GPUBackend::Vulkan)` or with `ALLIGATOR_GPU_BACKEND` set to `auto`, `cpu`, `vulkan`, or `metal`. A set variable other than `auto` overrides `GPU::select`, and `GPU::backend()` reports the frozen choice. Automatic selection prefers Vulkan, then native Metal on Apple builds when no Vulkan device exists, then CPU when no compatible device exists. Explicit unavailable backend requests fail, and a `GPU::select` that differs from an already frozen backend throws. Selection freezes the device address domain and metadata placement. Default payloads use the active placement on physically unified devices and aligned host memory otherwise; GPU inputs require a compatible device-visible placement.
+Choose the backend before the first Chomp or GPU operation, either in code with `GPU::select(GPUBackend::Vulkan)` or with `ALLIGATOR_GPU_BACKEND` set to `auto`, `cpu`, `vulkan`, or `metal`. A set variable other than `auto` overrides `GPU::select`, and `GPU::backend()` reports the frozen choice. Automatic selection prefers Vulkan, then native Metal on Apple builds when no Vulkan device exists, then CPU when no compatible device exists. Explicit unavailable backend requests fail, and a `GPU::select` that differs from an already frozen backend throws. Selection freezes the device address domain and metadata placement. Default payloads use the active placement on physically unified devices and aligned host memory otherwise; GPU inputs require a compatible device-visible placement.
 
-Vulkan remains linked on every build through MoltenVK on macOS or Vulkan-Loader on Linux. `VulkanContext::buffer_placement()` selects its coherent mapped buffers, `VulkanKernel::device_address(slice)` resolves a live Slice address, and `VulkanKernel::gpu_usage()` reports tracked Vulkan backing bytes. Native Metal uses shared buffers and the pinned SPIRV-Cross compiler for GLSL translation. The [CUDA compiler investigation](tests/experiments/slang_pointer_bridge/README.md) produces CUDA source through a Slang pointer prelude; production integration still requires PTX compilation and NVIDIA execution qualification.
+Vulkan remains linked on every build through MoltenVK on macOS or Vulkan-Loader on Linux. `VulkanContext::buffer_placement()` selects its coherent mapped buffers, `VulkanKernel::device_address(chomp)` resolves a live Chomp address, and `VulkanKernel::gpu_usage()` reports tracked Vulkan backing bytes. Native Metal uses shared buffers and the pinned SPIRV-Cross compiler for GLSL translation. The [CUDA compiler investigation](tests/experiments/slang_pointer_bridge/README.md) produces CUDA source through a Slang pointer prelude; production integration still requires PTX compilation and NVIDIA execution qualification.
 
-`ShaderSource` accepts GLSL, Metal, and CUDA source members; preparation owns the source bytes. Vulkan compiles GLSL. Metal uses its native source when supplied and otherwise translates GLSL. Public list shaders define `alligator_main` and resolve Slice identities through the arena directory, which holds the slot segments and each buffer's device base, with 64-byte granule conversion.
+`ShaderSource` accepts GLSL, Metal, and CUDA source members; preparation owns the source bytes. Vulkan compiles GLSL. Metal uses its native source when supplied and otherwise translates GLSL. Public list shaders define `alligator_main` and resolve Chomp identities through the arena directory, which holds the slot segments and each buffer's device base, with 64-byte granule conversion.
 
 Shader dispatch accepts a `ShaderResult` and an optional static callback plus `void*` context. Accepted work retains directly bound identities, prepared resources, and explicitly supplied embedded dependencies through retirement. Completion runs on Kitchen workers after device writes are CPU-visible. Call `result.rethrow()` to inspect terminal failure; `Shader::dispatch` provides `co_await`. An external coroutine-frame owner must retain the result and call `cancel()` before concurrent frame destruction. Admission can apply backpressure when prepared slots are busy.
 
@@ -59,49 +59,49 @@ Shader dispatch accepts a `ShaderResult` and an optional static callback plus `v
 
 ### Memory accounting
 
-Internal backing-allocation counters track allocations and releases by placement, including dedicated buffers. Slice copies and views do not allocate another payload. Counting is on by default. Call `BuffetDescriptors::set_allocation_tracking(false)` before the first Slice to turn it off; under contention that makes dedicated-buffer claims and releases several times faster, and every counter, including `VulkanKernel::gpu_usage()`, then reads zero. Optional allocation-site records name the caller of each claim that allocated a buffer. They are disabled by default and can be enabled with:
+Internal backing-allocation counters track allocations and releases by placement, including dedicated buffers. Chomp copies and views do not allocate another payload. Counting is on by default. Call `BuffetDescriptors::set_allocation_tracking(false)` before the first Chomp to turn it off; under contention that makes dedicated-buffer claims and releases several times faster, and every counter, including `VulkanKernel::gpu_usage()`, then reads zero. Optional allocation-site records name the caller of each claim that allocated a buffer. They are disabled by default and can be enabled with:
 
 ```sh
 ./run_build.sh -DBUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=ON
 ```
 
-These internal diagnostic records are separate from Slice metadata. Installed consumers receive backend feature definitions through `alligator::alligator`. Allocator regressions run with `ctest --test-dir build -L allocators --output-on-failure`; hardware absence is reported as a skip, while translation and execution errors fail the test.
+These internal diagnostic records are separate from Chomp metadata. Installed consumers receive backend feature definitions through `alligator::alligator`. Allocator regressions run with `ctest --test-dir build -L allocators --output-on-failure`; hardware absence is reported as a skip, while translation and execution errors fail the test.
 
 ## Containers
 
-Every container hands out and stores `Slice` handles; payloads live in arena memory and the containers hold references.
+Every container hands out and stores `Chomp` handles; payloads live in arena memory and the containers hold references.
 
-- `SliceMap` and `SliceMapT<T>`: lock-free hash map from 64-bit identifiers to Slices with stable positions, hazard-protected replacement, publish hooks, merge, and reset.
-- `SliceQueue`: producer and consumer handles that move Slices through thread-local blocks with semaphore wakeups.
-- `PrioritySlice` and `PrioritySliceT<K, V>`: lock-free bounded priority queue in one Slice. Entries are 64-bit words, key bits above a 32-bit value; a push either takes a free slot or evicts the worst entry it beats, a header rejects hopeless pushes in constant time, and per-block caches confine each scan to one 32-slot block. Ordering is exact under push-only load and relaxed under mixed load.
-- `HeapSlice` and `HeapSliceT<K, V>`: the same words as a single-owner min-max heap, popping the best and evicting the worst in logarithmic time.
-- `SliceCache<Key, Evict>`: byte-budgeted cache of Slices with default least-recently-used eviction or a custom compile-time eviction function; every entry weighs its Slice's size, and keys support `std::hash<Key>` and equality.
+- `ChompMap` and `ChompMapT<T>`: lock-free hash map from 64-bit identifiers to Chomps with stable positions, hazard-protected replacement, publish hooks, merge, and reset.
+- `ChompQueue`: producer and consumer handles that move Chomps through thread-local blocks with semaphore wakeups.
+- `PriorityChomp` and `PriorityChompT<K, V>`: lock-free bounded priority queue in one Chomp. Entries are 64-bit words, key bits above a 32-bit value; a push either takes a free slot or evicts the worst entry it beats, a header rejects hopeless pushes in constant time, and per-block caches confine each scan to one 32-slot block. Ordering is exact under push-only load and relaxed under mixed load.
+- `HeapChomp` and `HeapChompT<K, V>`: the same words as a single-owner min-max heap, popping the best and evicting the worst in logarithmic time.
+- `ChompCache<Key, Evict>`: byte-budgeted cache of Chomps with default least-recently-used eviction or a custom compile-time eviction function; every entry weighs its Chomp's size, and keys support `std::hash<Key>` and equality.
 - `SIMDMisc`: the identifier, maximum, and minimum scan kernels the containers use, with backends for Apple simd, AVX-512, AVX2, SSE4.2, VSX, and NEON.
 
 Pass a free or static function as the cache's second template argument to choose which entry is evicted:
 
 ```cpp
-using buffetalligator::Slice;
-using buffetalligator::SliceCache;
-using buffetalligator::SliceCacheIterator;
+using buffetalligator::Chomp;
+using buffetalligator::ChompCache;
+using buffetalligator::ChompCacheIterator;
 
 /** --------------------------------------------------------------------------------------------------------- Evict Most Recent
  * @brief Selects the most recently used eligible entry for eviction.
  */
 template<typename Key>
-SliceCacheIterator<Key> evict_most_recent(
-    SliceCacheIterator<Key> first, SliceCacheIterator<Key>
+ChompCacheIterator<Key> evict_most_recent(
+    ChompCacheIterator<Key> first, ChompCacheIterator<Key>
 ) noexcept {
     return first;
 }
-SliceCache<int64_t, evict_most_recent<int64_t>> cache(128);
-cache.set(1, Slice(64));
-cache.set(2, Slice(64));
-cache.set(3, Slice(64)); // Evicts key 2 and protects the newly stored key 3.
+ChompCache<int64_t, evict_most_recent<int64_t>> cache(128);
+cache.set(1, Chomp(64));
+cache.set(2, Chomp(64));
+cache.set(3, Chomp(64)); // Evicts key 2 and protects the newly stored key 3.
 cache.resize(64); // Evicts key 3 and retains key 1.
 ```
 
-The function receives a nonempty `[first, last)` range in most-to-least-recently-used order, exposing immutable key and Slice pairs. It must be `noexcept`, return an iterator inside that range, and never reenter or mutate the cache. Each call selects one victim; the cache releases it and repeats until its byte budget holds. During `set`, the new or replaced entry is excluded from the range and an oversized entry stays alone; during `resize`, every entry is eligible. The function is invoked directly through its compile-time template argument. Omit it to retain default LRU eviction.
+The function receives a nonempty `[first, last)` range in most-to-least-recently-used order, exposing immutable key and Chomp pairs. It must be `noexcept`, return an iterator inside that range, and never reenter or mutate the cache. Each call selects one victim; the cache releases it and repeats until its byte budget holds. During `set`, the new or replaced entry is excluded from the range and an oversized entry stays alone; during `resize`, every entry is eligible. The function is invoked directly through its compile-time template argument. Omit it to retain default LRU eviction.
 
 ## Kitchen and Orders
 
@@ -109,17 +109,17 @@ The function receives a nonempty `[first, last)` range in most-to-least-recently
 explicit borrow. Orders are move-only, and `Kitchen::submit` queues them on the shared worker pool:
 
 ```cpp
-Order order(&process_request, request_id, std::move(request_slice));
+Order order(&process_request, request_id, std::move(request_chomp));
 Kitchen::submit(std::move(order));
 ```
 
-Pass a future to receive the handler's result and any exception. A returned `Slice` moves through
+Pass a future to receive the handler's result and any exception. A returned `Chomp` moves through
 the future without copying its payload:
 
 ```cpp
-std::unique_ptr<std::future<Slice>> loaded;
+std::unique_ptr<std::future<Chomp>> loaded;
 Kitchen::submit(&read_block, loaded, descriptor, offset, bytes);
-Slice destination = loaded->get();
+Chomp destination = loaded->get();
 ```
 
 The callback overload receives the result followed by the original arguments. The borrowed-context
@@ -132,32 +132,32 @@ Kitchen::submit(&process_request, &request_context, &request_finished, &completi
 Borrowed contexts, pointers, and `std::ref` arguments must remain alive until their handler and
 callback finish. Use a fresh future for each submitted result. `Kitchen::submit_bulk` moves an
 array of Orders into the queue. The pool starts with the reported hardware thread count and
-finishes queued work before runtime teardown releases Slice storage.
+finishes queued work before runtime teardown releases Chomp storage.
 
 ## Networking
 
-`SliceChannel` provides TCP, UDP, and libfabric message transports, with encrypted variants of each. Both peers must register matching placement names. Sends capture the Slice's bytes before returning; responses arrive asynchronously on the shared network thread.
+`ChompChannel` provides TCP, UDP, and libfabric message transports, with encrypted variants of each. Both peers must register matching placement names. Sends capture the Chomp's bytes before returning; responses arrive asynchronously on the shared network thread.
 
 ```cpp
-using buffetalligator::Slice;
-using buffetalligator::SliceChannel;
+using buffetalligator::Chomp;
+using buffetalligator::ChompChannel;
 
-void receive(Slice request) {
-    SliceChannel::send(std::move(request), "", 9000, SliceChannel::Protocol::TCP);
+void receive(Chomp request) {
+    ChompChannel::send(std::move(request), "", 9000, ChompChannel::Protocol::TCP);
 }
-void response(Slice reply) {
+void response(Chomp reply) {
     if (!reply) return;
     // Consume the reply.
 }
-SliceChannel::listen(9000, SliceChannel::Protocol::TCP, receive);
-SliceChannel::send(Slice(4096), "127.0.0.1", 9000, SliceChannel::Protocol::TCP, response);
+ChompChannel::listen(9000, ChompChannel::Protocol::TCP, receive);
+ChompChannel::send(Chomp(4096), "127.0.0.1", 9000, ChompChannel::Protocol::TCP, response);
 ```
 
 An empty address replies to the sender during its receive callback. Callbacks should finish promptly: blocking a callback also blocks other channels and their timers. `close(port, protocol)` cancels that listener and its matching pending exchanges.
 
 Exchanges have a **30-second deadline** covering connection setup, authentication, transfer, and response waiting. The listener remains open while stalled incoming exchanges expire.
 
-Setup failures throw an exception. A pending response receives one null Slice on timeout, cancellation, or transport failure. One-way asynchronous failures are logged. UDP remains an unreliable datagram transport; it does not retry lost packets.
+Setup failures throw an exception. A pending response receives one null Chomp on timeout, cancellation, or transport failure. One-way asynchronous failures are logged. UDP remains an unreliable datagram transport; it does not retry lost packets.
 
 Encrypted channels require `ALLIGATOR_NETWORK_KEY` to contain the same 64 hexadecimal digits on both peers, configured before channel use. Each encrypted exchange authenticates a fresh receiver challenge before sending application data, adding one round trip. UDP challenges expire and are consumed once; TCP and libfabric challenges belong to one connection. This rejects captured requests after use, expiry, connection replacement, or listener restart without relying on synchronized clocks. Applications that intentionally retry an operation must still handle their own duplicate operation identifiers.
 
@@ -179,9 +179,9 @@ The script updates threadsafe-logger to its main branch, then prepares libuv, li
 
 ### Functional validation
 
-The suite covers placement registration and allocation, slice ownership and resizing, typed and weak slices, atomic values and registries, shared mutexes, reusable barriers, slice queues, and slice maps. It also checks lookup across vector lanes and a pipeline that copies borrowed input into a queue, transforms it, and gathers typed results in a map.
+The suite covers placement registration and allocation, chomp ownership and resizing, typed and weak chomps, atomic values and registries, shared mutexes, reusable barriers, chomp queues, and chomp maps. It also checks lookup across vector lanes and a pipeline that copies borrowed input into a queue, transforms it, and gathers typed results in a map.
 
-Functional cases run independently with release-build assertions and time limits. Concurrent cases check exact update counts, caller-synchronized map access, retained Slice ownership after map reset, and repeated barrier phases; exception cases check that failed operations leave containers and registries usable. After building, run this group separately with:
+Functional cases run independently with release-build assertions and time limits. Concurrent cases check exact update counts, caller-synchronized map access, retained Chomp ownership after map reset, and repeated barrier phases; exception cases check that failed operations leave containers and registries usable. After building, run this group separately with:
 
 ```sh
 ctest --test-dir build -L functional --output-on-failure
@@ -191,17 +191,17 @@ The priority queue, heap, cache, and SIMD kernel tests run in the ordinary suite
 
 ### Container benchmarks
 
-Run the map comparison with `build/tests/benchmarks/buffetalligator_slicemapvsvecset`.
-It checks correctness before timing VecSet, SliceMap, HazardMap, an immutable-version
+Run the map comparison with `build/tests/benchmarks/buffetalligator_chompmapvsvecset`.
+It checks correctness before timing VecSet, ChompMap, HazardMap, an immutable-version
 candidate, and mutex-protected `std::unordered_map`, then prints a final summary table.
 
-The standalone build also produces SliceMap versus `std::unordered_map`, SliceQueue versus
-`std::deque`, and PrioritySlice and HeapSlice versus `std::priority_queue` benchmarks in
+The standalone build also produces ChompMap versus `std::unordered_map`, ChompQueue versus
+`std::deque`, and PriorityChomp and HeapChomp versus `std::priority_queue` benchmarks in
 `build/tests/benchmarks/`. They include single-thread baselines and, for the map and queue,
 multiple producer/consumer teams with mutex-protected standard containers, warmups, repeated
 timings, correctness checks, and optional CSV output. See [the benchmark guide](tests/benchmarks/README.md)
 for commands and the current containers' concurrency limits, and
-[the priority queue results](tests/benchmarks/PRIORITY_SLICE_SHOWDOWN.md) for the measured numbers.
+[the priority queue results](tests/benchmarks/PRIORITY_CHOMP_SHOWDOWN.md) for the measured numbers.
 
 ### Network validation
 
@@ -240,7 +240,7 @@ target_link_libraries(your_target PRIVATE alligator::alligator)
 
 The exported config resolves OpenSSL and platform threads from the system and the installed library dependencies from the installation prefix.
 
-Concurrent claims and independent `Slice` handles are supported. Concurrent mutation of the same `Slice` object requires external synchronization.
+Concurrent claims and independent `Chomp` handles are supported. Concurrent mutation of the same `Chomp` object requires external synchronization.
 
 ## License
 

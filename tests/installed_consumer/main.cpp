@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Installed Consumer
  * @file main.cpp
- * @brief Exercises installed Slice ownership and Kitchen submission with assertions disabled.
+ * @brief Exercises installed Chomp ownership and Kitchen submission with assertions disabled.
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
@@ -16,16 +16,16 @@
 #error The installed consumer must exercise checks with NDEBUG defined
 #endif
 /** --------------------------------------------------------------------------------------------------------- Read Payload
- * @brief Returns a retained Slice value from an installed Kitchen Order.
+ * @brief Returns a retained Chomp value from an installed Kitchen Order.
  */
-uint64_t read_payload(buffetalligator::Slice payload) {
+uint64_t read_payload(buffetalligator::Chomp payload) {
     return payload.get_as<uint64_t>();
 }
 /** --------------------------------------------------------------------------------------------------------- Verify Identifier
  * @brief Checks installed parallel dispatch and iteration link through the exported target.
  */
-void verify_identifier(int64_t identifier, buffetalligator::Slice* slice, std::shared_ptr<void> context) {
-    *static_cast<bool*>(context.get()) = identifier == 17 && slice->get_as<uint64_t>() == 0xA115A70Full;
+void verify_identifier(int64_t identifier, buffetalligator::Chomp* chomp, std::shared_ptr<void> context) {
+    *static_cast<bool*>(context.get()) = identifier == 17 && chomp->get_as<uint64_t>() == 0xA115A70Full;
 }
 /** --------------------------------------------------------------------------------------------------------- Warmup
  * @brief Leaves the installed task team's borrowed value ready for its task phase.
@@ -36,34 +36,33 @@ void warmup(std::shared_ptr<void>, std::shared_ptr<void>) {}
  */
 void finish_task(std::shared_ptr<void> item, std::shared_ptr<void>) { *static_cast<bool*>(item.get()) = true; }
 /** --------------------------------------------------------------------------------------------------------- Main
- * @brief Verifies the relocated library creates and retains a production Slice.
+ * @brief Verifies the relocated library creates and retains a production Chomp.
  */
 int main() {
     LOG_INFO_STREAM << "Checking the relocated Alligator package";
     const buffetalligator::BuffetDescriptor* placement =
-        buffetalligator::BuffetDescriptors::descriptor_for(
-            static_cast<buffetalligator::AlignedHeapBuffer*>(nullptr));
-    buffetalligator::Slice payload(size_t{128}, true, placement);
+        buffetalligator::BuffetDescriptors::descriptor<buffetalligator::AlignedHeapBuffer>();
+    buffetalligator::Chomp payload(size_t{128}, true, placement);
     if (!payload.valid() || payload.size_bytes() != 128) {
-        LOG_ERROR_STREAM << "The installed Slice has an incorrect byte length";
+        LOG_ERROR_STREAM << "The installed Chomp has an incorrect byte length";
         return 1;
     }
     payload.get_as<uint64_t>() = 0xA115A70Full;
-    buffetalligator::Slice retained = payload.slice();
+    buffetalligator::Chomp retained = payload.chomp();
     payload.free();
     if (retained.size_bytes() != 128 || retained.get_as<uint64_t>() != 0xA115A70Full) {
-        LOG_ERROR_STREAM << "The installed Slice lost its retained allocation";
+        LOG_ERROR_STREAM << "The installed Chomp lost its retained allocation";
         return 1;
     }
     std::unique_ptr<std::future<uint64_t>> result;
     buffetalligator::Kitchen::submit(&read_payload, result, retained);
     if (!result || result->wait_for(std::chrono::seconds(5)) != std::future_status::ready
         || result->get() != 0xA115A70Full) {
-        LOG_ERROR_STREAM << "The installed Kitchen lost its owned Slice argument or future result";
+        LOG_ERROR_STREAM << "The installed Kitchen lost its owned Chomp argument or future result";
         return 1;
     }
-    buffetalligator::SliceMap rows(1);
-    rows.add_slice(17, retained);
+    buffetalligator::ChompMap rows(1);
+    rows.add_chomp(17, retained);
     if (rows.ids() != std::vector<int64_t>{17}) return 1;
     bool visited = false;
     rows.for_each(&verify_identifier, &visited, true);

@@ -70,15 +70,15 @@ private:
         const T* data() const { return reinterpret_cast<const T*>(mem); }
         size_t size_bytes() const { return size; }
     };
-    /// @brief Shared pointer to the atomic slice representing the bitplane.
-    std::shared_ptr<std::atomic<MemAlloc*>> slice_;
+    /// @brief Shared pointer to the atomic chomp representing the bitplane.
+    std::shared_ptr<std::atomic<MemAlloc*>> chomp_;
     /** ------------------------------------------------------------------------------------------- Atomic Word Access
      * @brief Access the atomic word at the specified index within the bitplane.
      * @param word_idx The index of the atomic word to access.
      * @return Reference to the atomic word at the specified index.
      */
     std::atomic<uint64_t>* atomic_word_at(size_t word_idx) {
-        return &slice_->load(
+        return &chomp_->load(
                 std::memory_order_acquire
         )->data<std::atomic<uint64_t>>()[word_idx];
     }
@@ -88,7 +88,7 @@ private:
      * @return Const reference to the atomic word at the specified index.
      */
     const std::atomic<uint64_t>* atomic_word_at(size_t word_idx) const {
-        return &slice_->load(
+        return &chomp_->load(
                 std::memory_order_acquire
         )->data<std::atomic<uint64_t>>()[word_idx];
     }
@@ -96,18 +96,18 @@ public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Constructs a Bitplane object with the specified parameters.
      * @param size_in_bits The size of the bitplane in bits.
-     * @param novel_slice Indicates whether this bitplane is part of a novel slice.
+     * @param novel_chomp Indicates whether this bitplane is part of a novel chomp.
      */
     ConcurrentBitplane(
         size_t size_in_bits = 0
-    ) : slice_(std::make_shared<std::atomic<MemAlloc*>>(new MemAlloc((size_in_bits + 7) >> 3, 16))) {}
+    ) : chomp_(std::make_shared<std::atomic<MemAlloc*>>(new MemAlloc((size_in_bits + 7) >> 3, 16))) {}
     /** ------------------------------------------------------------------------------------------- Copy/Move Constructors and Assignment Operators */
-    ConcurrentBitplane(const ConcurrentBitplane& other) : slice_(other.slice_) {}
+    ConcurrentBitplane(const ConcurrentBitplane& other) : chomp_(other.chomp_) {}
     ConcurrentBitplane& operator=(const ConcurrentBitplane& other) {
-        slice_ = other.slice_; return *this; }
-    ConcurrentBitplane(ConcurrentBitplane&& other) noexcept : slice_(std::move(other.slice_)) {}
+        chomp_ = other.chomp_; return *this; }
+    ConcurrentBitplane(ConcurrentBitplane&& other) noexcept : chomp_(std::move(other.chomp_)) {}
     ConcurrentBitplane& operator=(ConcurrentBitplane&& other) noexcept {
-        slice_ = std::move(other.slice_);
+        chomp_ = std::move(other.chomp_);
         return *this;
     }
     /** ------------------------------------------------------------------------------------------- Destructor */
@@ -123,7 +123,7 @@ public:
      * @brief Get the size of the bitplane in bytes, aligned to 256 bytes for SIMD operations.
      * @return The size of the bitplane in bytes, aligned to 256 bytes.
      */
-    size_t size_bytes() const { return slice_->load(std::memory_order_acquire)->size_bytes(); }
+    size_t size_bytes() const { return chomp_->load(std::memory_order_acquire)->size_bytes(); }
     /** ------------------------------------------------------------------------------------------- test_and_set
      * @brief Atomically test and set the bit at the specified index.
      * @param index The index of the bit to test and set.
@@ -170,9 +170,9 @@ public:
      */
     void set_all() {
         std::memset(
-            slice_->load(std::memory_order_acquire)->raw(),
+            chomp_->load(std::memory_order_acquire)->raw(),
             0xFF,
-            slice_->load(std::memory_order_acquire)->size_bytes()
+            chomp_->load(std::memory_order_acquire)->size_bytes()
         );
     }
     /** ------------------------------------------------------------------------------------------- clear_all
@@ -180,9 +180,9 @@ public:
      */
     void clear_all() {
         std::memset(
-            slice_->load(std::memory_order_acquire)->raw(),
+            chomp_->load(std::memory_order_acquire)->raw(),
             0x00,
-            slice_->load(std::memory_order_acquire)->size_bytes()
+            chomp_->load(std::memory_order_acquire)->size_bytes()
         );
     }
     /** ------------------------------------------------------------------------------------------- resize
@@ -192,7 +192,7 @@ public:
      * @param novel_buffer Indicates whether to allocate a novel buffer for the resized bitplane.
      */
     void resize(size_t new_num_bits) {
-        slice_->load(std::memory_order_acquire)->resize(
+        chomp_->load(std::memory_order_acquire)->resize(
             (new_num_bits + 7) >> 3, 16
         );
     }

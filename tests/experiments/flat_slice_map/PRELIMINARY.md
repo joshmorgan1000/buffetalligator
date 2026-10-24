@@ -1,4 +1,4 @@
-# FlatSliceMap prototype status — September 30, 2026
+# FlatChompMap prototype status — September 30, 2026
 
 The opaque Abseil-backed prototype is implemented and its correctness checks pass.
 Production sources and public headers are unchanged. The full performance matrix is
@@ -7,8 +7,8 @@ unfinished because unrelated acsimd builds repeatedly overlapped measurements.
 ## Completed validation
 
 `run_build.sh` completed the Release build and all four registered tests passed:
-the new FlatSliceMap ownership/published-reader test, the existing SliceMap test,
-and two logger tests. No tests were skipped. The prototype checks independent Slice
+the new FlatChompMap ownership/published-reader test, the existing ChompMap test,
+and two logger tests. No tests were skipped. The prototype checks independent Chomp
 IDs and metadata, zero-copy backing retention, replacement, growth, reset/destruction,
 exact backing release counts, null/extreme keys, and published concurrent readers.
 
@@ -28,7 +28,7 @@ These are medians of eleven samples in one process, after two warmups, with full
 reserved tables and sequential positive integer keys. Units are aggregate ns/op;
 lower is better. They demonstrate why insertion alone cannot select a general winner.
 
-| Rows | Operation | SliceMap | std::unordered_map | FlatSliceMap |
+| Rows | Operation | ChompMap | std::unordered_map | FlatChompMap |
 | ---: | --- | ---: | ---: | ---: |
 | 65,536 | Insert | 31.47 | 12.41 | 8.34 |
 | 65,536 | Retained hit | 18.14 | 12.02 | 15.52 |
@@ -39,7 +39,7 @@ lower is better. They demonstrate why insertion alone cannot select a general wi
 | 1,048,576 | Miss | 6.80 | 1.64 | 3.54 |
 | 1,048,576 | Replace | 32.07 | 5.33 | 25.39 |
 
-FlatSliceMap improves insertion against SliceMap in these samples, but its million-row
+FlatChompMap improves insertion against ChompMap in these samples, but its million-row
 retained hit is slower, and std leads all four million-row dense-key operations.
 Abseil is not established as a universal performance winner.
 
@@ -59,7 +59,7 @@ plus any waits or retries. The runner will wait through builds, reject contamina
 attempts, and refuse to report an incomplete matrix as complete.
 
 The intended type has exclusive mutations and shared immutable reads after external
-publication. It does not provide SliceMap's stable positional access, pointer views,
+publication. It does not provide ChompMap's stable positional access, pointer views,
 publication hooks/waits, typed finalizers, or concurrent mutation contracts. A production
 API decision still needs to account for which of those contracts callers require.
 

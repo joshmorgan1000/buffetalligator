@@ -36,9 +36,9 @@ struct MetalProgram {
     std::vector<id<MTLComputePipelineState>> pipelines;
     std::vector<MetalStage> stages;
     std::vector<std::unique_ptr<MetalSlot>> slots;
-    Slice references;
+    Chomp references;
     /** ------------------------------------------------------------------------------------------- Destroy
-     * @brief Releases native resources before the shared engine releases its Slice parameter tables.
+     * @brief Releases native resources before the shared engine releases its Chomp parameter tables.
      */
     static void destroy(ShaderProgram& program) noexcept {
         delete static_cast<MetalProgram*>(program.native);
@@ -121,12 +121,12 @@ std::unique_ptr<ShaderProgram> metal_prepare(const ShaderPrepareInfo& info) {
     auto native = std::make_unique<MetalProgram>();
     native->name = info.name;
     native->label = @(native->name.c_str());
-    if (info.references) native->references = info.references->slice();
+    if (info.references) native->references = info.references->chomp();
     program->native = native.release();
     program->ops = &METAL_OPERATIONS;
     auto& prepared = *static_cast<MetalProgram*>(program->native);
-    const size_t record_bytes = info.format == ShaderFormat::Jobs ? 32 : sizeof(Slice);
-    const size_t grid_limit = info.format == ShaderFormat::Slices ? UINT32_MAX / 4 : UINT32_MAX;
+    const size_t record_bytes = info.format == ShaderFormat::Jobs ? 32 : sizeof(Chomp);
+    const size_t grid_limit = info.format == ShaderFormat::Chomps ? UINT32_MAX / 4 : UINT32_MAX;
     program->capacity = std::min({info.capacity, grid_limit, context.maximum_length / record_bytes});
     program->max_workgroups_x = UINT32_MAX / 16;
     if (!program->capacity) ALLIGATOR_GPU_THROW("Metal preparation requires nonempty representable capacity");
@@ -155,7 +155,7 @@ std::unique_ptr<ShaderProgram> metal_prepare(const ShaderPrepareInfo& info) {
             source.append(METAL_SHADER_ENTRY);
             source.append(info.format == ShaderFormat::Jobs
                 ? "program.alligator_main(program.vulkan_job(program.vulkan_job_index()));\n}\n"
-                : "program.alligator_main(program.vulkan_slice(program.vulkan_index()));\n}\n");
+                : "program.alligator_main(program.vulkan_chomp(program.vulkan_index()));\n}\n");
         } else {
             std::vector<uint32_t> words;
             if (!info.words.empty()) words.assign(info.words.begin(), info.words.end());
@@ -234,7 +234,7 @@ std::unique_ptr<ShaderProgram> metal_prepare(const ShaderPrepareInfo& info) {
             reinterpret_cast<uint32_t*>(slot->mapped)[2] = uint32_t(info.references->size<uint32_t>() - 1);
             reinterpret_cast<uint32_t*>(slot->mapped)[7] = info.resources;
         } else {
-            slot->parameters = Slice(program->capacity * record_bytes, context.descriptor);
+            slot->parameters = Chomp(program->capacity * record_bytes, context.descriptor);
             *reinterpret_cast<uint32_t*>(slot->mapped) = slot->parameters.id();
         }
         slot->native = owned.get();

@@ -1,7 +1,7 @@
-# Isolated SliceMap candidates
+# Isolated ChompMap candidates
 
-Run `ruby tests/experiments/slice_map_candidates/prepare_map_variants.rb OUTPUT_DIRECTORY`
-from any directory. The generator reads the current working `src/containers/slicemap.cpp`,
+Run `ruby tests/experiments/chomp_map_candidates/prepare_map_variants.rb OUTPUT_DIRECTORY`
+from any directory. The generator reads the current working `src/containers/chompmap.cpp`,
 requires each edited block to match exactly once, and emits copies under the supplied output
 directory. It does not modify production sources or headers and does not read Git history.
 `manifest.json` records the input and generated SHA-256 digests.
@@ -14,14 +14,14 @@ directory. It does not modify production sources or headers and does not read Gi
 | `map_bookkeeping` | Apply both independent changes | Measures their combined effect |
 
 These are hypotheses for measurement, not claimed improvements. Each directory contains
-`slicemap.cpp` for compilation against the unchanged production headers. The separate
-`direct_publication_node` idea is omitted because `SliceMap::complete_publish` is declared
+`chompmap.cpp` for compilation against the unchanged production headers. The separate
+`direct_publication_node` idea is omitted because `ChompMap::complete_publish` is declared
 in the public header and cannot receive a node without a matching declaration change.
 
 ## Hazard guard argument
 
 The baseline protects the state before searching and protects a payload before retaining
-its Slice. Both steps and their memory orders remain unchanged. A miss never dereferences
+its Chomp. Both steps and their memory orders remain unchanged. A miss never dereferences
 a payload, so constructing its guard and clearing its slot on that path provide no
 additional protection. Hits construct the payload guard before their first payload load,
 and destruction still clears the payload guard before the state guard.

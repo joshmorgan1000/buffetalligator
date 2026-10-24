@@ -1,4 +1,4 @@
-# Keep bundled logger labels usable while global Slice and Shader owners retire.
+# Keep bundled logger labels usable while global Chomp and Shader owners retire.
 if(TARGET logging::logging)
     return()
 endif()

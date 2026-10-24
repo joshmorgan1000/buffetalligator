@@ -22,7 +22,7 @@
 #include <vector>
 
 namespace benchmarks {
-using buffetalligator::Slice;
+using buffetalligator::Chomp;
 using Clock = std::chrono::steady_clock;
 /** --------------------------------------------------------------------------------------------------------- Require
  * @brief Rejects invalid configuration or results outside the measured workload.
@@ -154,8 +154,8 @@ inline size_t partition(size_t items, size_t worker, size_t workers) {
 /** --------------------------------------------------------------------------------------------------------- Payloads
  * @brief Preallocates independent arena claims carrying deterministic message identifiers.
  */
-inline std::vector<Slice> payloads(size_t count) {
-    std::vector<Slice> values;
+inline std::vector<Chomp> payloads(size_t count) {
+    std::vector<Chomp> values;
     values.reserve(count);
     for (size_t identifier = 0; identifier < count; ++identifier) {
         values.emplace_back(64);

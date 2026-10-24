@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Metal GLSL Gate
  * @file metal_glsl_gate.mm
- * @brief Executes the production Slice GLSL preludes through pinned SPIRV-Cross and native Metal.
+ * @brief Executes the production Chomp GLSL preludes through pinned SPIRV-Cross and native Metal.
  */
 #include <alligator.hpp>
 #include <alligator/easyvulkan.hpp>
@@ -34,7 +34,7 @@ void save_text(const std::filesystem::path& path, const std::string& text) {
     require(bool(output), "Could not write experiment artifact " + path.string());
 }
 /** --------------------------------------------------------------------------------------------------------- Public Source
- * @brief Reads the current production public-list tail without duplicating its Slice lookup logic.
+ * @brief Reads the current production public-list tail without duplicating its Chomp lookup logic.
  */
 std::string public_source(const std::string& body) {
     std::ifstream input(std::string(ALLIGATOR_GATE_SOURCE_ROOT) + "/src/gpu/shader_source.cpp");
@@ -49,7 +49,7 @@ std::string public_source(const std::string& body) {
     source.append(VULKAN_GLSL_KERNEL_CORE);
     source.append(implementation, begin + 7, end - begin - 7);
     source.append(body);
-    source.append("\nvoid main() { alligator_main(vulkan_slice(vulkan_index())); }\n");
+    source.append("\nvoid main() { alligator_main(vulkan_chomp(vulkan_index())); }\n");
     return source;
 }
 /** --------------------------------------------------------------------------------------------------------- Prepare Pipeline
@@ -120,7 +120,7 @@ id<MTLComputePipelineState> prepare(id<MTLDevice> device, const std::string& sou
         << " shared bytes=" << pipeline.staticThreadgroupMemoryLength;
     return pipeline;
 }
-/** --------------------------------------------------------------------------------------------------------- Slice Identifier
+/** --------------------------------------------------------------------------------------------------------- Chomp Identifier
  * @brief Encodes the production 24-bit slot id: segment in the high 8 bits, slot in the low 16.
  */
 constexpr uint32_t identifier(uint32_t slot, uint32_t segment) { return (segment << 16) | slot; }
@@ -152,18 +152,18 @@ void run(const std::filesystem::path& artifacts) {
     LOG_INFO_STREAM << "Pinned SPIRV-Cross=" << ALLIGATOR_GATE_CROSS_REVISION
         << " shaderc target=Vulkan1.2 optimization=performance MSL target=macOS3.0";
     const std::string body = R"glsl(
-void alligator_main(Slice parameters) {
+void alligator_main(Chomp parameters) {
     if (gl_LocalInvocationIndex != 0u) return;
-    uvec4 fields = slice_load_u32x4(parameters, 0u);
-    Slice input_slice = gpu_slice(fields.x);
-    Slice output_slice = gpu_slice(fields.y);
-    slice_store_f32x4(output_slice, 0u, slice_load_f32x4(input_slice, 0u) * 2.0 + vec4(float(fields.w)));
-    slice_store_u32(output_slice, 4u, uint(slice_size(input_slice)));
-    slice_store_u32(output_slice, 5u, uint(slice_size(parameters)));
-    slice_store_u32(output_slice, 6u, slice_is_null(gpu_slice(0xFFFFFFFFu)) ? 1u : 0u);
-    slice_store_u32(output_slice, 7u, gate_count());
-    slice_store_u64(output_slice, 4u, slice_address(input_slice));
-    slice_store_u32x4(output_slice, 3u, uvec4(fields.z, fields.w, uint(slice_size(output_slice)), gate_count()));
+    uvec4 fields = chomp_load_u32x4(parameters, 0u);
+    Chomp input_chomp = gpu_chomp(fields.x);
+    Chomp output_chomp = gpu_chomp(fields.y);
+    chomp_store_f32x4(output_chomp, 0u, chomp_load_f32x4(input_chomp, 0u) * 2.0 + vec4(float(fields.w)));
+    chomp_store_u32(output_chomp, 4u, uint(chomp_size(input_chomp)));
+    chomp_store_u32(output_chomp, 5u, uint(chomp_size(parameters)));
+    chomp_store_u32(output_chomp, 6u, chomp_is_null(gpu_chomp(0xFFFFFFFFu)) ? 1u : 0u);
+    chomp_store_u32(output_chomp, 7u, gate_count());
+    chomp_store_u64(output_chomp, 4u, chomp_address(input_chomp));
+    chomp_store_u32x4(output_chomp, 3u, uvec4(fields.z, fields.w, uint(chomp_size(output_chomp)), gate_count()));
 }
 )glsl";
     const std::string public_glsl = public_source("uint gate_count() { return vulkan_count(); }\n" + body);
@@ -261,7 +261,7 @@ void alligator_main(Slice parameters) {
             }
             for (size_t word = 0; word < lengths[4] / 4; ++word) {
                 if ((word >= 16 && word < 32) || (word >= 80 && word < 96)) continue;
-                require(output[word] == UINT32_C(0xdeadbeef), "GPU write escaped a represented Slice");
+                require(output[word] == UINT32_C(0xdeadbeef), "GPU write escaped a represented Chomp");
             }
         }
         LOG_INFO_STREAM << names[format] << " passed all repeated output and untouched-region checks";

@@ -18,20 +18,16 @@ int main() {
     require(BuffetDescriptors::allocation_tracking(), "allocation tracking did not default on");
     BuffetDescriptors::set_allocation_tracking(false);
     require(!BuffetDescriptors::allocation_tracking(), "allocation tracking did not turn off");
-    const BuffetDescriptor& heap = *BuffetDescriptors::get(AlignedHeapBuffer::type_idx());
+    const BuffetDescriptor& heap = *BuffetDescriptors::get(*AlignedHeapBuffer::type_idx());
     {
-        Slice claimed(size_t{256}, &heap);
-        Slice novel(size_t{8192}, true, &heap);
-        SharedBuffet shared(size_t{4096});
-        require(claimed && novel && shared, "untracked allocations failed");
+        Chomp claimed(size_t{256}, &heap);
+        Chomp novel(size_t{8192}, true, &heap);
+        require(claimed && novel, "untracked allocations failed");
     }
     require(Memory::total_allocations() == 0 && Memory::total_freed() == 0
         && Memory::placement_allocations(heap) == 0 && Memory::placement_freed(heap) == 0,
         "untracked allocations or releases reached the tracker");
-    bool rejected = false;
-    try { BuffetDescriptors::set_allocation_tracking(true); }
-    catch (const AlligatorException&) { rejected = true; }
-    require(rejected && !BuffetDescriptors::allocation_tracking(),
-        "tracking changed after the arena started, which would unbalance its counters");
+    BuffetDescriptors::set_allocation_tracking(true);
+    require(BuffetDescriptors::allocation_tracking(), "allocation tracking did not turn back on");
     LOG_INFO_STREAM << "Allocation tracking switch passed";
 }

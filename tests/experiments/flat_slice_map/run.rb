@@ -17,7 +17,7 @@ class FlatMapRun
         @root = File.expand_path('../../..', __dir__)
         @build = File.expand_path(build_directory)
         @results = File.expand_path(results_directory)
-        @executable = File.join(@build, 'flat_slice_map_benchmark')
+        @executable = File.join(@build, 'flat_chomp_map_benchmark')
         @manifest = nil
         @waited_seconds = 0.0
         @contaminated_counts = Hash.new(0)
@@ -42,9 +42,9 @@ class FlatMapRun
             next false if fields.length < 3 || excluded.include?(fields.first.to_i)
             command = File.basename(fields[1])
             command.match?(/\A(?:clang(?:\+\+)?|gcc|g\+\+|cc1|ninja|make|gmake|ctest)(?:-[0-9.]+)?\z/) ||
-                command.match?(/\A(?:map_candidate_[a-z_]+|flat_slice_map_benchmark)\z/) ||
+                command.match?(/\A(?:map_candidate_[a-z_]+|flat_chomp_map_benchmark)\z/) ||
                 command.match?(/\Abuffetalligator_[a-z_]*benchmark\z/) ||
-                command.match?(/\A(?:check_[a-z_]+|slice_[a-z_]+_test|flat_slice_map_test)\z/) ||
+                command.match?(/\A(?:check_[a-z_]+|chomp_[a-z_]+_test|flat_chomp_map_test)\z/) ||
                 fields[2].match?(/\bcmake\s+--build(?:\s|$)/) ||
                 fields[2].match?(%r{(?:\A|\s)(?:[^\s]*/)?run_build\.sh(?:\s|$)})
         end
@@ -52,7 +52,7 @@ class FlatMapRun
     def check_correctness
         path = File.join(@build, 'Testing/Temporary/LastTest.log')
         text = File.read(path)
-        %w[flat_slice_map_test slice_map_test].each do |name|
+        %w[flat_chomp_map_test chomp_map_test].each do |name|
             expression = /^\d+\/\d+ Test: #{Regexp.escape(name)}\n(.*?)(?=^\d+\/\d+ Testing:|\z)/m
             matches = text.scan(expression)
             require_value(matches.length == 1 && matches.first.first.include?("\nTest Passed.\n"),
@@ -62,8 +62,8 @@ class FlatMapRun
     end
     def source_inputs
         fixed = %w[CMakeLists.txt run_build.sh tests/benchmarks/benchmark_support.hpp
-            tests/slice_map_test.cpp]
-        patterns = %w[src/**/* include/**/* cmake/**/* tests/experiments/flat_slice_map/**/*]
+            tests/chomp_map_test.cpp]
+        patterns = %w[src/**/* include/**/* cmake/**/* tests/experiments/flat_chomp_map/**/*]
         discovered = patterns.flat_map { |pattern| Dir.glob(File.join(@root, pattern)) }
             .select { |path| File.file?(path) }
             .map { |path| path.delete_prefix(@root + '/') }
@@ -332,6 +332,6 @@ begin
     $stdout.sync = true
     FlatMapRun.new(*ARGV).run
 rescue ArgumentError, KeyError, JSON::ParserError, SystemCallError => error
-    warn "FlatSliceMap measurement stopped: #{error.message}"
+    warn "FlatChompMap measurement stopped: #{error.message}"
     exit 1
 end

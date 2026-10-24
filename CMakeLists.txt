@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory slices" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES C CXX)
+project(alligator VERSION 0.1.0 DESCRIPTION "Preallocated host-accessible memory chomps" HOMEPAGE_URL "https://github.com/joshmorgan1000/buffetalligator" LANGUAGES C CXX)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed; run ./run_build.sh")
 endif()
@@ -16,7 +16,7 @@ else()
     set(BUFFETALLIGATOR_BUILD_TESTS_DEFAULT OFF)
 endif()
 option(BUFFETALLIGATOR_BUILD_TESTS "Build the BuffetAlligator tests" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
-option(BUFFETALLIGATOR_BUILD_BENCHMARKS "Build Slice container benchmarks" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
+option(BUFFETALLIGATOR_BUILD_BENCHMARKS "Build Chomp container benchmarks" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
 option(BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS "Build allocator integration tests" ${BUFFETALLIGATOR_BUILD_TESTS})
 option(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING "Track source locations of live backing allocations" OFF)
 set(BUFFETALLIGATOR_DEPS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/src" CACHE PATH "Dependency source directory")
@@ -58,23 +58,24 @@ if(BUFFETALLIGATOR_LTO_SUPPORTED AND NOT APPLE)
     check_cxx_compiler_flag(-ffat-lto-objects BUFFETALLIGATOR_HAS_FAT_LTO_OBJECTS)
 endif()
 add_library(alligator STATIC
-    src/gpu/runtime.cpp
     src/gpu/shader.cpp
     src/gpu/shader_source.cpp
-    src/memory/slice.cpp
+    src/memory/chomp.cpp
+    src/memory/chomptypes.cpp
     src/memory/alligator.cpp
     src/memory/registry.cpp
     src/memory/chainbuffet.cpp
+    src/memory/sharedbuffet.cpp
     src/kitchen/kitchen.cpp
     src/kitchen/order.cpp
     src/memory/mmap_allocator.cpp
-    src/containers/slicequeue.cpp
-    src/containers/slicemap.cpp
-    src/containers/priorityslice.cpp
+    src/containers/chompqueue.cpp
+    src/containers/chompmap.cpp
+    src/containers/prioritychomp.cpp
     src/network/ba_wire.c
     src/network/ba_network.c
     src/network/ba_fabric.c
-    src/network/slice_channel.cpp
+    src/network/chomp_channel.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
 if(BUFFETALLIGATOR_HAS_FAT_LTO_OBJECTS)

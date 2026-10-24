@@ -10,10 +10,10 @@ class MapCandidateAnalysis
         (single|threaded8p8c)__(?:series)?([1-9][0-9]*)\.csv\z/x
     SUMMARY_HEADERS = %w[scope candidate items shape workload series series_count
         samples_per_process operations capacity_per_producer batch range_basis
-        slice_median_ns_op slice_min_ns_op slice_max_ns_op
+        chomp_median_ns_op chomp_min_ns_op chomp_max_ns_op
         unordered_map_median_ns_op unordered_map_min_ns_op unordered_map_max_ns_op
-        slice_speedup_vs_baseline unordered_map_speedup_vs_baseline slice_speedup_vs_std
-        slice_range_overlaps_baseline].freeze
+        chomp_speedup_vs_baseline unordered_map_speedup_vs_baseline chomp_speedup_vs_std
+        chomp_range_overlaps_baseline].freeze
     def initialize(input, output)
         @input = File.expand_path(input)
         @output = File.expand_path(output)
@@ -58,7 +58,7 @@ class MapCandidateAnalysis
             require_value(row.fields.length == HEADERS.length, "Unexpected field count: #{label}")
             container = row.fetch('container')
             workload = row.fetch('workload')
-            require_value(['SliceMap', hash_name].include?(container), "Unexpected container: #{label}")
+            require_value(['ChompMap', hash_name].include?(container), "Unexpected container: #{label}")
             require_value(WORKLOADS.include?(workload), "Unexpected workload: #{label}")
             require_value(row.fetch('shape') == SHAPES.fetch(shape), "Shape differs from filename: #{label}")
             require_value(integer(row.fetch('items'), label) == items, "Items differ from filename: #{label}")
@@ -78,7 +78,7 @@ class MapCandidateAnalysis
             require_value(!group.fetch(:samples).key?(sample), "Duplicate sample: #{label}")
             group.fetch(:samples)[sample] = seconds * 1e9 / operations
         end
-        expected_groups = ['SliceMap', hash_name].product(WORKLOADS)
+        expected_groups = ['ChompMap', hash_name].product(WORKLOADS)
         require_value(groups.keys.sort == expected_groups.sort, "Missing comparison workloads: #{filename}")
         groups.each_value do |group|
             samples = group.fetch(:samples)
@@ -95,12 +95,12 @@ class MapCandidateAnalysis
         capacity_batch = groups.values.map { |group| group.fetch(:settings)[1, 2] }.uniq
         require_value(capacity_batch.length == 1, "Capacity or batch differs between workloads: #{filename}")
         WORKLOADS.each do |workload|
-            require_value(groups.fetch(['SliceMap', workload]).fetch(:settings) ==
+            require_value(groups.fetch(['ChompMap', workload]).fetch(:settings) ==
                 groups.fetch([hash_name, workload]).fetch(:settings),
                 "Candidates have unequal workload settings: #{filename}")
         end
-        require_value(groups.fetch(['SliceMap', 'lookup-hit']).fetch(:settings) ==
-            groups.fetch(['SliceMap', 'lookup-miss']).fetch(:settings),
+        require_value(groups.fetch(['ChompMap', 'lookup-hit']).fetch(:settings) ==
+            groups.fetch(['ChompMap', 'lookup-miss']).fetch(:settings),
             "Hit and miss lookup counts differ: #{filename}")
         @processes[key] = {groups: groups, hash_name: hash_name, filename: filename}
         @files << filename
@@ -125,8 +125,8 @@ class MapCandidateAnalysis
                     process = @processes.fetch([candidate, items, shape, series])
                     baseline = @processes.fetch(['baseline', items, shape, @series.first])
                     WORKLOADS.each do |workload|
-                        group = process.fetch(:groups).fetch(['SliceMap', workload])
-                        control = baseline.fetch(:groups).fetch(['SliceMap', workload])
+                        group = process.fetch(:groups).fetch(['ChompMap', workload])
+                        control = baseline.fetch(:groups).fetch(['ChompMap', workload])
                         require_value(group.fetch(:settings) == control.fetch(:settings) &&
                             group.fetch(:count) == control.fetch(:count),
                             "Settings or sample counts differ: #{process.fetch(:filename)} #{workload}")
@@ -137,21 +137,21 @@ class MapCandidateAnalysis
     end
     def groups_for(candidate, items, shape, workload, series)
         process = @processes.fetch([candidate, items, shape, series])
-        [process.fetch(:groups).fetch(['SliceMap', workload]),
+        [process.fetch(:groups).fetch(['ChompMap', workload]),
             process.fetch(:groups).fetch([process.fetch(:hash_name), workload])]
     end
     def overlap?(left, right)
         left.fetch(:minimum) <= right.fetch(:maximum) && right.fetch(:minimum) <= left.fetch(:maximum)
     end
-    def summary_row(scope, candidate, items, shape, workload, series, slice, standard, baseline_slice,
+    def summary_row(scope, candidate, items, shape, workload, series, chomp, standard, baseline_chomp,
         baseline_standard, settings, count)
         [scope, candidate, items, shape, workload, series, scope == 'aggregate' ? @series.length : 1,
             count, *settings, scope == 'aggregate' ? 'process_medians' : 'measured_samples',
-            slice.fetch(:median), slice.fetch(:minimum), slice.fetch(:maximum),
+            chomp.fetch(:median), chomp.fetch(:minimum), chomp.fetch(:maximum),
             standard.fetch(:median), standard.fetch(:minimum), standard.fetch(:maximum),
-            baseline_slice.fetch(:median) / slice.fetch(:median),
+            baseline_chomp.fetch(:median) / chomp.fetch(:median),
             baseline_standard.fetch(:median) / standard.fetch(:median),
-            standard.fetch(:median) / slice.fetch(:median), overlap?(slice, baseline_slice)]
+            standard.fetch(:median) / chomp.fetch(:median), overlap?(chomp, baseline_chomp)]
     end
     def aggregate(groups)
         values = groups.map { |group| group.fetch(:median) }
@@ -162,14 +162,14 @@ class MapCandidateAnalysis
         @configurations.each do |items, shape|
             WORKLOADS.each do |workload|
                 baseline_groups = @series.map { |series| groups_for('baseline', items, shape, workload, series) }
-                baseline_slice = aggregate(baseline_groups.map(&:first))
+                baseline_chomp = aggregate(baseline_groups.map(&:first))
                 baseline_standard = aggregate(baseline_groups.map(&:last))
                 @candidates.each do |candidate|
                     groups = @series.map { |series| groups_for(candidate, items, shape, workload, series) }
                     settings = groups.first.first.fetch(:settings)
                     count = groups.first.first.fetch(:count)
                     rows << summary_row('aggregate', candidate, items, shape, workload, 'all',
-                        aggregate(groups.map(&:first)), aggregate(groups.map(&:last)), baseline_slice,
+                        aggregate(groups.map(&:first)), aggregate(groups.map(&:last)), baseline_chomp,
                         baseline_standard, settings, count)
                     @series.each_with_index do |series, index|
                         rows << summary_row('process', candidate, items, shape, workload, series,
@@ -188,7 +188,7 @@ class MapCandidateAnalysis
         format('%.3fx', value)
     end
     def write_markdown(rows)
-        lines = ['# SliceMap candidate measurements', '',
+        lines = ['# ChompMap candidate measurements', '',
             "Validated #{@files.length} process CSVs, #{@candidates.length} candidates, " +
                 "#{@configurations.length} row-count/topology configurations, and #{@series.length} series.", '',
             'Each process contributes its median measured sample; the aggregate is the median of those ' +
@@ -199,15 +199,15 @@ class MapCandidateAnalysis
                 'establish a performance winner, and non-overlap is not a statistical significance test.', '',
             'All times are aggregate wall-clock nanoseconds per operation, not individual request latency. ' +
                 'Speedups above 1x favor the candidate; comparisons use ratios of the displayed medians. ' +
-                'Baseline SliceMap speedup compares against unmodified SliceMap, std speedup compares the ' +
-                "candidate's std control against baseline's std control, and SliceMap/std compares " +
-                "SliceMap against the std control in that candidate's process.", '',
+                'Baseline ChompMap speedup compares against unmodified ChompMap, std speedup compares the ' +
+                "candidate's std control against baseline's std control, and ChompMap/std compares " +
+                "ChompMap against the std control in that candidate's process.", '',
             'The std control is plain unordered_map for single and unordered_map plus one mutex for ' +
                 'threaded8p8c. Insertions, retained successful lookups, and misses run in separate phases; ' +
                 '8P/8C has eight active writers followed by eight active readers. It does not measure ' +
                 'overlapping reads and writes or the best possible lock-free read-only std map baseline.', '',
-            'Successful lookups include creation and retention of owned Slice handles until phase end. ' +
-                'Both containers use the arena, so changes to Slice metadata or ownership can affect both ' +
+            'Successful lookups include creation and retention of owned Chomp handles until phase end. ' +
+                'Both containers use the arena, so changes to Chomp metadata or ownership can affect both ' +
                 'columns; std timings are shown for every variant to expose that effect. Payload creation, ' +
                 'reset, release of retained results, and correctness validation occur outside timing.', '',
             'The analyzer validates names, workload settings, sample IDs/counts, finite positive timing, ' +
@@ -223,28 +223,28 @@ class MapCandidateAnalysis
                 lines.concat(["## #{items} rows · #{shape} · #{workload}", '',
                     "#{first.fetch('operations')} operations per process sample; " +
                         "#{first.fetch('samples_per_process')} measured samples per process.", '',
-                    '| Candidate | SliceMap ns/op [series range] | std ns/op [series range] | ' +
-                        'SliceMap speedup vs baseline | std speedup vs baseline std | ' +
-                        'SliceMap speedup vs std | Baseline range overlap |',
+                    '| Candidate | ChompMap ns/op [series range] | std ns/op [series range] | ' +
+                        'ChompMap speedup vs baseline | std speedup vs baseline std | ' +
+                        'ChompMap speedup vs std | Baseline range overlap |',
                     '| --- | ---: | ---: | ---: | ---: | ---: | --- |'])
                 selected.select { |row| row.fetch('scope') == 'aggregate' }.each do |row|
                     overlap = row.fetch('candidate') == 'baseline' ? 'reference' :
-                        (row.fetch('slice_range_overlaps_baseline') ? 'yes; unresolved' : 'no; descriptive only')
-                    lines << "| #{row.fetch('candidate')} | #{measurement(row, 'slice')} | " +
-                        "#{measurement(row, 'unordered_map')} | #{ratio(row.fetch('slice_speedup_vs_baseline'))} | " +
+                        (row.fetch('chomp_range_overlaps_baseline') ? 'yes; unresolved' : 'no; descriptive only')
+                    lines << "| #{row.fetch('candidate')} | #{measurement(row, 'chomp')} | " +
+                        "#{measurement(row, 'unordered_map')} | #{ratio(row.fetch('chomp_speedup_vs_baseline'))} | " +
                         "#{ratio(row.fetch('unordered_map_speedup_vs_baseline'))} | " +
-                        "#{ratio(row.fetch('slice_speedup_vs_std'))} | #{overlap} |"
+                        "#{ratio(row.fetch('chomp_speedup_vs_std'))} | #{overlap} |"
                 end
                 lines.concat(['', 'Per-series process results:', '',
-                    '| Candidate | Series | SliceMap ns/op [sample range] | std ns/op [sample range] | ' +
-                        'SliceMap speedup vs baseline | std speedup vs baseline std | SliceMap speedup vs std |',
+                    '| Candidate | Series | ChompMap ns/op [sample range] | std ns/op [sample range] | ' +
+                        'ChompMap speedup vs baseline | std speedup vs baseline std | ChompMap speedup vs std |',
                     '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'])
                 selected.select { |row| row.fetch('scope') == 'process' }.each do |row|
                     lines << "| #{row.fetch('candidate')} | #{row.fetch('series')} | " +
-                        "#{measurement(row, 'slice')} | #{measurement(row, 'unordered_map')} | " +
-                        "#{ratio(row.fetch('slice_speedup_vs_baseline'))} | " +
+                        "#{measurement(row, 'chomp')} | #{measurement(row, 'unordered_map')} | " +
+                        "#{ratio(row.fetch('chomp_speedup_vs_baseline'))} | " +
                         "#{ratio(row.fetch('unordered_map_speedup_vs_baseline'))} | " +
-                        "#{ratio(row.fetch('slice_speedup_vs_std'))} |"
+                        "#{ratio(row.fetch('chomp_speedup_vs_std'))} |"
                 end
                 lines << ''
             end

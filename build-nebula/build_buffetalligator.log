@@ -37,16 +37,16 @@ Abseil (20260107.1) already built at /Users/joshmorgan/manifoldb/actian/nebula/d
 === Building BuffetAlligator ===
 [0/2] Re-checking globbed directories...
 [1/15] Linking CXX executable tests/benchmarks/buffetalligator_kitchen_benchmark
-[2/15] Linking CXX executable tests/benchmarks/buffetalligator_priority_slice_benchmark
+[2/15] Linking CXX executable tests/benchmarks/buffetalligator_priority_chomp_benchmark
 [3/15] Linking CXX executable tests/benchmarks/buffetalligator_queue_comparison_benchmark
-[4/15] Linking CXX executable tests/benchmarks/buffetalligator_slice_map_iteration_benchmark
-[5/15] Linking CXX executable tests/benchmarks/buffetalligator_priority_slice_showdown
+[4/15] Linking CXX executable tests/benchmarks/buffetalligator_chomp_map_iteration_benchmark
+[5/15] Linking CXX executable tests/benchmarks/buffetalligator_priority_chomp_showdown
 [6/15] Linking CXX executable tests/benchmarks/buffetalligator_gpu_dispatch_benchmark
-[7/15] Linking CXX executable tests/benchmarks/buffetalligator_slice_map_benchmark
+[7/15] Linking CXX executable tests/benchmarks/buffetalligator_chomp_map_benchmark
 [8/15] Building CXX object tests/benchmarks/CMakeFiles/buffetalligator_claim_table_benchmark.dir/claim_table_benchmark.cpp.o
 [9/15] Building CXX object tests/benchmarks/CMakeFiles/buffetalligator_allocator_benchmark.dir/allocator_benchmark.cpp.o
 [10/15] Building CXX object tests/benchmarks/CMakeFiles/buffetalligator_slab_churn_benchmark.dir/slab_churn_benchmark.cpp.o
-[11/15] Linking CXX executable tests/benchmarks/buffetalligator_slicemapvsvecset
+[11/15] Linking CXX executable tests/benchmarks/buffetalligator_chompmapvsvecset
 [12/15] Linking CXX executable tests/benchmarks/buffetalligator_claim_table_benchmark
 [13/15] Linking CXX executable tests/benchmarks/buffetalligator_allocator_benchmark
 [14/15] Linking CXX executable tests/benchmarks/buffetalligator_slab_churn_benchmark

@@ -7,11 +7,8 @@
 #include <alligator/atomics.hpp>
 #include <alligator/containers.hpp>
 #include <alligator/easygpu.hpp>
-#include <alligator/easymmap.hpp>
+#include <alligator/mmapbuffet.hpp>
 #include <alligator/kitchen.hpp>
-#if defined(BUFFETALLIGATOR_HAS_CUDA)
-#include <alligator/easycuda.hpp>
-#endif
-#if defined(BUFFETALLIGATOR_HAS_VULKAN)
-#include <alligator/easyvulkan.hpp>
-#endif
+#include <alligator/dispatch.hpp>
+#include <alligator/encryptionkey.hpp>
+#include <alligator/nutritionist.hpp>

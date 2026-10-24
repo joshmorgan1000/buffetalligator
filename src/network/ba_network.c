@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Network Reactor
  * @file ba_network.c
- * @brief Runs Slice exchanges on one libuv loop with a command handoff from application threads.
+ * @brief Runs Chomp exchanges on one libuv loop with a command handoff from application threads.
  */
 #include "ba_transport.h"
 #include <stdlib.h>
@@ -23,7 +23,7 @@ typedef struct ba_net_command {
     uint8_t protocol;
     uint64_t timeout_ms;
     ba_net_callback callback;
-    const ba_slice_t* slice;
+    const ba_chomp_t* chomp;
     uv_sem_t completion;
     int status;
 } ba_net_command;
@@ -221,7 +221,7 @@ void ba_net_peer_close(ba_net_peer* peer, int status) {
     if (!peer->server && peer->callback) {
         ba_net_callback callback = peer->callback;
         peer->callback = NULL;
-        ba_slice_t empty = {BA_NULL_ID};
+        ba_chomp_t empty = {BA_NULL_ID};
         ba_net_deliver(callback, &empty);
     }
     if (status && status != UV_ECANCELED && status != UV_EOF) ba_net_log(uv_strerror(status));
@@ -334,7 +334,7 @@ static int ba_network_handshake(ba_net_peer* peer, const unsigned char* data, si
     return ba_network_payload(peer);
 }
 /** --------------------------------------------------------------------------------------------------------- Receive Frame
- * @brief Publishes a complete Slice and scopes implicit replies to its receive callback.
+ * @brief Publishes a complete Chomp and scopes implicit replies to its receive callback.
  */
 void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
                      const struct sockaddr* address) {
@@ -344,8 +344,8 @@ void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
         else if (status) ba_net_peer_close(peer, status);
         return;
     }
-    ba_slice_t slice;
-    const int status = ba_net_decode(data, size, peer->protocol, peer->key, &slice);
+    ba_chomp_t chomp;
+    const int status = ba_net_decode(data, size, peer->protocol, peer->key, &chomp);
     if (status) {
         if (peer->listener) ba_net_log(uv_strerror(status));
         else ba_net_peer_close(peer, status);
@@ -353,7 +353,7 @@ void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
     }
     const int response = !!(data[5] & BA_NET_RESPONSE);
     if (response == peer->server || (!peer->server && sodium_memcmp(data + 16, peer->token, 16))) {
-        ba_release(&slice);
+        ba_release(&chomp);
         if (!peer->listener) ba_net_peer_close(peer, UV_EPROTO);
         return;
     }
@@ -362,7 +362,7 @@ void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
                            ? !ba_network_challenge_consume(peer, data + 16)
                            : peer->challenged && !sodium_memcmp(data + 16, peer->token, 16);
         if (!accepted) {
-            ba_release(&slice);
+            ba_release(&chomp);
             if (!peer->listener) ba_net_peer_close(peer, UV_EACCES);
             return;
         }
@@ -371,14 +371,14 @@ void ba_net_received(ba_net_peer* peer, const unsigned char* data, size_t size,
     if (!peer->server) {
         ba_net_callback callback = peer->callback;
         peer->callback = NULL;
-        if (callback) ba_net_deliver(callback, &slice);
-        else ba_release(&slice);
+        if (callback) ba_net_deliver(callback, &chomp);
+        else ba_release(&chomp);
         ba_net_peer_close(peer, 0);
     } else {
         ba_net_reply reply = {peer, address, data + 16, data[5], 0};
         ba_net_reply* previous = ba_network_reply;
         ba_network_reply = &reply;
-        ba_net_deliver(peer->callback, &slice);
+        ba_net_deliver(peer->callback, &chomp);
         ba_network_reply = previous;
         if (!peer->listener && !peer->closing) {
             peer->finish_writes = 1;
@@ -528,7 +528,7 @@ static void ba_network_accept(uv_stream_t* server, int status) {
     }
     ba_net_peer* peer = ba_net_peer_create(listener->loop, listener->port, listener->protocol);
     if (!peer) {
-        ba_net_log("Cannot allocate incoming Slice exchange");
+        ba_net_log("Cannot allocate incoming Chomp exchange");
         ba_network_discard(server);
         return;
     }
@@ -611,7 +611,7 @@ static void ba_network_resolved(uv_getaddrinfo_t* request, int status,
  */
 static int ba_network_respond(ba_net_command* command) {
     ba_net_reply* reply = ba_network_reply;
-    if (!reply || reply->peer->closing || reply->replied || command->slice->id == BA_NULL_ID ||
+    if (!reply || reply->peer->closing || reply->replied || command->chomp->id == BA_NULL_ID ||
         command->callback || command->port != reply->peer->port ||
         command->protocol != reply->peer->protocol)
         return UV_EINVAL;
@@ -620,7 +620,7 @@ static int ba_network_respond(ba_net_command* command) {
         return 0;
     }
     ba_net_frame frame = {0};
-    int status = ba_net_encode(command->slice,
+    int status = ba_net_encode(command->chomp,
                                BA_NET_RESPONSE | ((command->protocol & 128) ? BA_NET_SECURE : 0),
                                reply->token, reply->peer->key, &frame);
     if (!status && (command->protocol & 127) == 1 && frame.size > 65507) status = UV_EMSGSIZE;
@@ -700,7 +700,7 @@ static void ba_network_execute(ba_net_command* command) {
         randombytes_buf(peer->token, 16);
         unsigned flags = (peer->protocol & 128) ? BA_NET_SECURE : 0;
         if (command->callback) flags |= BA_NET_REPLY;
-        status = ba_net_snapshot(command->slice, flags, &peer->outgoing);
+        status = ba_net_snapshot(command->chomp, flags, &peer->outgoing);
         if (!status) status = ba_net_peer_deadline(peer, command->timeout_ms);
         if (!status && (peer->protocol & 127) == 1 && peer->outgoing.size > 65507)
             status = UV_EMSGSIZE;
@@ -855,9 +855,9 @@ int ba_net_close(uint16_t port, uint8_t protocol) {
     return ba_network_submit(&command);
 }
 /** --------------------------------------------------------------------------------------------------------- Send
- * @brief Snapshots the Slice before returning and completes any response asynchronously.
+ * @brief Snapshots the Chomp before returning and completes any response asynchronously.
  */
-int ba_net_send(const ba_slice_t* slice, const char* address, uint16_t port, uint8_t protocol,
+int ba_net_send(const ba_chomp_t* chomp, const char* address, uint16_t port, uint8_t protocol,
                 ba_net_callback callback, uint64_t timeout_ms) {
     ba_net_command command = {.operation = 2,
                               .address = address,
@@ -865,7 +865,7 @@ int ba_net_send(const ba_slice_t* slice, const char* address, uint16_t port, uin
                               .protocol = protocol,
                               .timeout_ms = timeout_ms,
                               .callback = callback,
-                              .slice = slice};
+                              .chomp = chomp};
     return ba_network_submit(&command);
 }
 /** --------------------------------------------------------------------------------------------------------- Shutdown

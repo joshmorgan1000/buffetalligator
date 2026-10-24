@@ -24,7 +24,7 @@ extern "C" {
 
 using namespace buffetalligator;
 namespace {
-using Protocol = SliceChannel::Protocol;
+using Protocol = ChompChannel::Protocol;
 using namespace std::chrono_literals;
 std::counting_semaphore<4096> received{0};
 std::counting_semaphore<4096> responses{0};
@@ -104,11 +104,11 @@ uint16_t unused_port() {
 /** --------------------------------------------------------------------------------------------------------- Receive
  * @brief Validates every payload byte before recording a delivered one-way message.
  */
-void receive(Slice slice) {
-    if (!slice || !slice.size_bytes()) invalid_payloads.fetch_add(1, std::memory_order_relaxed);
+void receive(Chomp chomp) {
+    if (!chomp || !chomp.size_bytes()) invalid_payloads.fetch_add(1, std::memory_order_relaxed);
     else {
-        const auto* bytes = slice.data<unsigned char>();
-        for (size_t index = 0; index < slice.size_bytes(); ++index) {
+        const auto* bytes = chomp.data<unsigned char>();
+        for (size_t index = 0; index < chomp.size_bytes(); ++index) {
             if (bytes[index] != 0x42) {
                 invalid_payloads.fetch_add(1, std::memory_order_relaxed);
                 break;
@@ -118,10 +118,10 @@ void receive(Slice slice) {
     received.release();
 }
 /** --------------------------------------------------------------------------------------------------------- Response
- * @brief Records timeout and cancellation callbacks without inspecting null Slice metadata.
+ * @brief Records timeout and cancellation callbacks without inspecting null Chomp metadata.
  */
-void response(Slice slice) {
-    if (slice) valid_responses.fetch_add(1, std::memory_order_relaxed);
+void response(Chomp chomp) {
+    if (chomp) valid_responses.fetch_add(1, std::memory_order_relaxed);
     responses.release();
 }
 /** --------------------------------------------------------------------------------------------------------- One Way
@@ -129,24 +129,24 @@ void response(Slice slice) {
  */
 void one_way(Protocol protocol) {
     const uint16_t port = unused_port();
-    SliceChannel::listen(port, protocol, receive);
-    Slice source(32);
+    ChompChannel::listen(port, protocol, receive);
+    Chomp source(32);
     std::memset(source.raw(), 0x42, source.size_bytes());
     const unsigned workers = std::clamp(std::thread::hardware_concurrency() * 2, 16u, 64u);
     std::vector<std::thread> producers;
     for (unsigned index = 0; index < workers; ++index)
-        producers.emplace_back([&] { SliceChannel::send(source, "127.0.0.1", port, protocol); });
+        producers.emplace_back([&] { ChompChannel::send(source, "127.0.0.1", port, protocol); });
     for (auto& producer : producers) producer.join();
     for (unsigned index = 0; index < workers; ++index)
         require(received.try_acquire_for(5s), "one-way message was lost");
     const bool datagram = (static_cast<unsigned>(protocol) & 127) == 1;
-    Slice large(datagram ? 48001 : 2097155);
+    Chomp large(datagram ? 48001 : 2097155);
     std::memset(large.raw(), 0x42, large.size_bytes());
     for (unsigned message = 0; message < 4; ++message) {
-        SliceChannel::send(large, "127.0.0.1", port, protocol);
+        ChompChannel::send(large, "127.0.0.1", port, protocol);
         require(received.try_acquire_for(5s), "fragmented one-way message was lost");
     }
-    SliceChannel::close(port, protocol);
+    ChompChannel::close(port, protocol);
     require(!received.try_acquire(), "one-way message was delivered twice");
     require(!invalid_payloads.load(), "one-way payload was corrupted");
     std::printf("One-way protocol %u: %u concurrent and 4 large messages passed\n",
@@ -193,15 +193,15 @@ void replay(bool datagram) {
     const uint16_t port = unused_port();
     unsigned char key[32], token[16];
     require(!ba_net_key(key), "key configuration failed");
-    Slice source(123);
+    Chomp source(123);
     std::memset(source.raw(), 0x42, source.size_bytes());
     ba_net_frame captured{};
-    SliceChannel::listen(port, protocol, receive);
+    ChompChannel::listen(port, protocol, receive);
     {
         Socket socket(datagram ? SOCK_DGRAM : SOCK_STREAM);
         socket.connect_port(port);
         challenge(socket, key, token, datagram);
-        require(!ba_net_encode(reinterpret_cast<const ba_slice_t*>(&source), BA_NET_SECURE,
+        require(!ba_net_encode(reinterpret_cast<const ba_chomp_t*>(&source), BA_NET_SECURE,
                                token, key, &captured), "request encode failed");
         socket.write_bytes(captured.data, captured.size);
         require(received.try_acquire_for(2s), "fresh authenticated request was rejected");
@@ -212,8 +212,8 @@ void replay(bool datagram) {
     }
     for (unsigned restart = 0; restart < 2; ++restart) {
         if (restart) {
-            SliceChannel::close(port, protocol);
-            SliceChannel::listen(port, protocol, receive);
+            ChompChannel::close(port, protocol);
+            ChompChannel::listen(port, protocol, receive);
         }
         Socket socket(datagram ? SOCK_DGRAM : SOCK_STREAM);
         socket.connect_port(port);
@@ -229,14 +229,14 @@ void replay(bool datagram) {
         socket.connect_port(port);
         challenge(socket, key, token, datagram);
         ba_net_frame fresh{};
-        require(!ba_net_encode(reinterpret_cast<const ba_slice_t*>(&source), BA_NET_SECURE,
+        require(!ba_net_encode(reinterpret_cast<const ba_chomp_t*>(&source), BA_NET_SECURE,
                                token, key, &fresh), "fresh request encode failed");
         socket.write_bytes(fresh.data, fresh.size);
         free(fresh.data);
         require(received.try_acquire_for(2s), "fresh request failed after rejected replays");
     }
     free(captured.data);
-    SliceChannel::close(port, protocol);
+    ChompChannel::close(port, protocol);
     std::printf("Encrypted %s replay and listener restart checks passed\n",
                 datagram ? "UDP" : "TCP");
     std::fflush(stdout);
@@ -254,14 +254,14 @@ void expired_challenge() {
     socket.connect_port(port);
     challenge(socket, key, token, true);
     require(!received.try_acquire_for(200ms), "challenge reached the application");
-    Slice source(1);
+    Chomp source(1);
     ba_net_frame frame{};
-    require(!ba_net_encode(reinterpret_cast<const ba_slice_t*>(&source), BA_NET_SECURE,
+    require(!ba_net_encode(reinterpret_cast<const ba_chomp_t*>(&source), BA_NET_SECURE,
                            token, key, &frame), "expired request encode failed");
     socket.write_bytes(frame.data, frame.size);
     free(frame.data);
     require(!received.try_acquire_for(100ms), "expired challenge was accepted");
-    SliceChannel::close(port, Protocol::EncryptedUDP);
+    ChompChannel::close(port, Protocol::EncryptedUDP);
 }
 /** --------------------------------------------------------------------------------------------------------- Deadlines
  * @brief Completes silent peers exactly once and closes stalled inbound streams.
@@ -273,12 +273,12 @@ void deadlines() {
         Socket silent(datagram ? SOCK_DGRAM : SOCK_STREAM);
         const uint16_t port = silent.bind_port();
         if (!datagram) require(listen(silent.descriptor, 8) == 0, "silent listener failed");
-        Slice source(1);
-        require(!ba_net_send(reinterpret_cast<const ba_slice_t*>(&source), "127.0.0.1", port,
+        Chomp source(1);
+        require(!ba_net_send(reinterpret_cast<const ba_chomp_t*>(&source), "127.0.0.1", port,
             static_cast<uint8_t>(protocol), reinterpret_cast<ba_net_callback>(response), 100),
             "silent peer send failed");
         require(responses.try_acquire_for(2s), "silent peer did not time out");
-        SliceChannel::close(port, protocol);
+        ChompChannel::close(port, protocol);
         require(!responses.try_acquire_for(150ms), "timeout callback was delivered twice");
     }
     require(!valid_responses.load(), "timeout produced a valid response");
@@ -292,10 +292,10 @@ void deadlines() {
         stalled.write_bytes(partial, sizeof(partial));
         unsigned char byte;
         require(stalled.read_bytes(&byte, 1) == 0, "stalled inbound stream did not expire");
-        SliceChannel::close(port, protocol);
+        ChompChannel::close(port, protocol);
     }
-    Slice source(1);
-    require(ba_net_send(reinterpret_cast<const ba_slice_t*>(&source), "127.0.0.1", unused_port(),
+    Chomp source(1);
+    require(ba_net_send(reinterpret_cast<const ba_chomp_t*>(&source), "127.0.0.1", unused_port(),
         static_cast<uint8_t>(Protocol::TCP), reinterpret_cast<ba_net_callback>(response), 0)
         == UV_EINVAL, "zero exchange deadline accepted");
     std::puts("Silent-peer and partial-frame deadlines passed");

@@ -3,13 +3,13 @@
   "platform": "universal.arm64e-darwin25",
   "build_directory": "/Users/joshmorgan/manifoldb/buffetalligator/build/map-candidates",
   "source_sha256": {
-    "src/containers/slicemap.cpp": "c5af0c860db3918a56a3583a3e26585cfa2c5fa8fb8e0843d15ecae516f6c1b4",
-    "src/memory/slice.cpp": "344601433999e387b45da9765ef62ba7b9c81c40645effb50757e521caaa0175",
+    "src/containers/chompmap.cpp": "c5af0c860db3918a56a3583a3e26585cfa2c5fa8fb8e0843d15ecae516f6c1b4",
+    "src/memory/chomp.cpp": "344601433999e387b45da9765ef62ba7b9c81c40645effb50757e521caaa0175",
     "src/memory/alligator.cpp": "79320b062d9c7994e131e3c15aaebdef470abe9a6c1f75ef191cd3e5161e5c92",
     "src/memory/chainbuffet.cpp": "72fd2e63b991fff400727ecca0eed8d91ac584c4d5421ea5d33112463a3b1d38",
     "include/alligator.hpp": "cd76374276d4edd5205974817bbff3c4ae1ecc27d9543c28de971fd8251e9b37",
     "include/alligator/containers.hpp": "e30eaad1fbb086b3de2131c03bb58b361b5978c332fdcf22e678308a0cf2bd8b",
-    "tests/benchmarks/slice_map_benchmark.cpp": "31994c7d6ae1864ff28a57b33203f94277bb61b1357abe054f404d99b538b10f",
+    "tests/benchmarks/chomp_map_benchmark.cpp": "31994c7d6ae1864ff28a57b33203f94277bb61b1357abe054f404d99b538b10f",
     "tests/benchmarks/benchmark_support.hpp": "ec024ea5c6083293834e9db5919712b79bb5a8610444822155c11a1ea8cc1e52"
   },
   "executables": {

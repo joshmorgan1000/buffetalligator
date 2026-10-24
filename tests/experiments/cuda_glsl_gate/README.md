@@ -1,6 +1,6 @@
 # CUDA GLSL compiler gate
 
-The 2026-09-30 compiler experiment failed for the actual production Slice prelude.
+The 2026-09-30 compiler experiment failed for the actual production Chomp prelude.
 The observed compiler was `/usr/local/bin/slangc`, version
 `2026.13.1-1-g84792eb15`, on macOS ARM64; this records the installed executable and does
 not establish a project dependency pin.
@@ -13,7 +13,7 @@ not establish a project dependency pin.
 
 Both `-lang glsl` and `-lang glsl -allow-glsl` produced the same results. The first diagnostic
 for each complete prelude is `E31217: unrecognized GLSL layout qualifier` at
-`layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SliceRef`.
+`layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer ChompRef`.
 All ten buffer-reference declarations receive the same diagnostic, before CUDA lowering.
 The positive control proves that the compiler accepts the selected GLSL input mode.
 
@@ -94,7 +94,7 @@ and a 16-by-4-by-1 threadgroup. The generated invocation context owns its push, 
 has no `SLANG_globalParams` constant. This avoids the shared mutable binding found in the first
 bridge attempt and follows Slang's documented
 [entry-point uniforms for compute shaders](https://docs.shader-slang.org/en/stable/parameter-blocks.html).
-The emitted Slice ID is 4 bytes; location words keep buffer, granule offset, and granule length
+The emitted Chomp ID is 4 bytes; location words keep buffer, granule offset, and granule length
 fields, with unchanged directory decoding and 64-byte shifts. These are source and reflection
 checks, not NVRTC, PTX, or concurrent NVIDIA execution results.
 

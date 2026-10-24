@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Network Contract Tests
  * @file network_test.cpp
- * @brief Verifies public Slice channels across processes and rejects malformed or forged private frames.
+ * @brief Verifies public Chomp channels across processes and rejects malformed or forged private frames.
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -26,12 +27,12 @@ extern "C" {
 
 using namespace buffetalligator;
 namespace {
-using Protocol = SliceChannel::Protocol;
+using Protocol = ChompChannel::Protocol;
 uint16_t port;
 Protocol protocol;
 std::counting_semaphore<4096> completed{0};
 std::mutex results_mutex;
-std::vector<Slice> results;
+std::vector<Chomp> results;
 /** --------------------------------------------------------------------------------------------------------- Require
  * @brief Stops the test on a violated public contract.
  */
@@ -41,90 +42,87 @@ void require(bool condition, const char* message) {
         std::exit(1);
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Test Block
- * @brief The test placement's substrate handle: the block and its size.
+/** --------------------------------------------------------------------------------------------------------- Test Placement
+ * @brief Genuine registered heap storage whose placement name differs between the two processes.
  */
-struct TestBlock {
-    void* memory;  ///< The allocated block.
-    size_t size;   ///< The block size in bytes.
+template<int Slot>
+struct alignas(16) TestPlacement {
+    void* memory = nullptr;  ///< The allocated block.
+    size_t bytes = 0;        ///< The block size in bytes.
+    inline static const char* name = "Unnamed";
+    TestPlacement(size_t size = 0) : bytes(size) {
+        if (size == 0) return;
+        if (posix_memalign(&memory, 64, size)) throw std::bad_alloc();
+        std::memset(memory, 0, size);
+    }
+    TestPlacement(const TestPlacement&) = delete;
+    TestPlacement& operator=(const TestPlacement&) = delete;
+    TestPlacement(TestPlacement&& other) noexcept
+    : memory(std::exchange(other.memory, nullptr)), bytes(std::exchange(other.bytes, 0)) {}
+    TestPlacement& operator=(TestPlacement&& other) noexcept {
+        std::swap(memory, other.memory); std::swap(bytes, other.bytes); return *this;
+    }
+    ~TestPlacement() { std::free(memory); }
+    operator bool() const { return memory != nullptr; }
+    bool operator==(std::nullptr_t) const { return memory == nullptr; }
+    static void deleter_impl(void* handle) { delete static_cast<TestPlacement*>(handle); }
+    static void (*deleter())(void*) { return deleter_impl; }
+    static void* host_ptr(void* handle) { return static_cast<TestPlacement*>(handle)->memory; }
+    static size_t size_of(void* handle) { return static_cast<TestPlacement*>(handle)->bytes; }
+    static void* factory(size_t size) { return new TestPlacement(size); }
+    static size_t default_size() { return 16u * 1024u * 1024u; }
+    static size_t* type_idx() { static size_t idx = 0; return &idx; }
+    static const char* type_name() { return name; }
+    static uint64_t device_address(void* handle) { return reinterpret_cast<uint64_t>(host_ptr(handle)); }
+    size_t size() const { return bytes; }
+    void* raw() { return memory; }
+    const void* raw() const { return memory; }
 };
-/** --------------------------------------------------------------------------------------------------------- Allocate Test Placement
- * @brief Supplies genuine registered storage whose type differs between the two processes.
- */
-void* allocate(size_t bytes) {
-    void* pointer = nullptr;
-    if (posix_memalign(&pointer, 64, bytes)) throw std::bad_alloc();
-    std::memset(pointer, 0, bytes);
-    return new TestBlock{pointer, bytes};
-}
-/** --------------------------------------------------------------------------------------------------------- Release Test Placement
- * @brief Releases the placement's allocation through its actual callback.
- */
-void deallocate(void* substrate_handle) {
-    TestBlock* block = static_cast<TestBlock*>(substrate_handle);
-    std::free(block->memory);
-    delete block;
-}
-/** --------------------------------------------------------------------------------------------------------- Test Size
- * @brief Reports the registered backing allocation's byte length.
- */
-size_t test_size(void* handle) { return static_cast<TestBlock*>(handle)->size; }
-/** --------------------------------------------------------------------------------------------------------- Host Pointer
- * @brief The block's host pointer.
- */
-void* test_host_ptr(void* handle, size_t offset) {
-    return static_cast<char*>(static_cast<TestBlock*>(handle)->memory) + offset;
-}
-/** --------------------------------------------------------------------------------------------------------- Device Address
- * @brief Reports this CPU descriptor's address domain.
- */
-uint64_t test_device_address(void* substrate_handle) {
-    const TestBlock* block = static_cast<TestBlock*>(substrate_handle);
-    return reinterpret_cast<uint64_t>(block->memory);
-}
 const BuffetDescriptor* network_placement = nullptr;
 /** --------------------------------------------------------------------------------------------------------- Register
  * @brief Registers one named placement for cross-process identifier tests.
  */
 void register_placement(const char* name) {
-    static_cast<void>(Slice::default_placement());
-    static std::array<BuffetDescriptor, 2> descriptors;
+    static_cast<void>(Chomp::default_placement());
     static size_t registered = 0;
-    BuffetDescriptor& descriptor = descriptors[registered++];
-    descriptor = {name, deallocate, test_host_ptr, test_size, allocate,
-        static_cast<uint8_t>(BuffetDescriptors::count()), 16u * 1024u * 1024u,
-        test_device_address};
-    BuffetDescriptors::register_descriptor(&descriptor);
-    if (std::strcmp(name, "NetworkTest") == 0) network_placement = &descriptor;
+    const BuffetDescriptor* descriptor = nullptr;
+    if (registered++ == 0) {
+        TestPlacement<0>::name = name;
+        descriptor = BuffetDescriptors::descriptor<TestPlacement<0>>();
+    } else {
+        TestPlacement<1>::name = name;
+        descriptor = BuffetDescriptors::descriptor<TestPlacement<1>>();
+    }
+    if (std::strcmp(name, "NetworkTest") == 0) network_placement = descriptor;
 }
 /** --------------------------------------------------------------------------------------------------------- Response
  * @brief Retains callback results for validation by the test thread.
  */
-void response(Slice slice) {
+void response(Chomp chomp) {
     {
         std::lock_guard lock(results_mutex);
-        results.push_back(std::move(slice));
+        results.push_back(std::move(chomp));
     }
     completed.release();
 }
 /** --------------------------------------------------------------------------------------------------------- Receive
- * @brief Mutates the received Slice and replies using only the three public channel operations.
+ * @brief Mutates the received Chomp and replies using only the three public channel operations.
  */
-void receive(Slice slice) {
-    slice.data<unsigned char>()[slice.size_bytes() - 1] ^= 0xA5;
-    SliceChannel::send(std::move(slice), "", port, protocol);
+void receive(Chomp chomp) {
+    chomp.data<unsigned char>()[chomp.size_bytes() - 1] ^= 0xA5;
+    ChompChannel::send(std::move(chomp), "", port, protocol);
 }
 /** --------------------------------------------------------------------------------------------------------- One-way Receiver
  * @brief Confirms a receiver can use its normal reply path when the sender discards responses.
  */
-void receive_oneway(Slice slice) {
-    receive(std::move(slice));
+void receive_oneway(Chomp chomp) {
+    receive(std::move(chomp));
     completed.release();
 }
 /** --------------------------------------------------------------------------------------------------------- Idle Receiver
  * @brief Accepts a request without producing a response.
  */
-void idle(Slice) {}
+void idle(Chomp) {}
 /** --------------------------------------------------------------------------------------------------------- Port
  * @brief Reserves an available loopback service number for a short-lived test server.
  */
@@ -192,8 +190,8 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
     const bool datagram = (static_cast<unsigned>(selected) & 127) == 1;
     const size_t sizes[] = {1, 8193, datagram ? 48001u : 2097155u};
     for (size_t bytes : sizes) {
-        Slice backing(bytes + 13, true, network_placement);
-        Slice view = backing.slice(7, bytes);
+        Chomp backing(bytes + 13, true, network_placement);
+        Chomp view = backing.chomp(7, bytes);
         const size_t represented_bytes = view.size_bytes();
         for (size_t index = 0; index < represented_bytes; ++index)
             view.data<unsigned char>()[index] = index % 251;
@@ -201,9 +199,9 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
         const auto sole_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         while (!view.is_novel() && std::chrono::steady_clock::now() < sole_deadline) std::this_thread::yield();
         require(view.is_novel(), "the view did not become the sole owner of its novel backing");
-        SliceChannel::send(std::move(view), address, number, selected, response);
+        ChompChannel::send(std::move(view), address, number, selected, response);
         require(completed.try_acquire_for(std::chrono::seconds(15)), "response did not arrive");
-        Slice result;
+        Chomp result;
         {
             std::lock_guard lock(results_mutex);
             result = std::move(results.back());
@@ -211,7 +209,7 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
         }
         require(result && result.size_bytes() == represented_bytes, "response length changed");
         require(result.is_novel(), "novel backing was lost");
-        require(std::strcmp(result.placement()->type_name, "NetworkTest") == 0,
+        require(std::strcmp(result.placement()->type_name_fn(), "NetworkTest") == 0,
                 "placement was not preserved by name");
         for (size_t index = 0; index < represented_bytes; ++index) {
             unsigned expected = index % 251;
@@ -224,9 +222,9 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
     for (unsigned index = 0; index < 8; ++index)
         workers.emplace_back([=] {
             for (unsigned message = 0; message < 4; ++message) {
-                Slice slice(1024);
-                std::memset(slice.raw(), index + message + 1, slice.size_bytes());
-                SliceChannel::send(std::move(slice), concurrent_address, number, selected, response);
+                Chomp chomp(1024);
+                std::memset(chomp.raw(), index + message + 1, chomp.size_bytes());
+                ChompChannel::send(std::move(chomp), concurrent_address, number, selected, response);
             }
         });
     for (auto& worker : workers) worker.join();
@@ -236,14 +234,14 @@ void exercise_peer(const char* address, const char* concurrent_address, uint16_t
     {
         std::lock_guard lock(results_mutex);
         require(results.size() == 32, "response callback count changed");
-        for (const Slice& slice : results) {
-            require(slice && slice.size_bytes() == 1024, "concurrent exchange failed");
-            require((slice.data<unsigned char>()[1023] ^ 0xA5) == slice.data<unsigned char>()[0],
+        for (const Chomp& chomp : results) {
+            require(chomp && chomp.size_bytes() == 1024, "concurrent exchange failed");
+            require((chomp.data<unsigned char>()[1023] ^ 0xA5) == chomp.data<unsigned char>()[0],
                     "concurrent response corruption");
         }
         results.clear();
     }
-    SliceChannel::close(number, selected);
+    ChompChannel::close(number, selected);
 }
 /** --------------------------------------------------------------------------------------------------------- Round Trips
  * @brief Runs the peer contract with a separately executed local server.
@@ -259,16 +257,16 @@ void round_trips(const char* executable, Protocol selected) {
 void wire_validation() {
     unsigned char key[32], token[16]{};
     require(!ba_net_key(key), "test key invalid");
-    Slice source(123);
+    Chomp source(123);
     std::memset(source.raw(), 0x42, source.size_bytes());
     ba_net_frame frame{};
-    require(!ba_net_encode(reinterpret_cast<const ba_slice_t*>(&source), BA_NET_SECURE, token, key,
+    require(!ba_net_encode(reinterpret_cast<const ba_chomp_t*>(&source), BA_NET_SECURE, token, key,
                            &frame),
             "frame encoding failed");
-    ba_slice_t decoded;
+    ba_chomp_t decoded;
     require(!ba_net_decode(frame.data, frame.size, 128, key, &decoded),
             "authenticated frame rejected");
-    require(std::memcmp(ba_slice_ptr(&decoded), source.raw(), source.size_bytes()) == 0,
+    require(std::memcmp(ba_chomp_ptr(&decoded), source.raw(), source.size_bytes()) == 0,
             "decoded bytes differ");
     ba_release(&decoded);
     frame.data[frame.size - 1] ^= 1;
@@ -292,30 +290,30 @@ void wire_validation() {
 void failures() {
     bool rejected = false;
     try {
-        SliceChannel::send(Slice(1), "", 32000, Protocol::TCP);
+        ChompChannel::send(Chomp(1), "", 32000, Protocol::TCP);
     } catch (const std::exception&) {
         rejected = true;
     }
     require(rejected, "empty address accepted outside receive callback");
     port = unused_port();
     protocol = Protocol::UDP;
-    SliceChannel::listen(port, protocol, idle);
+    ChompChannel::listen(port, protocol, idle);
     rejected = false;
     try {
-        SliceChannel::listen(port, protocol, idle);
+        ChompChannel::listen(port, protocol, idle);
     } catch (const std::exception&) {
         rejected = true;
     }
     require(rejected, "duplicate listener accepted");
     rejected = false;
     try {
-        SliceChannel::send(Slice(65507), "127.0.0.1", port, protocol);
+        ChompChannel::send(Chomp(65507), "127.0.0.1", port, protocol);
     } catch (const std::exception&) {
         rejected = true;
     }
     require(rejected, "oversized datagram accepted");
-    SliceChannel::send(Slice(100), "127.0.0.1", port, protocol, response);
-    SliceChannel::close(port, protocol);
+    ChompChannel::send(Chomp(100), "127.0.0.1", port, protocol, response);
+    ChompChannel::close(port, protocol);
     require(completed.try_acquire_for(std::chrono::seconds(5)),
             "close did not cancel pending response");
     {
@@ -324,14 +322,14 @@ void failures() {
                 "canceled response did not report null exactly once");
         results.clear();
     }
-    SliceChannel::listen(port, protocol, idle);
-    SliceChannel::close(port, protocol);
-    SliceChannel::close(port, protocol);
+    ChompChannel::listen(port, protocol, idle);
+    ChompChannel::close(port, protocol);
+    ChompChannel::close(port, protocol);
     port = unused_port();
-    SliceChannel::listen(port, protocol, receive_oneway);
-    SliceChannel::send(Slice(100), "127.0.0.1", port, protocol);
+    ChompChannel::listen(port, protocol, receive_oneway);
+    ChompChannel::send(Chomp(100), "127.0.0.1", port, protocol);
     require(completed.try_acquire_for(std::chrono::seconds(5)), "one-way receive callback failed");
-    SliceChannel::close(port, protocol);
+    ChompChannel::close(port, protocol);
 }
 } // namespace
 int main(int count, char** arguments) {
@@ -344,7 +342,7 @@ int main(int count, char** arguments) {
             port = static_cast<uint16_t>(std::stoi(arguments[3]));
             register_placement("Padding");
             register_placement("NetworkTest");
-            SliceChannel::listen(port, protocol, receive);
+            ChompChannel::listen(port, protocol, receive);
             if (remote_server) {
                 std::printf("Protocol %u ready on port %u; press Enter to stop\n",
                             static_cast<unsigned>(protocol), port);
@@ -357,7 +355,7 @@ int main(int count, char** arguments) {
                 char command;
                 (void)read(std::stoi(arguments[5]), &command, 1);
             }
-            SliceChannel::close(port, protocol);
+            ChompChannel::close(port, protocol);
             ba_net_shutdown();
             return 0;
         }
@@ -373,9 +371,8 @@ int main(int count, char** arguments) {
         struct alignas(64) TestStruct {
             uint64_t data;
         };
-        SliceT<TestStruct> typed(size_t{19});
-        require(typed.size_bytes() == 19 * sizeof(TestStruct),
-                "SliceT count constructor allocated wrong size");
+        ChompT<TestStruct> typed(true);
+        require(typed.size_bytes() == sizeof(TestStruct), "ChompT claimed the wrong size for one element");
         wire_validation();
         for (Protocol selected : {Protocol::TCP, Protocol::UDP, Protocol::EncryptedTCP,
                                   Protocol::EncryptedUDP, Protocol::RDMA, Protocol::EncryptedRDMA})
