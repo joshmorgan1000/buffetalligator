@@ -60,12 +60,12 @@ int ba_net_frame_size(const unsigned char* header, size_t* size) {
     return 0;
 }
 /** --------------------------------------------------------------------------------------------------------- Snapshot
- * @brief Captures the Chomp view before its receiver issues an encryption challenge.
+ * @brief Captures the Slice view before its receiver issues an encryption challenge.
  */
-int ba_net_snapshot(const ba_chomp_t* chomp, unsigned flags, ba_net_frame* frame) {
-    if (chomp->id == BA_NULL_ID) return UV_EINVAL;
-    const size_t bytes = ba_chomp_size(chomp);
-    const char* name = ba_placement_name(ba_chomp_placement(chomp));
+int ba_net_snapshot(const ba_slice_t* slice, unsigned flags, ba_net_frame* frame) {
+    if (slice->record == BA_NULL_ID) return UV_EINVAL;
+    const size_t bytes = ba_slice_size(slice);
+    const char* name = ba_placement_name(ba_slice_placement(slice));
     if (!name) return UV_EINVAL;
     const size_t names = strlen(name);
     if (!bytes || bytes > BA_NET_LIMIT || !names || names > 255) return UV_EMSGSIZE;
@@ -76,12 +76,12 @@ int ba_net_snapshot(const ba_chomp_t* chomp, unsigned flags, ba_net_frame* frame
     unsigned char* header = frame->data;
     memcpy(header, "BAGN", 4);
     header[4] = 2;
-    header[5] = (unsigned char)(flags | (ba_chomp_is_novel(chomp) ? BA_NET_NOVEL : 0));
+    header[5] = (unsigned char)(flags | (ba_slice_is_novel(slice) ? BA_NET_NOVEL : 0));
     ba_wire_write(header + 6, names, 2);
     ba_wire_write(header + 8, bytes, 8);
     unsigned char* payload = header + BA_NET_HEADER;
     memcpy(payload, name, names);
-    memcpy(payload + names, ba_chomp_ptr(chomp), bytes);
+    memcpy(payload + names, ba_slice_ptr(slice), bytes);
     return 0;
 }
 /** --------------------------------------------------------------------------------------------------------- Seal
@@ -99,16 +99,16 @@ void ba_net_seal(ba_net_frame* frame, const unsigned char token[16], const unsig
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Encode
- * @brief Snapshots and seals a Chomp whose exchange token is already known.
+ * @brief Snapshots and seals a Slice whose exchange token is already known.
  */
-int ba_net_encode(const ba_chomp_t* chomp, unsigned flags, const unsigned char token[16],
+int ba_net_encode(const ba_slice_t* slice, unsigned flags, const unsigned char token[16],
                   const unsigned char key[32], ba_net_frame* frame) {
-    int status = ba_net_snapshot(chomp, flags, frame);
+    int status = ba_net_snapshot(slice, flags, frame);
     if (!status) ba_net_seal(frame, token, key);
     return status;
 }
 /** --------------------------------------------------------------------------------------------------------- Encode Control
- * @brief Authenticates a handshake message and its challenge without allocating an arena Chomp.
+ * @brief Authenticates a handshake message and its challenge without allocating an arena Slice.
  */
 int ba_net_control_encode(unsigned flags, const unsigned char token[16],
                           const unsigned char challenge[16], const unsigned char key[32],
@@ -141,8 +141,8 @@ int ba_net_control_decode(const unsigned char* frame, size_t size, const unsigne
  * @brief Authenticates the entire frame before resolving placement and allocating received memory.
  */
 int ba_net_decode(const unsigned char* frame, size_t size, uint8_t protocol,
-                  const unsigned char key[32], ba_chomp_t* chomp) {
-    *chomp = (ba_chomp_t){BA_NULL_ID};
+                  const unsigned char key[32], ba_slice_t* slice) {
+    *slice = (ba_slice_t){0};
     if (size < BA_NET_HEADER) return UV_EPROTO;
     size_t expected;
     int status = ba_net_frame_size(frame, &expected);
@@ -170,10 +170,10 @@ int ba_net_decode(const unsigned char* frame, size_t size, uint8_t protocol,
     const int placement = memchr(name, 0, names) ? -1 : ba_net_placement(name);
     if (placement < 0) status = UV_ENOENT;
     else if (ba_claim((uint32_t)placement, bytes, (frame[5] & BA_NET_NOVEL) ? BA_CLAIM_NOVEL : 0,
-                      chomp) != 0)
+                      slice) != 0)
         status = UV_ENOMEM;
     else {
-        memcpy(ba_chomp_ptr(chomp), payload + names, bytes);
+        memcpy(ba_slice_ptr(slice), payload + names, bytes);
     }
     if (decrypted) {
         sodium_memzero(decrypted, names + bytes);

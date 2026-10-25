@@ -29,7 +29,7 @@ bool refuses(GPUBackend backend) {
  * @return The process exit code.
  */
 int automatic() {
-    Chomp first(64);
+    Slice first(64);
     first.get_as<uint32_t>() = 419;
     if (GPU::backend() == GPUBackend::CPU) {
         LOG_INFO_STREAM << "No GPU is present, so the automatic Vulkan preference case is skipped.";
@@ -42,7 +42,7 @@ int automatic() {
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Runs the automatic case for "auto", otherwise selects the backend named by the first argument, cpu by
- * default, then freezes on the first Chomp.
+ * default, then freezes on the first Slice.
  */
 int main(int argument_count, char** arguments) {
     if (argument_count > 1 && std::string_view(arguments[1]) == "auto") return automatic();
@@ -50,7 +50,7 @@ int main(int argument_count, char** arguments) {
     const GPUBackend chosen = vulkan ? GPUBackend::Vulkan : GPUBackend::CPU;
     GPU::select(chosen);
     try {
-        Chomp first(64);
+        Slice first(64);
         first.get_as<uint32_t>() = 137;
         if (first.get_as<uint32_t>() != 137) return EXIT_FAILURE;
     } catch (const GPUException& error) {

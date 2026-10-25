@@ -12,7 +12,7 @@
 #include <utility>
 
 namespace buffetalligator {
-struct BuffetDescriptor; class Chomp;
+struct BuffetDescriptor; class Slice;
 /** --------------------------------------------------------------------------------------------------------- Vulkan Exception
  * @class VulkanException
  * @brief Exception type for Vulkan-related errors.
@@ -399,25 +399,16 @@ public:
      * @return The number of bytes currently allocated on the Vulkan device.
      */
     static uint64_t gpu_usage();
-    /** ------------------------------------------------------------------------------------------- gpu_pool_address
-     * @brief The device address of the realm directory shaders resolve Chomp ids through, 0
-     * while it is host-only.
-     * @return The directory's device address.
-     */
-    static uint64_t gpu_pool_address();
 };
 /** --------------------------------------------------------------------------------------------------------- Vulkan GLSL Kernel Prelude
- * @brief The GLSL side of the Chomp: one push block carrying the dispatch header's address and the
- * realm directory's address, and every helper that resolves a 4-byte Chomp id through the directory.
- *
- * The command buffer never changes. The host writes a 64-byte header (count, indirect dimensions) and
- * the bound Chomp ids behind it; workgroup row Y resolves its own id from there.
+ * @brief The GLSL side of the Slice: one push block carrying the dispatched Slice as the host holds it, and
+ * every helper that reads a Slice's payload through its first 16 bytes.
  *
  * X (16) is the conceptual element lane, or area to shade.
  * Y (4) is the author's split, free to mean whatever the kernel wants.
  */
 /** --------------------------------------------------------------------------------------------------------- VULKAN_GLSL_KERNEL_CORE
- * @brief The 4-byte Chomp pool ID and every load/store helper over it. Contains no
+ * @brief The Slice as the host holds it and every load/store helper over it. Contains no
  * #version line so it can be injected after a user's own, and is idempotent via its guard.
  */
 inline constexpr std::string_view VULKAN_GLSL_KERNEL_CORE = R"glsl(#extension GL_EXT_buffer_reference : require
@@ -428,31 +419,27 @@ inline constexpr std::string_view VULKAN_GLSL_KERNEL_CORE = R"glsl(#extension GL
 #endif
 #ifndef VULKAN_GLSL_KERNEL_CORE_INCLUDED
 #define VULKAN_GLSL_KERNEL_CORE_INCLUDED 1
-// ------------------------------------------------------------------------------------------------- Push block (16 bytes)
-// One Chomp per dispatch: its id, whether it is a list of the rows' ids, and the realm directory.
+// ------------------------------------------------------------------------------------------------- Slice (64 bytes, as the host holds it)
+struct Slice {
+    uint64_t address;  ///< The backing slab's device address
+    uint32_t size;     ///< The payload length in 64-byte granules
+    uint32_t offset;   ///< The payload's slab-relative offset in 64-byte granules
+    uint64_t host;     ///< The host's pointer, not for the device
+    uint64_t record;   ///< The host's lifecycle granule, not for the device
+    uvec4 info_low;    ///< Reserved
+    uvec4 info_high;   ///< Reserved
+};
+// ------------------------------------------------------------------------------------------------- Push block (80 bytes)
+// One Slice per dispatch, as the host holds it, and whether it is a list of the rows' Slices.
 layout(push_constant) uniform AlligatorPush {
-    uint32_t vulkan_chomp_id;       ///< The dispatched Chomp
-    uint32_t vulkan_chomp_list;     ///< Nonzero when that Chomp holds one id per workgroup row
-    uint64_t vulkan_pool_address;   ///< The realm directory, shared host and device
+    Slice vulkan_slice;             ///< The dispatched Slice
+    uint32_t vulkan_slice_list;     ///< Nonzero when that Slice holds one Slice per workgroup row
+    uint32_t vulkan_reserved0;
+    uint32_t vulkan_reserved1;
+    uint32_t vulkan_reserved2;
 } vulkan_push;
-// ------------------------------------------------------------------------------------------------- Chomp (4-byte pool ID)
-struct Chomp {
-    uint32_t id;  ///< Encoded placement, realm, and realm-local slot
-};
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer ChompRef {
-    uint32_t id;
-};
-// ------------------------------------------------------------------------------------------------- GPUBufRef pool (16-byte entries)
-// The realm directory locates the mapped GPUBuf records shared by CPU and GPU.
-struct GPUBufRef {
-    uint64_t address;      ///< The backing slab's device address
-    uint32_t size;         ///< The rounded chomp length in 64-byte granules
-    uint32_t offset;       ///< The slab-relative offset in 64-byte granules
-};
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer GPUBufRefArray {
-    GPUBufRef refs[];
-};
-Chomp gpu_chomp(uint32_t index) { return Chomp(index); }
+// ------------------------------------------------------------------------------------------------- Slice in memory
+layout(buffer_reference, std430, buffer_reference_align = 64) readonly buffer SliceRef { Slice slice; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer I32Array { int v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer F32Array { float v[]; };
@@ -461,82 +448,71 @@ layout(buffer_reference, std430, buffer_reference_align = 8) buffer I64Array { i
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array { vec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
-// ------------------------------------------------------------------------------------------------- Chomp basics
-// The id is type in the low 6 bits, region in the next 10, claim in the top 16; a directory entry is 16 bytes.
-uint64_t chomp_table(Chomp s) {
-    return U64Array(vulkan_push.vulkan_pool_address).v[((s.id >> 6u) & 1023u) * 2u];
-}
-GPUBufRef chomp_ref(Chomp s) { return GPUBufRefArray(chomp_table(s)).refs[s.id >> 16u]; }
-uint64_t chomp_address(Chomp s) {
-    GPUBufRef ref = chomp_ref(s);
-    return ref.address + (uint64_t(ref.offset) << 6);
-}
-bool chomp_is_null(Chomp s) { return s.id == 0xFFFFFFFFu; }
-uint64_t chomp_size(Chomp s) {
-    return uint64_t(chomp_ref(s).size) << 6;
-}
-Chomp chomp_read(uint64_t address) { return Chomp(ChompRef(address).id); }
-uint64_t gpu_chomp_address(uint32_t index) { return chomp_address(gpu_chomp(index)); }
-uint64_t gpu_chomp_size(uint32_t index) { return chomp_size(gpu_chomp(index)); }
+// ------------------------------------------------------------------------------------------------- Slice basics
+// The Slice's first 16 bytes locate the payload.
+uint64_t slice_address(Slice s) { return s.address + (uint64_t(s.offset) << 6); }
+bool slice_is_null(Slice s) { return s.address == 0ul; }
+uint64_t slice_size(Slice s) { return uint64_t(s.size) << 6; }
+Slice slice_read(uint64_t address) { return SliceRef(address).slice; }
 // ------------------------------------------------------------------------------------------------- Word-native loads
-uint  chomp_load_u32(Chomp s, uint index) { return U32Array(chomp_address(s)).v[index]; }
-int   chomp_load_i32(Chomp s, uint index) { return I32Array(chomp_address(s)).v[index]; }
-float chomp_load_f32(Chomp s, uint index) { return F32Array(chomp_address(s)).v[index]; }
-uint64_t chomp_load_u64(Chomp s, uint index) { return U64Array(chomp_address(s)).v[index]; }
-int64_t  chomp_load_i64(Chomp s, uint index) { return I64Array(chomp_address(s)).v[index]; }
-vec4  chomp_load_f32x4(Chomp s, uint index) { return F32x4Array(chomp_address(s)).v[index]; }
-uvec4 chomp_load_u32x4(Chomp s, uint index) { return U32x4Array(chomp_address(s)).v[index]; }
-ivec4 chomp_load_i32x4(Chomp s, uint index) { return I32x4Array(chomp_address(s)).v[index]; }
+uint  slice_load_u32(Slice s, uint index) { return U32Array(slice_address(s)).v[index]; }
+int   slice_load_i32(Slice s, uint index) { return I32Array(slice_address(s)).v[index]; }
+float slice_load_f32(Slice s, uint index) { return F32Array(slice_address(s)).v[index]; }
+uint64_t slice_load_u64(Slice s, uint index) { return U64Array(slice_address(s)).v[index]; }
+int64_t  slice_load_i64(Slice s, uint index) { return I64Array(slice_address(s)).v[index]; }
+vec4  slice_load_f32x4(Slice s, uint index) { return F32x4Array(slice_address(s)).v[index]; }
+uvec4 slice_load_u32x4(Slice s, uint index) { return U32x4Array(slice_address(s)).v[index]; }
+ivec4 slice_load_i32x4(Slice s, uint index) { return I32x4Array(slice_address(s)).v[index]; }
 // ------------------------------------------------------------------------------------------------- Word-native stores
-void chomp_store_u32(Chomp s, uint index, uint value) { U32Array(chomp_address(s)).v[index] = value; }
-void chomp_store_i32(Chomp s, uint index, int value) { I32Array(chomp_address(s)).v[index] = value; }
-void chomp_store_f32(Chomp s, uint index, float value) { F32Array(chomp_address(s)).v[index] = value; }
-void chomp_store_u64(Chomp s, uint index, uint64_t value) { U64Array(chomp_address(s)).v[index] = value; }
-void chomp_store_i64(Chomp s, uint index, int64_t value) { I64Array(chomp_address(s)).v[index] = value; }
-void chomp_store_f32x4(Chomp s, uint index, vec4 value) { F32x4Array(chomp_address(s)).v[index] = value; }
-void chomp_store_u32x4(Chomp s, uint index, uvec4 value) { U32x4Array(chomp_address(s)).v[index] = value; }
-void chomp_store_i32x4(Chomp s, uint index, ivec4 value) { I32x4Array(chomp_address(s)).v[index] = value; }
+void slice_store_u32(Slice s, uint index, uint value) { U32Array(slice_address(s)).v[index] = value; }
+void slice_store_i32(Slice s, uint index, int value) { I32Array(slice_address(s)).v[index] = value; }
+void slice_store_f32(Slice s, uint index, float value) { F32Array(slice_address(s)).v[index] = value; }
+void slice_store_u64(Slice s, uint index, uint64_t value) { U64Array(slice_address(s)).v[index] = value; }
+void slice_store_i64(Slice s, uint index, int64_t value) { I64Array(slice_address(s)).v[index] = value; }
+void slice_store_f32x4(Slice s, uint index, vec4 value) { F32x4Array(slice_address(s)).v[index] = value; }
+void slice_store_u32x4(Slice s, uint index, uvec4 value) { U32x4Array(slice_address(s)).v[index] = value; }
+void slice_store_i32x4(Slice s, uint index, ivec4 value) { I32x4Array(slice_address(s)).v[index] = value; }
 // ------------------------------------------------------------------------------------------------- Sub-word loads (no 8/16-bit storage feature needed)
-uint chomp_load_u16(Chomp s, uint index) {
-    uint word = U32Array(chomp_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
+uint slice_load_u16(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
     return (word >> ((index & 1u) * 16u)) & 0xFFFFu;
 }
-int chomp_load_i16(Chomp s, uint index) {
-    uint word = U32Array(chomp_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
+int slice_load_i16(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
     return bitfieldExtract(int(word), int((index & 1u) * 16u), 16);
 }
-uint chomp_load_u8(Chomp s, uint index) {
-    uint word = U32Array(chomp_address(s) + uint64_t(index & ~3u)).v[0];
+uint slice_load_u8(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t(index & ~3u)).v[0];
     return (word >> ((index & 3u) * 8u)) & 0xFFu;
 }
-int chomp_load_i8(Chomp s, uint index) {
-    uint word = U32Array(chomp_address(s) + uint64_t(index & ~3u)).v[0];
+int slice_load_i8(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t(index & ~3u)).v[0];
     return bitfieldExtract(int(word), int((index & 3u) * 8u), 8);
 }
-float chomp_load_f16(Chomp s, uint index) {
-    uint word = U32Array(chomp_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
+float slice_load_f16(Slice s, uint index) {
+    uint word = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u)).v[0];
     return unpackHalf2x16(word)[index & 1u];
 }
-float chomp_load_bf16(Chomp s, uint index) { return uintBitsToFloat(chomp_load_u16(s, index) << 16u); }
-float chomp_load_e5m2(Chomp s, uint index) { return unpackHalf2x16(chomp_load_u8(s, index) << 8u).x; }
+float slice_load_bf16(Slice s, uint index) { return uintBitsToFloat(slice_load_u16(s, index) << 16u); }
+float slice_load_e5m2(Slice s, uint index) { return unpackHalf2x16(slice_load_u8(s, index) << 8u).x; }
 // ------------------------------------------------------------------------------------------------- Sub-word stores (atomic read-modify-write so neighbouring lanes never clobber each other)
-void chomp_store_u16(Chomp s, uint index, uint value) {
-    U32Array words = U32Array(chomp_address(s) + uint64_t((index * 2u) & ~3u));
+void slice_store_u16(Slice s, uint index, uint value) {
+    U32Array words = U32Array(slice_address(s) + uint64_t((index * 2u) & ~3u));
     uint shift = (index & 1u) * 16u;
     atomicAnd(words.v[0], ~(0xFFFFu << shift));
     atomicOr(words.v[0], (value & 0xFFFFu) << shift);
 }
-void chomp_store_u8(Chomp s, uint index, uint value) {
-    U32Array words = U32Array(chomp_address(s) + uint64_t(index & ~3u));
+void slice_store_u8(Slice s, uint index, uint value) {
+    U32Array words = U32Array(slice_address(s) + uint64_t(index & ~3u));
     uint shift = (index & 3u) * 8u;
     atomicAnd(words.v[0], ~(0xFFu << shift));
     atomicOr(words.v[0], (value & 0xFFu) << shift);
 }
-void chomp_store_i16(Chomp s, uint index, int value) { chomp_store_u16(s, index, uint(value)); }
-void chomp_store_i8(Chomp s, uint index, int value) { chomp_store_u8(s, index, uint(value)); }
-void chomp_store_f16(Chomp s, uint index, float value) { chomp_store_u16(s, index, packHalf2x16(vec2(value, 0.0)) & 0xFFFFu); }
-void chomp_store_bf16(Chomp s, uint index, float value) { chomp_store_u16(s, index, floatBitsToUint(value) >> 16u); }
-void chomp_store_e5m2(Chomp s, uint index, float value) { chomp_store_u8(s, index, (packHalf2x16(vec2(value, 0.0)) >> 8u) & 0xFFu); }
+void slice_store_i16(Slice s, uint index, int value) { slice_store_u16(s, index, uint(value)); }
+void slice_store_i8(Slice s, uint index, int value) { slice_store_u8(s, index, uint(value)); }
+void slice_store_f16(Slice s, uint index, float value) { slice_store_u16(s, index, packHalf2x16(vec2(value, 0.0)) & 0xFFFFu); }
+void slice_store_bf16(Slice s, uint index, float value) { slice_store_u16(s, index, floatBitsToUint(value) >> 16u); }
+void slice_store_e5m2(Slice s, uint index, float value) { slice_store_u8(s, index, (packHalf2x16(vec2(value, 0.0)) >> 8u) & 0xFFu); }
 // ------------------------------------------------------------------------------------------------- 8-bit float codes: IEEE-style fields, bias 2^(E-1)-1, truncated from fp16 like e5m2 (shift and mask only)
 uint fp8_to_f16_bits(uint code, uint mantissa_bits) { return ((code & 0x80u) << 8u) | ((code & 0x7Fu) << (10u - mantissa_bits)); }
 uint f16_bits_to_fp8(uint half_bits, uint mantissa_bits) { return ((half_bits >> 8u) & 0x80u) | ((half_bits >> (10u - mantissa_bits)) & 0x7Fu); }
@@ -557,38 +533,38 @@ float e4m3_to_f32(uint code) { return unpackHalf2x16(fp8_to_f16_bits(code, 3u)).
 float e3m4_to_f32(uint code) { return unpackHalf2x16(fp8_to_f16_bits(code, 4u)).x * 4096.0; }
 uint f32_to_e4m3(float value) { return f16_bits_to_fp8(packHalf2x16(vec2(value * 0.00390625, 0.0)) & 0xFFFFu, 3u); }
 uint f32_to_e3m4(float value) { return f16_bits_to_fp8(packHalf2x16(vec2(value * 0.000244140625, 0.0)) & 0xFFFFu, 4u); }
-float chomp_load_e4m3(Chomp s, uint index) { return e4m3_to_f32(chomp_load_u8(s, index)); }
-float chomp_load_e3m4(Chomp s, uint index) { return e3m4_to_f32(chomp_load_u8(s, index)); }
-void chomp_store_e4m3(Chomp s, uint index, float value) { chomp_store_u8(s, index, f32_to_e4m3(value)); }
-void chomp_store_e3m4(Chomp s, uint index, float value) { chomp_store_u8(s, index, f32_to_e3m4(value)); }
+float slice_load_e4m3(Slice s, uint index) { return e4m3_to_f32(slice_load_u8(s, index)); }
+float slice_load_e3m4(Slice s, uint index) { return e3m4_to_f32(slice_load_u8(s, index)); }
+void slice_store_e4m3(Slice s, uint index, float value) { slice_store_u8(s, index, f32_to_e4m3(value)); }
+void slice_store_e3m4(Slice s, uint index, float value) { slice_store_u8(s, index, f32_to_e3m4(value)); }
 // ------------------------------------------------------------------------------------------------- Four-wide sub-word loads and stores (index4 counts groups of four elements; whole words, no atomics)
-vec4 chomp_load_f16x4(Chomp s, uint index4) {
-    uint64_t pair = chomp_load_u64(s, index4);
+vec4 slice_load_f16x4(Slice s, uint index4) {
+    uint64_t pair = slice_load_u64(s, index4);
     return vec4(unpackHalf2x16(uint(pair)), unpackHalf2x16(uint(pair >> 32u)));
 }
-vec4 chomp_load_bf16x4(Chomp s, uint index4) {
-    uint64_t pair = chomp_load_u64(s, index4);
+vec4 slice_load_bf16x4(Slice s, uint index4) {
+    uint64_t pair = slice_load_u64(s, index4);
     uint lo = uint(pair);
     uint hi = uint(pair >> 32u);
     return vec4(uintBitsToFloat(lo << 16u), uintBitsToFloat(lo & 0xFFFF0000u), uintBitsToFloat(hi << 16u), uintBitsToFloat(hi & 0xFFFF0000u));
 }
-vec4 chomp_load_e5m2x4(Chomp s, uint index4) { return fp8x4_to_f32x4(chomp_load_u32(s, index4), 2u, 1.0); }
-vec4 chomp_load_e4m3x4(Chomp s, uint index4) { return fp8x4_to_f32x4(chomp_load_u32(s, index4), 3u, 256.0); }
-vec4 chomp_load_e3m4x4(Chomp s, uint index4) { return fp8x4_to_f32x4(chomp_load_u32(s, index4), 4u, 4096.0); }
-void chomp_store_f16x4(Chomp s, uint index4, vec4 values) {
-    chomp_store_u64(s, index4, uint64_t(packHalf2x16(values.xy)) | (uint64_t(packHalf2x16(values.zw)) << 32u));
+vec4 slice_load_e5m2x4(Slice s, uint index4) { return fp8x4_to_f32x4(slice_load_u32(s, index4), 2u, 1.0); }
+vec4 slice_load_e4m3x4(Slice s, uint index4) { return fp8x4_to_f32x4(slice_load_u32(s, index4), 3u, 256.0); }
+vec4 slice_load_e3m4x4(Slice s, uint index4) { return fp8x4_to_f32x4(slice_load_u32(s, index4), 4u, 4096.0); }
+void slice_store_f16x4(Slice s, uint index4, vec4 values) {
+    slice_store_u64(s, index4, uint64_t(packHalf2x16(values.xy)) | (uint64_t(packHalf2x16(values.zw)) << 32u));
 }
-void chomp_store_bf16x4(Chomp s, uint index4, vec4 values) {
+void slice_store_bf16x4(Slice s, uint index4, vec4 values) {
     uvec4 bits = floatBitsToUint(values) >> 16u;
-    chomp_store_u64(s, index4, uint64_t(bits.x | (bits.y << 16u)) | (uint64_t(bits.z | (bits.w << 16u)) << 32u));
+    slice_store_u64(s, index4, uint64_t(bits.x | (bits.y << 16u)) | (uint64_t(bits.z | (bits.w << 16u)) << 32u));
 }
-void chomp_store_e5m2x4(Chomp s, uint index4, vec4 values) {
+void slice_store_e5m2x4(Slice s, uint index4, vec4 values) {
     uint lo = packHalf2x16(values.xy);
     uint hi = packHalf2x16(values.zw);
-    chomp_store_u32(s, index4, ((lo >> 8u) & 0xFFu) | ((lo >> 16u) & 0xFF00u) | ((hi & 0xFF00u) << 8u) | (hi & 0xFF000000u));
+    slice_store_u32(s, index4, ((lo >> 8u) & 0xFFu) | ((lo >> 16u) & 0xFF00u) | ((hi & 0xFF00u) << 8u) | (hi & 0xFF000000u));
 }
-void chomp_store_e4m3x4(Chomp s, uint index4, vec4 values) { chomp_store_u32(s, index4, fp8x4_from_f32x4(values, 3u, 0.00390625)); }
-void chomp_store_e3m4x4(Chomp s, uint index4, vec4 values) { chomp_store_u32(s, index4, fp8x4_from_f32x4(values, 4u, 0.000244140625)); }
+void slice_store_e4m3x4(Slice s, uint index4, vec4 values) { slice_store_u32(s, index4, fp8x4_from_f32x4(values, 3u, 0.00390625)); }
+void slice_store_e3m4x4(Slice s, uint index4, vec4 values) { slice_store_u32(s, index4, fp8x4_from_f32x4(values, 4u, 0.000244140625)); }
 #ifdef VULKAN_FLOAT16
 // ------------------------------------------------------------------------------------------------- Four-wide loads widened to float16_t (shaderFloat16 devices)
 f16vec4 fp8x4_to_f16x4(uint word, uint mantissa_bits, float16_t scale) {
@@ -597,15 +573,15 @@ f16vec4 fp8x4_to_f16x4(uint word, uint mantissa_bits, float16_t scale) {
     uint hi = fp8_to_f16_bits(codes.z, mantissa_bits) | (fp8_to_f16_bits(codes.w, mantissa_bits) << 16u);
     return f16vec4(unpackFloat2x16(lo), unpackFloat2x16(hi)) * scale;
 }
-f16vec4 chomp_load_f32x4_half(Chomp s, uint index4) { return f16vec4(chomp_load_f32x4(s, index4)); }
-f16vec4 chomp_load_f16x4_half(Chomp s, uint index4) {
-    uint64_t pair = chomp_load_u64(s, index4);
+f16vec4 slice_load_f32x4_half(Slice s, uint index4) { return f16vec4(slice_load_f32x4(s, index4)); }
+f16vec4 slice_load_f16x4_half(Slice s, uint index4) {
+    uint64_t pair = slice_load_u64(s, index4);
     return f16vec4(unpackFloat2x16(uint(pair)), unpackFloat2x16(uint(pair >> 32u)));
 }
-f16vec4 chomp_load_bf16x4_half(Chomp s, uint index4) { return f16vec4(chomp_load_bf16x4(s, index4)); }
-f16vec4 chomp_load_e5m2x4_half(Chomp s, uint index4) { return fp8x4_to_f16x4(chomp_load_u32(s, index4), 2u, float16_t(1.0)); }
-f16vec4 chomp_load_e4m3x4_half(Chomp s, uint index4) { return fp8x4_to_f16x4(chomp_load_u32(s, index4), 3u, float16_t(256.0)); }
-f16vec4 chomp_load_e3m4x4_half(Chomp s, uint index4) { return fp8x4_to_f16x4(chomp_load_u32(s, index4), 4u, float16_t(4096.0)); }
+f16vec4 slice_load_bf16x4_half(Slice s, uint index4) { return f16vec4(slice_load_bf16x4(s, index4)); }
+f16vec4 slice_load_e5m2x4_half(Slice s, uint index4) { return fp8x4_to_f16x4(slice_load_u32(s, index4), 2u, float16_t(1.0)); }
+f16vec4 slice_load_e4m3x4_half(Slice s, uint index4) { return fp8x4_to_f16x4(slice_load_u32(s, index4), 3u, float16_t(256.0)); }
+f16vec4 slice_load_e3m4x4_half(Slice s, uint index4) { return fp8x4_to_f16x4(slice_load_u32(s, index4), 4u, float16_t(4096.0)); }
 #endif
 #endif
 )glsl";

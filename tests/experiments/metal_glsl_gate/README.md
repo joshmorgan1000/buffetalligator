@@ -25,8 +25,8 @@ Metal compiler diagnostics, and pipeline diagnostics for both formats. The execu
 every checked output row and fails with a nonzero exit status if compilation, execution, or a
 Release-enabled assertion fails. Check the executable's status when using a shell pipeline.
 
-The inputs cover two directory entries (segments 3 and 37), nested Chomp identifiers, nonzero
-64-byte offsets, 64-byte lengths, floating and integer vectors, 64-bit addresses, null Chomp
+The inputs cover two directory entries (segments 3 and 37), nested Slice identifiers, nonzero
+64-byte offsets, 64-byte lengths, floating and integer vectors, 64-bit addresses, null Slice
 recognition, live dispatch counts, and the reflected 16-byte push block mapped to buffer 0.
 Each pipeline runs eight times with changed input and parameter contents; every output and
 untouched guard is checked after completion. All indirectly accessed native buffers are retained

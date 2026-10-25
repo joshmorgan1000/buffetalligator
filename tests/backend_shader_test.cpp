@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Backend Shader Test
  * @file backend_shader_test.cpp
- * @brief Checks the GLSL Chomp helpers through prepared dispatches: typed, packed, identity, and large buffers.
+ * @brief Checks the GLSL Slice helpers through prepared dispatches: typed, packed, identity, and large buffers.
  */
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
@@ -18,16 +18,16 @@ using namespace buffetalligator;
 using functional::require;
 namespace {
 /** --------------------------------------------------------------------------------------------------------- Identity Body
- * @brief Exposes Chomp identity, granule bounds, and device address through the GLSL helpers.
+ * @brief Exposes Slice identity, granule bounds, and device address through the GLSL helpers.
  */
 constexpr std::string_view identity_body = R"glsl(
-void alligator_main(Chomp stream) {
+void alligator_main(Slice stream) {
     if (gl_LocalInvocationIndex != 0u) return;
-    chomp_store_u32(stream, 1u, chomp_load_u32(stream, 0u) ^ 0x9e3779b9u);
-    chomp_store_u32(stream, 2u, stream.id);
-    chomp_store_u32(stream, 3u, gl_NumWorkGroups.y);
-    chomp_store_u64(stream, 2u, chomp_size(stream));
-    chomp_store_u64(stream, 3u, chomp_address(stream));
+    slice_store_u32(stream, 1u, slice_load_u32(stream, 0u) ^ 0x9e3779b9u);
+    slice_store_u32(stream, 2u, uint(slice_address(stream)));
+    slice_store_u32(stream, 3u, gl_NumWorkGroups.y);
+    slice_store_u64(stream, 2u, slice_size(stream));
+    slice_store_u64(stream, 3u, slice_address(stream));
 }
 )glsl";
 /** --------------------------------------------------------------------------------------------------------- Typed Payload
@@ -60,25 +60,25 @@ static_assert(offsetof(TypedPayload, packed_halfwords) == 84);
  * @brief Transforms mapped scalar and vector values while preserving adjacent packed fields.
  */
 constexpr std::string_view typed_body = R"glsl(
-void alligator_main(Chomp payload) {
+void alligator_main(Slice payload) {
     if (gl_LocalInvocationIndex != 0u) return;
-    chomp_store_u32(payload, 0u, chomp_load_u32(payload, 0u) ^ 0xA5A5A5A5u);
-    chomp_store_i32(payload, 1u, chomp_load_i32(payload, 1u) - 17);
-    chomp_store_f32(payload, 2u, chomp_load_f32(payload, 2u) * 2.0 + 0.5);
-    chomp_store_u64(payload, 2u, chomp_load_u64(payload, 2u) ^ 0xFEDCBA9876543210ul);
-    chomp_store_i64(payload, 3u, chomp_load_i64(payload, 3u) - 4294967301l);
-    chomp_store_u32x4(payload, 2u,
-        chomp_load_u32x4(payload, 2u) + uvec4(1u, 10u, 100u, 1000u));
-    chomp_store_i32x4(payload, 3u,
-        chomp_load_i32x4(payload, 3u) * ivec4(-1, 2, -3, 4));
-    chomp_store_f32x4(payload, 4u,
-        chomp_load_f32x4(payload, 4u) * vec4(2.0, -4.0, 0.5, -0.25));
-    uint selected_byte = chomp_load_u8(payload, 82u);
-    uint selected_halfword = chomp_load_u16(payload, 42u);
-    chomp_store_u32(payload, 22u, selected_byte);
-    chomp_store_u32(payload, 23u, selected_halfword);
-    chomp_store_u8(payload, 81u, selected_byte ^ 0xFFu);
-    chomp_store_u16(payload, 43u, selected_halfword ^ 0xFFFFu);
+    slice_store_u32(payload, 0u, slice_load_u32(payload, 0u) ^ 0xA5A5A5A5u);
+    slice_store_i32(payload, 1u, slice_load_i32(payload, 1u) - 17);
+    slice_store_f32(payload, 2u, slice_load_f32(payload, 2u) * 2.0 + 0.5);
+    slice_store_u64(payload, 2u, slice_load_u64(payload, 2u) ^ 0xFEDCBA9876543210ul);
+    slice_store_i64(payload, 3u, slice_load_i64(payload, 3u) - 4294967301l);
+    slice_store_u32x4(payload, 2u,
+        slice_load_u32x4(payload, 2u) + uvec4(1u, 10u, 100u, 1000u));
+    slice_store_i32x4(payload, 3u,
+        slice_load_i32x4(payload, 3u) * ivec4(-1, 2, -3, 4));
+    slice_store_f32x4(payload, 4u,
+        slice_load_f32x4(payload, 4u) * vec4(2.0, -4.0, 0.5, -0.25));
+    uint selected_byte = slice_load_u8(payload, 82u);
+    uint selected_halfword = slice_load_u16(payload, 42u);
+    slice_store_u32(payload, 22u, selected_byte);
+    slice_store_u32(payload, 23u, selected_halfword);
+    slice_store_u8(payload, 81u, selected_byte ^ 0xFFu);
+    slice_store_u16(payload, 43u, selected_halfword ^ 0xFFFFu);
 }
 )glsl";
 /** --------------------------------------------------------------------------------------------------------- Typed IO
@@ -86,8 +86,8 @@ void alligator_main(Chomp payload) {
  */
 void typed_io(const BuffetDescriptor* placement) {
     LOG_INFO_STREAM << "Checking typed scalar, vector, and packed-neighbor parity";
-    Chomp storage(256, false, placement);
-    Chomp payload = storage.chomp(64, sizeof(TypedPayload));
+    Slice storage(256, false, placement);
+    Slice payload = storage.slice(64, sizeof(TypedPayload));
     uint32_t* storage_words = storage.data<uint32_t>();
     storage_words[15] = 0x13579BDFu;
     storage_words[48] = 0x2468ACE0u;
@@ -150,49 +150,49 @@ void typed_io(const BuffetDescriptor* placement) {
  * @brief Separates encoded inputs, decoded outputs, and simultaneous neighboring scalar writes.
  */
 constexpr std::string_view packed_body = R"glsl(
-void alligator_main(Chomp payload) {
+void alligator_main(Slice payload) {
     uint lane = gl_LocalInvocationIndex;
     if (lane >= 4u) return;
-    chomp_store_f32(payload, 16u + lane, chomp_load_f16(payload, 8u + lane));
-    chomp_store_f32(payload, 20u + lane, chomp_load_bf16(payload, 12u + lane));
-    chomp_store_f32(payload, 24u + lane, chomp_load_e5m2(payload, 32u + lane));
-    chomp_store_f32(payload, 28u + lane, chomp_load_e4m3(payload, 36u + lane));
-    chomp_store_f32(payload, 32u + lane, chomp_load_e3m4(payload, 40u + lane));
+    slice_store_f32(payload, 16u + lane, slice_load_f16(payload, 8u + lane));
+    slice_store_f32(payload, 20u + lane, slice_load_bf16(payload, 12u + lane));
+    slice_store_f32(payload, 24u + lane, slice_load_e5m2(payload, 32u + lane));
+    slice_store_f32(payload, 28u + lane, slice_load_e4m3(payload, 36u + lane));
+    slice_store_f32(payload, 32u + lane, slice_load_e3m4(payload, 40u + lane));
     if (lane < 3u) {
-        float value = chomp_load_f32(payload, lane);
-        chomp_store_f16(payload, 160u + lane, value);
-        chomp_store_bf16(payload, 164u + lane, value);
-        chomp_store_e5m2(payload, 336u + lane, value);
-        chomp_store_e4m3(payload, 340u + lane, value);
-        chomp_store_e3m4(payload, 344u + lane, value);
-        chomp_store_i8(payload, 432u + lane, chomp_load_i8(payload, 384u + lane));
+        float value = slice_load_f32(payload, lane);
+        slice_store_f16(payload, 160u + lane, value);
+        slice_store_bf16(payload, 164u + lane, value);
+        slice_store_e5m2(payload, 336u + lane, value);
+        slice_store_e4m3(payload, 340u + lane, value);
+        slice_store_e3m4(payload, 344u + lane, value);
+        slice_store_i8(payload, 432u + lane, slice_load_i8(payload, 384u + lane));
     }
-    chomp_store_i32(payload, 100u + lane, chomp_load_i8(payload, 384u + lane));
+    slice_store_i32(payload, 100u + lane, slice_load_i8(payload, 384u + lane));
     if (lane < 2u) {
-        int value = chomp_load_i16(payload, 194u + lane);
-        chomp_store_i32(payload, 104u + lane, value);
-        chomp_store_i16(payload, 218u + lane, value);
+        int value = slice_load_i16(payload, 194u + lane);
+        slice_store_i32(payload, 104u + lane, value);
+        slice_store_i16(payload, 218u + lane, value);
     }
     if (lane != 0u) return;
-    chomp_store_f32x4(payload, 9u, chomp_load_f16x4(payload, 2u));
-    chomp_store_f32x4(payload, 10u, chomp_load_bf16x4(payload, 3u));
-    chomp_store_f32x4(payload, 11u, chomp_load_e5m2x4(payload, 8u));
-    chomp_store_f32x4(payload, 12u, chomp_load_e4m3x4(payload, 9u));
-    chomp_store_f32x4(payload, 13u, chomp_load_e3m4x4(payload, 10u));
+    slice_store_f32x4(payload, 9u, slice_load_f16x4(payload, 2u));
+    slice_store_f32x4(payload, 10u, slice_load_bf16x4(payload, 3u));
+    slice_store_f32x4(payload, 11u, slice_load_e5m2x4(payload, 8u));
+    slice_store_f32x4(payload, 12u, slice_load_e4m3x4(payload, 9u));
+    slice_store_f32x4(payload, 13u, slice_load_e3m4x4(payload, 10u));
 #ifdef VULKAN_FLOAT16
-    chomp_store_f32x4(payload, 14u, vec4(chomp_load_f32x4_half(payload, 0u)));
-    chomp_store_f32x4(payload, 15u, vec4(chomp_load_f16x4_half(payload, 2u)));
-    chomp_store_f32x4(payload, 16u, vec4(chomp_load_bf16x4_half(payload, 3u)));
-    chomp_store_f32x4(payload, 17u, vec4(chomp_load_e5m2x4_half(payload, 8u)));
-    chomp_store_f32x4(payload, 18u, vec4(chomp_load_e4m3x4_half(payload, 9u)));
-    chomp_store_f32x4(payload, 19u, vec4(chomp_load_e3m4x4_half(payload, 10u)));
+    slice_store_f32x4(payload, 14u, vec4(slice_load_f32x4_half(payload, 0u)));
+    slice_store_f32x4(payload, 15u, vec4(slice_load_f16x4_half(payload, 2u)));
+    slice_store_f32x4(payload, 16u, vec4(slice_load_bf16x4_half(payload, 3u)));
+    slice_store_f32x4(payload, 17u, vec4(slice_load_e5m2x4_half(payload, 8u)));
+    slice_store_f32x4(payload, 18u, vec4(slice_load_e4m3x4_half(payload, 9u)));
+    slice_store_f32x4(payload, 19u, vec4(slice_load_e3m4x4_half(payload, 10u)));
 #endif
-    vec4 values = chomp_load_f32x4(payload, 0u);
-    chomp_store_f16x4(payload, 44u, values);
-    chomp_store_bf16x4(payload, 45u, values);
-    chomp_store_e5m2x4(payload, 92u, values);
-    chomp_store_e4m3x4(payload, 93u, values);
-    chomp_store_e3m4x4(payload, 94u, values);
+    vec4 values = slice_load_f32x4(payload, 0u);
+    slice_store_f16x4(payload, 44u, values);
+    slice_store_bf16x4(payload, 45u, values);
+    slice_store_e5m2x4(payload, 92u, values);
+    slice_store_e4m3x4(payload, 93u, values);
+    slice_store_e3m4x4(payload, 94u, values);
 }
 )glsl";
 /** --------------------------------------------------------------------------------------------------------- Packed Case
@@ -218,8 +218,8 @@ void packed_io(const BuffetDescriptor* placement) {
             0xB834BC40u, 0xB028B840u, 0xA010B040u}
     }};
     Shader shader(packed_body, "backend_packed_io", 1);
-    Chomp storage(640, placement);
-    Chomp payload = storage.chomp(64, 512);
+    Slice storage(640, placement);
+    Slice payload = storage.slice(64, 512);
     uint32_t* words = payload.data<uint32_t>();
     uint64_t* wide = payload.data<uint64_t>();
     auto* vectors = payload.data<std::array<float, 4>>();
@@ -271,18 +271,19 @@ void packed_io(const BuffetDescriptor* placement) {
             require(words[index] == 0xA5A5A5A5u, "Typed helpers wrote outside their output fields");
         require(storage.data<uint32_t>()[15] == 0x13579BDFu
             && storage.data<uint32_t>()[144] == 0x2468ACE0u,
-            "Typed helper execution overwrote a Chomp view boundary");
+            "Typed helper execution overwrote a Slice view boundary");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Check Identity
- * @brief Verifies the identity shader's words against the dispatched Chomp.
+ * @brief Verifies the identity shader's words against the dispatched Slice.
  * @return The device address the shader resolved.
  */
-uint64_t check_identity(const Chomp& stream, uint32_t rows) {
+uint64_t check_identity(const Slice& stream, uint32_t rows) {
     const uint32_t* words = stream.data<uint32_t>();
     const uint64_t* values = stream.data<uint64_t>();
-    require(words[1] == (words[0] ^ uint32_t(0x9e3779b9)) && words[2] == stream.id(),
-        "The shader changed its marker or Chomp identity");
+    require(words[1] == (words[0] ^ uint32_t(0x9e3779b9))
+        && words[2] == uint32_t(stream.gpu().address + (uint64_t(stream.gpu().offset) << 6)),
+        "The shader changed its marker or Slice identity");
     require(words[3] == rows, "The shader saw the wrong live row count");
     require(values[2] == stream.size_bytes(), "The shader did not widen length granules to bytes");
     require(values[3] != 0, "The shader resolved a null device address");
@@ -293,8 +294,8 @@ uint64_t check_identity(const Chomp& stream, uint32_t rows) {
  */
 void optimized_noop(const BuffetDescriptor* placement) {
     LOG_INFO_STREAM << "Checking optimized no-op preparation and completion";
-    Shader shader("void alligator_main(Chomp stream) {}", "backend_noop", 1);
-    Chomp payload(64, placement);
+    Shader shader("void alligator_main(Slice stream) {}", "backend_noop", 1);
+    Slice payload(64, placement);
     payload.get_as<uint32_t>() = 73;
     shader(payload).get();
     require(payload.get_as<uint32_t>() == 73, "An optimized no-op shader changed its payload");
@@ -305,15 +306,16 @@ void optimized_noop(const BuffetDescriptor* placement) {
 void identity_and_placement(const BuffetDescriptor* placement) {
     LOG_INFO_STREAM << "Checking identity, granules, and dedicated addresses across one dispatch";
     Shader shader(identity_body, "backend_identity", 1);
-    Chomp backing(512, placement);
-    std::array<Chomp, 4> streams{backing.chomp(65, 1), backing.chomp(63, 2),
-        Chomp(65, true, placement), Chomp(placement->default_size_method() + 64, false, placement)};
+    Slice backing(512, placement);
+    std::array<Slice, 4> streams{backing.slice(65, 1), backing.slice(63, 2),
+        Slice(65, true, placement), Slice(placement->default_size_method() + 64, false, placement)};
     require(streams[0].size_bytes() == 64 && streams[1].size_bytes() == 128,
         "Outward subviews returned incorrect represented bounds");
-    Chomp list(streams.size() * sizeof(uint32_t), placement);
+    Slice list = Alligator::claim(streams.size() * sizeof(Slice), false, placement,
+        SliceTypes::register_type<Slice>());
     for (size_t index = 0; index < streams.size(); ++index) {
         streams[index].get_as<uint32_t>() = uint32_t(100 + index);
-        list.data<uint32_t>()[index] = streams[index].id();
+        list.data<Slice>()[index] = streams[index];
     }
     shader(list, streams.size()).get();
     const uint64_t first = check_identity(streams[0], 4);
@@ -323,34 +325,35 @@ void identity_and_placement(const BuffetDescriptor* placement) {
     check_identity(streams[3], 4);
 }
 /** --------------------------------------------------------------------------------------------------------- Embedded Ids
- * @brief A bound Chomp holding two other ids; the shader resolves both through the directory.
+ * @brief A bound Slice holding two other Slices; the shader reads both as they are.
  */
 void embedded_ids(const BuffetDescriptor* placement) {
-    LOG_INFO_STREAM << "Checking embedded id resolution";
+    LOG_INFO_STREAM << "Checking embedded record resolution";
     constexpr std::string_view body = R"glsl(
-void alligator_main(Chomp invocation) {
+void alligator_main(Slice invocation) {
     if (gl_LocalInvocationIndex != 0u) return;
-    Chomp source = gpu_chomp(chomp_load_u32(invocation, 0u));
-    Chomp destination = gpu_chomp(chomp_load_u32(invocation, 1u));
-    chomp_store_u32(destination, 0u, chomp_load_u32(source, 0u) + 1u);
+    Slice source = slice_read(slice_address(invocation));
+    Slice destination = slice_read(slice_address(invocation) + 64ul);
+    slice_store_u32(destination, 0u, slice_load_u32(source, 0u) + 1u);
 }
 )glsl";
-    Chomp source(64, true, placement);
-    Chomp destination(64, true, placement);
+    Slice source(64, true, placement);
+    Slice destination(64, true, placement);
     source.get_as<uint32_t>() = 53;
-    Chomp invocation(64, placement);
-    invocation.data<uint32_t>()[0] = source.id();
-    invocation.data<uint32_t>()[1] = destination.id();
+    Slice invocation = Alligator::claim(2 * sizeof(Slice), false, placement,
+        SliceTypes::register_type<Slice>());
+    invocation.data<Slice>()[0] = source;
+    invocation.data<Slice>()[1] = destination;
     Shader shader(body, "backend_embedded", 1);
     shader(invocation).get();
-    require(destination.get_as<uint32_t>() == 54, "An embedded id did not resolve to its Chomp");
+    require(destination.get_as<uint32_t>() == 54, "An embedded id did not resolve to its Slice");
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Context
  * @brief One thread's payload against the shared prepared Shader.
  */
 struct ConcurrentContext {
     Shader* shader;
-    Chomp stream;
+    Slice stream;
     static void submit(ConcurrentContext* context) { (*context->shader)(context->stream).get(); }
 };
 /** --------------------------------------------------------------------------------------------------------- Concurrent Dispatch
@@ -367,7 +370,7 @@ void concurrent_dispatch(const BuffetDescriptor* placement) {
     for (size_t index = 0; index < count; ++index) {
         auto context = std::make_unique<ConcurrentContext>();
         context->shader = &shader;
-        context->stream = Chomp(64, placement);
+        context->stream = Slice(64, placement);
         context->stream.get_as<uint32_t>() = uint32_t(index + 900);
         contexts.push_back(std::move(context));
     }
@@ -381,9 +384,9 @@ void concurrent_dispatch(const BuffetDescriptor* placement) {
 void whole_buffer_size(const BuffetDescriptor* placement) {
     LOG_INFO_STREAM << "Checking exact buffer and view lengths beyond 64 MiB";
     constexpr size_t view_bytes = size_t{64} * 1024 * 1024 + 64;
-    Chomp large(view_bytes + 128, true, placement);
-    require(large.size_bytes() == view_bytes + 128, "A whole-buffer Chomp lost its exact length");
-    Chomp view = large.chomp(64, view_bytes);
+    Slice large(view_bytes + 128, true, placement);
+    require(large.size_bytes() == view_bytes + 128, "A whole-buffer Slice lost its exact length");
+    Slice view = large.slice(64, view_bytes);
     require(view.size_bytes() == view_bytes && view.data() == large.data() + 64,
         "A large view rounded its granule length or changed its buffer offset");
     Shader shader(identity_body, "backend_whole_buffer", 1);
@@ -409,7 +412,7 @@ int main() {
             LOG_INFO_STREAM << "Skipping backend shader contracts: no Vulkan device";
             return 77;
         }
-        Chomp cpu_first(64, false, BuffetDescriptors::get(*AlignedHeapBuffer::type_idx()));
+        Slice cpu_first(64, false, BuffetDescriptors::get(*AlignedHeapBuffer::type_idx()));
         cpu_first.get_as<uint32_t>() = 41;
         require(GPU::exists() && GPU::backend() == GPUBackend::Vulkan,
             "The first CPU allocation changed the frozen GPU backend");

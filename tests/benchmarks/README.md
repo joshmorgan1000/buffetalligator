@@ -1,22 +1,22 @@
 # Map comparison and container benchmarks
 
-The map experiment is [chompmapvsvecset.cpp](chompmapvsvecset.cpp). Build and run it
+The map experiment is [slicemapvsvecset.cpp](slicemapvsvecset.cpp). Build and run it
 from the repository root:
 
 ```sh
 ./run_build.sh
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset --csv build/map-comparison.csv
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset --csv build/map-comparison.csv
 ```
 
 See [the measured results and remaining qualification work](MAP_RESULTS.md).
 
-The PriorityChomp showdown uses [priority_chomp_benchmark.cpp](priority_chomp_benchmark.cpp),
-with [baseline and current measurements](PRIORITY_CHOMP_RESULTS.md). Round two adds
-[priority_chomp_showdown.cpp](priority_chomp_showdown.cpp) against `std::priority_queue`, with
-[its measurements](PRIORITY_CHOMP_SHOWDOWN.md), including `HeapChompT`, the same words as a
+The PrioritySlice showdown uses [priority_slice_benchmark.cpp](priority_slice_benchmark.cpp),
+with [baseline and current measurements](PRIORITY_SLICE_RESULTS.md). Round two adds
+[priority_slice_showdown.cpp](priority_slice_showdown.cpp) against `std::priority_queue`, with
+[its measurements](PRIORITY_SLICE_SHOWDOWN.md), including `HeapSliceT`, the same words as a
 min-max heap for a single owner.
 
-`chompmapvsvecset_backup.cpp` sits beside the experiment, excluded from the build.
+`slicemapvsvecset_backup.cpp` sits beside the experiment, excluded from the build.
 
 > **REVIEW-STALE (2026-09-26):** the backup copy is root-owned, 63 KB, and nothing references it; delete or move it out of the tree.
 
@@ -33,17 +33,17 @@ manual and have no timing thresholds.
 
 | Contender | Storage and lookup | Duplicate policy | Concurrent use in this experiment |
 | --- | --- | --- | --- |
-| VecSet indexed | Fixed distinct-key capacity; dense Chomp handles plus atomic hash index | Replaces existing row without consuming capacity | First publication uses acquire/release; blocking per-row gates protect replacement and retained reads |
+| VecSet indexed | Fixed distinct-key capacity; dense Slice handles plus atomic hash index | Replaces existing row without consuming capacity | First publication uses acquire/release; blocking per-row gates protect replacement and retained reads |
 | VecSet SIMD | Same VecSet and payload ownership; existing `SIMDMisc::find_id` kernel | Same as indexed VecSet | ID scans run only after publishers finish |
-| ChompMap | Growing hash buckets with immutable eight-ID SIMD leaves and stable positions | Replaces at the existing position | Insert/read/update overlap; old payloads reclaimed through hazards |
+| SliceMap | Growing hash buckets with immutable eight-ID SIMD leaves and stable positions | Replaces at the existing position | Insert/read/update overlap; old payloads reclaimed through hazards |
 | HazardMap | Original scalar bucket-chain traversal with hazard publication | Appends rows; lookup finds newest | Insert/read overlap; nodes are reclaimed only after workers stop |
-| unordered_map+mutex | `std::unordered_map<int64_t, Chomp>` under one mutex | `insert_or_assign` | Insert/read/update overlap |
-| VersionMap | Experimental bucket chains with atomically published immutable Chomp versions | One key node; newest published version wins | Insert/read/update overlap; obsolete versions collected only when all workers stop |
+| unordered_map+mutex | `std::unordered_map<int64_t, Slice>` under one mutex | `insert_or_assign` | Insert/read/update overlap |
+| VersionMap | Experimental bucket chains with atomically published immutable Slice versions | One key node; newest published version wins | Insert/read/update overlap; obsolete versions collected only when all workers stop |
 
-ChompMap hashes to a bucket and scans its immutable ID block with the existing
+SliceMap hashes to a bucket and scans its immutable ID block with the existing
 SIMD kernel. Full buckets split and the position directory grows beyond the
 constructor's reservation. Replacements keep the same position and release the
-old Chomp after its hazard readers finish; independently retained Chomp handles
+old Slice after its hazard readers finish; independently retained Slice handles
 preserve the backing allocation. VersionMap is a separate experiment using
 scalar bucket traversal and delayed collection, with neither SIMD lookup nor
 hazard-pointer reclamation.
@@ -55,21 +55,21 @@ SIMD comparison is VecSet's contiguous ID scan.
 
 VersionMap grows key nodes beyond its initial bucket hint but does not rehash.
 Its publication uses pointer CAS; allocation is not promised to be lock-free.
-It retains every superseded Chomp until a quiescent collection, so storage grows
+It retains every superseded Slice until a quiescent collection, so storage grows
 with writes between collections. Duplicate timings **include** that collection.
 It is an experimental candidate, not a production replacement.
 
 VecSet's cached pointer list, score sorting, drains, and merges require quiescent
-workers. All candidates return a retained Chomp in comparable lookup tests.
-ChompMap's `data()` shares a contiguous borrowed pointer view between concurrent
+workers. All candidates return a retained Slice in comparable lookup tests.
+SliceMap's `data()` shares a contiguous borrowed pointer view between concurrent
 readers while writers and reset are quiescent;
 the first access after mutation includes rebuilding it, and later accesses use
 the cache. The view workloads report both costs. `as()` borrows a payload while
-writers are quiescent; concurrent readers use `get_chomp()` or `chomp_at()`.
+writers are quiescent; concurrent readers use `get_slice()` or `slice_at()`.
 Reset may overlap retained readers but requires quiescent writers and waiters;
 merge and move require quiescent users. There is no individual-key erase API.
 Publication and lookup use atomic protocols without a container mutex; allocation,
-Chomp teardown, and arbitrary typed finalizers have no lock-free guarantee.
+Slice teardown, and arbitrary typed finalizers have no lock-free guarantee.
 
 ## Map workloads and measurement
 
@@ -99,20 +99,20 @@ uses the existing kernel.
 Tables use the logging library's `print_table`, including first and second place
 with their medians for the largest row count per section in the final summary.
 Detailed tables report median [min,max]; costs are aggregate, not individual
-request latency, and the benchmark adds no mutex around ChompMap.
+request latency, and the benchmark adds no mutex around SliceMap.
 The CSV contains all case/candidate medians and ranges. Small or overlapping
 differences do not establish a winner.
 
 ```sh
 # Correctness, including twice the requested worker count for stress.
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset --case contracts --workers 32
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset --case contracts --workers 32
 
 # Uneven partitions and a complete diagnostic sweep.
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --rows 131 --workers 3 --rounds 2 --lookups 4096
 
 # Repeat a particular workload with more samples.
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --case duplicates --rows 65536 --workers 16 --rounds 15 --csv build/duplicates.csv
 ```
 
@@ -124,7 +124,7 @@ tags, not embedding data; no embedding computation is benchmarked here.
 Build with `./run_build.sh`, then run from the repository root:
 
 ```sh
-./build/tests/benchmarks/buffetalligator_chomp_map_benchmark
+./build/tests/benchmarks/buffetalligator_slice_map_benchmark
 ./build/tests/benchmarks/buffetalligator_queue_comparison_benchmark --producers 8 --consumers 1
 ```
 
@@ -144,14 +144,14 @@ counts replace the sweep and can oversubscribe the machine for stress testing.
 
 | Benchmark | Work measured | Default size |
 | --- | --- | --- |
-| ChompMap / unordered_map | Insert unique IDs, then successful lookups, then missing lookups | 4,096 rows; 65,536 lookups per phase |
-| ChompQueue / moodycamel | Watermark dispatch: singles below `--high-water`, bulk calls of up to `--max-batch` at or above it | 1,048,576 messages |
+| SliceMap / unordered_map | Insert unique IDs, then successful lookups, then missing lookups | 4,096 rows; 65,536 lookups per phase |
+| SliceQueue / moodycamel | Watermark dispatch: singles below `--high-water`, bulk calls of up to `--max-batch` at or above it | 1,048,576 messages |
 
 The standalone map benchmark synchronizes producers before starting readers so
 insertion, hit, and miss costs have separate timings. Consumers obtain shared
-Chomp claims without removing map entries. The `stream` and `duplicates` cases
-in `chompmapvsvecset.cpp` exercise overlapping producers, readers, and replacement
-with the growing SIMD-bucket ChompMap.
+Slice claims without removing map entries. The `stream` and `duplicates` cases
+in `slicemapvsvecset.cpp` exercise overlapping producers, readers, and replacement
+with the growing SIMD-bucket SliceMap.
 
 The queue comparison runs one consumer contract on both queues. Every push is
 published immediately, with no producer staging. Each consumer compares the queue
@@ -163,17 +163,17 @@ bulk handler. moodycamel reads `size_approx()` for the depth and uses
 
 ## Measurement
 
-- Deterministic unique identifiers use independent 64-byte Chomp claims;
+- Deterministic unique identifiers use independent 64-byte Slice claims;
   both implementations receive the same payloads and use the same worker loops.
 - Payload allocation and initialization, input sharing, container reset,
   correctness validation, and thread creation/join are outside the timed region.
 - Map slot arrays and hash buckets are reserved before timing; row/node
   allocations during insertion remain included for both maps. Deque's own
   internal allocations also remain included.
-- Successful map lookups retain their returned Chomp in preallocated output
+- Successful map lookups retain their returned Slice in preallocated output
   slots; those claims are released outside timing. Queue consumption includes
   reading the identifier, recording it in a pre-reserved per-consumer buffer,
-  and releasing delivered Chomp claims. There is no shared per-message test counter.
+  and releasing delivered Slice claims. There is no shared per-message test counter.
 - Worker teams persist across warmups and measured samples. Timing spans the
   earliest worker entry through the latest worker completion, including worker
   scheduling skew and queue binding, flush, closure, and drain.
@@ -203,15 +203,15 @@ differences between lookup approaches; no universal winner is assumed.
     --producers 8 --consumers 2 --high-water 256 --max-batch 64
 
 # Compare a larger map with concurrent producers followed by concurrent readers.
-./build/tests/benchmarks/buffetalligator_chomp_map_benchmark \
+./build/tests/benchmarks/buffetalligator_slice_map_benchmark \
     --items 65536 --lookups 65536 --producers 8 --consumers 8 --csv build/map.csv
 
 # Unlocked baseline on a single worker thread.
-./build/tests/benchmarks/buffetalligator_chomp_map_benchmark --single-thread
+./build/tests/benchmarks/buffetalligator_slice_map_benchmark --single-thread
 ```
 
 Use `--help` for options. `--items` is the total work, not work per producer;
-`--lookups` is the total work in each map lookup phase. ChompMap has 256 reusable
+`--lookups` is the total work in each map lookup phase. SliceMap has 256 reusable
 hazard records for simultaneously registered threads; the benchmark reserves
 one for its coordinator and rejects larger producer/reader teams. The comparison
 contract stress doubles `--workers`, limiting that option to 127. Queue capacity must
@@ -219,9 +219,9 @@ be a positive multiple of 256, and batch
 sizes range from 1 to 256. Repetitions, timeout, sizes, and explicit worker counts
 must be positive; `--warmup 0` is supported for diagnostic runs.
 
-## Chomp allocator measurements
+## Slice allocator measurements
 
-The allocator harness exercises the production `Chomp` API, including rounded
+The allocator harness exercises the production `Slice` API, including rounded
 1/63/64/65-byte and 4 KiB allocations, dedicated allocations, copy, move, outward
 sub-views, and release. It requires a Release build and validates every warmup
 and measured result after timing.
@@ -256,7 +256,7 @@ The one-operation slab cases have only 15 latency samples by default, so their
 extreme percentiles require longer runs before drawing a tail-latency conclusion.
 First public allocation time is reported separately and excludes process startup.
 
-Requested bytes, represented payload bytes, and the `Chomp` handle size are
+Requested bytes, represented payload bytes, and the `Slice` handle size are
 reported directly. The retained payload budget excludes allocator metadata,
 prepared slabs, and driver residency; those quantities are not inferred from
 payload sizes. This harness alone does not establish a memory high-water mark,
@@ -269,7 +269,7 @@ compare dedicated-buffer churn with and without the tracker.
 
 ## Slab churn measurements
 
-The slab churn harness models normal operation: workers keep a ring of live Chomps,
+The slab churn harness models normal operation: workers keep a ring of live Slices,
 replace the oldest with each claim, and cycle mostly small requests up to 64 KiB, so
 every sample rolls through many 64 MiB slabs. It runs a counted heap placement, which
 counts its own buffers independently of the tracker, and the default device placement.
@@ -280,7 +280,7 @@ counts its own buffers independently of the tracker, and the default device plac
 ```
 
 Each placement runs an untimed throughput pass and a pass that times every claim and
-release. After each sample every Chomp is released; the counted placement must then hold
+release. After each sample every Slice is released; the counted placement must then hold
 exactly its current buffer and the two ahead, and tracker bytes and native device bytes must
 match the first sample. A growing value fails the run as a leak. `--factory-delay-us N`
 adds N microseconds to each counted allocation to model a slower device allocator.
@@ -315,7 +315,7 @@ All submitters share one prepared Shader. Batch sizes are
 1/16/256 streams; `--depth` bounds each submitter's outstanding dispatch window
 and defaults to eight. This caller-side window is not the implementation's slot
 count and is not claimed to be an optimal depth. Workers persist across samples.
-Each stream has a deterministic marker; validation checks every marker, Chomp
+Each stream has a deterministic marker; validation checks every marker, Slice
 identity, represented size, and terminal result outside timing, including warmups.
 
 The main CSV separates context initialization, first and repeated Shader
@@ -341,7 +341,7 @@ regions, per-stage compiler profiling, and memory/residency high-water marks
 remain separate qualification work. Missing hardware, compilation errors, or
 incorrect outputs produce a nonzero result rather than timing another backend.
 
-## PriorityChomp raw and typed operation samples
+## PrioritySlice raw and typed operation samples
 
 The existing fixed-capacity raw/typed harness keeps its deterministic 100,000-
 iteration traces and result checks. Warmup and measured repetition counts are
@@ -349,7 +349,7 @@ now configurable, defaulting to two and 15 respectively; every measured sample
 is written before any sorting or aggregation.
 
 ```sh
-ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_priority_chomp_benchmark \
+ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_priority_slice_benchmark \
     --warmup 2 --repetitions 15 --csv build/perf/results/priority.csv
 ```
 

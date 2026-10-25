@@ -106,32 +106,32 @@ const BuffetDescriptor* MmapBuffet::register_type(const std::string& directory) 
     return context.descriptor;
 }
 /** --------------------------------------------------------------------------------------------------------- Flush
- * @brief Synchronously writes a Chomp's page-aligned mapped range back to its scratch file.
- * @param chomp A Chomp claimed from this type.
+ * @brief Synchronously writes a Slice's page-aligned mapped range back to its scratch file.
+ * @param slice A Slice claimed from this type.
  */
-void MmapBuffet::flush(const Chomp& chomp) {
-    const uintptr_t address = reinterpret_cast<uintptr_t>(chomp.raw());
+void MmapBuffet::flush(const Slice& slice) {
+    const uintptr_t address = reinterpret_cast<uintptr_t>(slice.raw());
     const uintptr_t aligned = address - address % context.page_size;
-    if (msync(reinterpret_cast<void*>(aligned), chomp.size_bytes() + address - aligned, MS_SYNC) != 0) {
+    if (msync(reinterpret_cast<void*>(aligned), slice.size_bytes() + address - aligned, MS_SYNC) != 0) {
         ALLIGATOR_THROW(std::string("Flushing scratch pages: ") + std::strerror(errno));
     }
 }
 /** --------------------------------------------------------------------------------------------------------- File Descriptor
- * @brief The borrowed descriptor of the scratch file behind a Chomp.
- * @param chomp A Chomp claimed from this type.
- * @return The descriptor, valid while the Chomp lives.
+ * @brief The borrowed descriptor of the scratch file behind a Slice.
+ * @param slice A Slice claimed from this type.
+ * @return The descriptor, valid while the Slice lives.
  */
-int MmapBuffet::file_descriptor(const Chomp& chomp) {
-    return static_cast<const MmapBuffet*>(Alligator::buffet_of(chomp))->descriptor_;
+int MmapBuffet::file_descriptor(const Slice& slice) {
+    return static_cast<const MmapBuffet*>(Alligator::buffet_of(slice))->descriptor_;
 }
 /** --------------------------------------------------------------------------------------------------------- File Offset
- * @brief A Chomp's byte offset within its scratch file, including sub-chomp offsets.
- * @param chomp A Chomp claimed from this type.
+ * @brief A Slice's byte offset within its scratch file, including sub-slice offsets.
+ * @param slice A Slice claimed from this type.
  * @return The byte offset.
  */
-uint64_t MmapBuffet::file_offset(const Chomp& chomp) {
-    const MmapBuffet* buffet = static_cast<const MmapBuffet*>(Alligator::buffet_of(chomp));
-    return static_cast<uint64_t>(static_cast<const char*>(chomp.raw())
+uint64_t MmapBuffet::file_offset(const Slice& slice) {
+    const MmapBuffet* buffet = static_cast<const MmapBuffet*>(Alligator::buffet_of(slice));
+    return static_cast<uint64_t>(static_cast<const char*>(slice.raw())
         - static_cast<const char*>(buffet->mapping_));
 }
 } // namespace buffetalligator

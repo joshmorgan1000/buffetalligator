@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Emits isolated ChompMap candidates from the current working source.
+# Emits isolated SliceMap candidates from the current working source.
 require 'digest'
 require 'fileutils'
 require 'json'
@@ -13,28 +13,28 @@ def replace_exact(source, original, replacement, label)
 end
 abort "Usage: ruby #{File.basename(__FILE__)} OUTPUT_DIRECTORY" unless ARGV.length == 1
 repository_root = File.expand_path('../../..', __dir__)
-source_path = File.join(repository_root, 'src/containers/chompmap.cpp')
+source_path = File.join(repository_root, 'src/containers/slicemap.cpp')
 output_directory = File.expand_path(ARGV.fetch(0))
 source = File.binread(source_path)
 original_lookup = <<~'CPP'
-Chomp ChompMap::get_chomp_internal(int64_t identifier) const {
+Slice SliceMap::get_slice_internal(int64_t identifier) const {
     MapHazard state_hazard(0), payload_hazard(1);
     State* state = state_hazard.protect(state_);
     State::Node* node = state->find(State::hash(identifier));
-    if (!node) return Chomp();
+    if (!node) return Slice();
     State::Payload* payload = payload_hazard.protect(node->current);
-    return payload->chomp;
+    return payload->slice;
 }
 CPP
 deferred_lookup = <<~'CPP'
-Chomp ChompMap::get_chomp_internal(int64_t identifier) const {
+Slice SliceMap::get_slice_internal(int64_t identifier) const {
     MapHazard state_hazard(0);
     State* state = state_hazard.protect(state_);
     State::Node* node = state->find(State::hash(identifier));
-    if (!node) return Chomp();
+    if (!node) return Slice();
     MapHazard payload_hazard(1);
     State::Payload* payload = payload_hazard.protect(node->current);
-    return payload->chomp;
+    return payload->slice;
 }
 CPP
 original_counter =
@@ -57,7 +57,7 @@ manifest = {
     'source' => source_path,
     'source_sha256' => Digest::SHA256.hexdigest(source),
     'variants' => variants.map do |name, contents|
-        { 'name' => name, 'source' => "#{name}/chompmap.cpp",
+        { 'name' => name, 'source' => "#{name}/slicemap.cpp",
           'sha256' => Digest::SHA256.hexdigest(contents) }
     end,
     'omitted_variants' => {
@@ -67,8 +67,8 @@ manifest = {
 variants.each do |name, contents|
     directory = File.join(output_directory, name)
     FileUtils.mkdir_p(directory)
-    File.binwrite(File.join(directory, 'chompmap.cpp'), contents)
+    File.binwrite(File.join(directory, 'slicemap.cpp'), contents)
 end
 File.write(File.join(output_directory, 'manifest.json'), JSON.pretty_generate(manifest) + "\n")
-puts "Prepared #{variants.length} isolated ChompMap sources in #{output_directory}."
+puts "Prepared #{variants.length} isolated SliceMap sources in #{output_directory}."
 puts "Current source SHA-256: #{manifest.fetch('source_sha256')}"

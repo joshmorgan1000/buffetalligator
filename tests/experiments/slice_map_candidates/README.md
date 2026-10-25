@@ -1,6 +1,6 @@
-# ChompMap candidate measurements
+# SliceMap candidate measurements
 
-These experiments compare current production ChompMap with isolated source variants.
+These experiments compare current production SliceMap with isolated source variants.
 Production `src/`, `include/`, the normal build configuration, and installed library
 are unchanged. Generated copies live only in the selected experiment build directory.
 The experiment links their object files before the unchanged production static archive,
@@ -10,14 +10,14 @@ The completed September 30 measurements and decisions are in [RESULTS.md](RESULT
 
 ## Candidates
 
-- `baseline`: unchanged ChompMap and Chomp sources.
+- `baseline`: unchanged SliceMap and Slice sources.
 - `deferred_payload_hazard`: avoid constructing and clearing the payload hazard on a miss.
 - `combined_publication_counter`: combine successful linking's counter decrement and position claim.
 - `map_bookkeeping`: both map changes together.
-- `fused_metadata_clone`: resolve each Chomp copy's source and destination Region once.
+- `fused_metadata_clone`: resolve each Slice copy's source and destination Region once.
 
 The candidate arguments are in [MAP_CANDIDATES.md](MAP_CANDIDATES.md) and
-[CHOMP_CANDIDATES.md](CHOMP_CANDIDATES.md). Pool allocation, batched ID allocation,
+[SLICE_CANDIDATES.md](SLICE_CANDIDATES.md). Pool allocation, batched ID allocation,
 publication-directory changes, and a compact SIMD index are not implemented or measured
 by this experiment. Their production adoption also requires separate measurements.
 
@@ -31,11 +31,11 @@ From the repository root:
     -DBUFFETALLIGATOR_BUILD_TESTS=OFF -DBUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS=OFF \
     -DBUFFETALLIGATOR_BUILD_BENCHMARKS=OFF \
     -DBUFFETALLIGATOR_ENABLE_METAL=ON \
-    -DCMAKE_PROJECT_INCLUDE="$PWD/tests/experiments/chomp_map_candidates/register.cmake"
+    -DCMAKE_PROJECT_INCLUDE="$PWD/tests/experiments/slice_map_candidates/register.cmake"
 ```
 
 The CMake hook registers its own tests despite disabling the normal test targets.
-Each candidate runs the existing map ownership, concurrency, growth, Chomp core,
+Each candidate runs the existing map ownership, concurrency, growth, Slice core,
 global lifetime, and backend shader checks. The growth test includes the candidate
 map source at its existing instrumentation point. Compiler flags, public definitions,
 dependencies, and benchmark object code match across candidates; Release retains
@@ -47,9 +47,9 @@ Metal with API and shader validation. Actual hardware coverage is recorded in CT
 Run while builds and other heavy workloads are idle:
 
 ```sh
-ruby tests/experiments/chomp_map_candidates/run.rb \
+ruby tests/experiments/slice_map_candidates/run.rb \
     build/map-candidates build/map-candidates/results-next
-ruby tests/experiments/chomp_map_candidates/analyze.rb build/map-candidates/results-next
+ruby tests/experiments/slice_map_candidates/analyze.rb build/map-candidates/results-next
 ```
 
 The runner requires a fresh results directory, completed registered checks, and
@@ -60,9 +60,9 @@ with eight writers followed by eight readers. Every process uses two warmups, fi
 measured repetitions, and at least 262,144 queries per lookup phase.
 
 The existing benchmark validates every measured result. Inserts include metadata/node
-allocation; successful lookups create retained Chomp owners, released outside timing.
+allocation; successful lookups create retained Slice owners, released outside timing.
 Payload setup, reset, thread creation, and verification are outside timing. Both
-containers pay the Chomp-copy cost; the fused-copy candidate can improve either column.
+containers pay the Slice-copy cost; the fused-copy candidate can improve either column.
 The multi-threaded std baseline uses a single mutex even during its separate reader
 phase. This is not a comparison against an unlocked read-only std map.
 

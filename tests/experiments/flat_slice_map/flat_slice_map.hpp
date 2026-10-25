@@ -1,7 +1,7 @@
 #pragma once
-/** --------------------------------------------------------------------------------------------------------- Flat Chomp Map
- * @file flat_chomp_map.hpp
- * @brief Declares an experiment comparing retained Chomp lookup through a flat hash table.
+/** --------------------------------------------------------------------------------------------------------- Flat Slice Map
+ * @file flat_slice_map.hpp
+ * @brief Declares an experiment comparing retained Slice lookup through a flat hash table.
  */
 #include <alligator.hpp>
 #include <cstddef>
@@ -9,10 +9,10 @@
 #include <memory>
 
 namespace experiments {
-/** --------------------------------------------------------------------------------------------------------- FlatChompMap
+/** --------------------------------------------------------------------------------------------------------- FlatSliceMap
  * @brief Requires exclusive mutations and permits concurrent const lookups after publication.
  */
-class FlatChompMap {
+class FlatSliceMap {
 private:
     struct State;
     std::unique_ptr<State> state_;
@@ -20,21 +20,21 @@ public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Reserves the expected number of keys before publication begins.
      */
-    explicit FlatChompMap(size_t expected);
-    FlatChompMap(const FlatChompMap&) = delete;
-    FlatChompMap& operator=(const FlatChompMap&) = delete;
+    explicit FlatSliceMap(size_t expected);
+    FlatSliceMap(const FlatSliceMap&) = delete;
+    FlatSliceMap& operator=(const FlatSliceMap&) = delete;
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Releases stored Chomp claims while independently retained results remain owned.
+     * @brief Releases stored Slice claims while independently retained results remain owned.
      */
-    ~FlatChompMap();
-    /** ------------------------------------------------------------------------------------------- Add Chomp
-     * @brief Transfers a Chomp into its key and releases any previously stored claim.
+    ~FlatSliceMap();
+    /** ------------------------------------------------------------------------------------------- Add Slice
+     * @brief Transfers a Slice into its key and releases any previously stored claim.
      */
-    void add_chomp(int64_t identifier, buffetalligator::Chomp payload);
-    /** ------------------------------------------------------------------------------------------- Get Chomp
-     * @brief Returns an independently owned Chomp copy or a null Chomp for a missing key.
+    void add_slice(int64_t identifier, buffetalligator::Slice payload);
+    /** ------------------------------------------------------------------------------------------- Get Slice
+     * @brief Returns an independently owned Slice copy or a null Slice for a missing key.
      */
-    buffetalligator::Chomp get_chomp(int64_t identifier) const;
+    buffetalligator::Slice get_slice(int64_t identifier) const;
     /** ------------------------------------------------------------------------------------------- Size
      * @brief Returns the number of stored keys, including keys with null payloads.
      */

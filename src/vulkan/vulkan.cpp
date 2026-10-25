@@ -571,12 +571,12 @@ void VulkanBuffer::release() {
 /** --------------------------------------------------------------------------------------------------------- Shader Implementation
  * @struct Shader::Impl
  * @brief One compiled pipeline, one queue, one timeline semaphore, and IN_FLIGHT command buffers; a dispatch
- * records one Chomp id into its slot's command buffer and submits. Nothing is copied anywhere.
+ * records one Slice id into its slot's command buffer and submits. Nothing is copied anywhere.
  */
 struct Shader::Impl {
-    /// @brief Host mirror of the GLSL push block: the Chomp, whether it lists the rows, and the directory.
-    struct Push { uint32_t chomp; uint32_t list; uint64_t pool; };
-    static_assert(sizeof(Push) == 16, "Push must mirror the GLSL AlligatorPush block");
+    /// @brief The GLSL push block's bytes: the Slice as the host holds it, then whether it lists the rows.
+    static constexpr uint32_t PUSH_BYTES = sizeof(Slice) + 4 * sizeof(uint32_t);
+    static_assert(PUSH_BYTES == 80, "The push block must mirror the GLSL AlligatorPush block");
     /// @brief One dispatch handed to the retirement thread: which slot's timeline, which value, whose result.
     struct Pending {
         std::shared_ptr<ShaderResult::State> result;
@@ -589,7 +589,6 @@ struct Shader::Impl {
     std::string name;
     std::atomic<uint32_t> workgroups;
     uint32_t queue = 0;                                       ///< This shader's compute queue.
-    uint64_t pool_address = 0;                                ///< The directory shaders resolve ids through.
     vk::PipelineLayout layout{};
     vk::Pipeline pipeline{};
     std::array<vk::CommandPool, IN_FLIGHT> pools{};           ///< One pool per slot; recording needs no lock.
@@ -601,7 +600,7 @@ struct Shader::Impl {
     Impl(std::string_view glsl, std::string_view label, uint32_t groups);
     ~Impl();
     void release();
-    void dispatch(uint32_t chomp, bool list, uint32_t rows, std::shared_ptr<ShaderResult::State> result);
+    void dispatch(const Slice& slice, bool list, uint32_t rows, std::shared_ptr<ShaderResult::State> result);
     static void retire(Impl* self) noexcept;
 };
 /** --------------------------------------------------------------------------------------------------------- Shader Preparation
@@ -617,12 +616,11 @@ Shader::Impl::Impl(std::string_view glsl, std::string_view label, uint32_t group
     workgroups.store(groups ? groups : std::max(1u, properties.max_workgroup_invocations / 64u),
         std::memory_order_relaxed);
     queue = VulkanContext::assign_queue();
-    pool_address = VulkanKernel::gpu_pool_address();
     const vk::Device device = VulkanContext::device();
     const std::vector<uint32_t> words =
         shader_compile_glsl(public_shader_source(glsl), properties.supports_float16, name);
     try {
-        const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(Push));
+        const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, PUSH_BYTES);
         layout = device.createPipelineLayout(vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1, &range));
         {
             // vkCreateComputePipelines requires host access to the VkPipelineCache to be externally synchronized.
@@ -688,15 +686,15 @@ void Shader::Impl::release() {
     layout = nullptr;
 }
 /** --------------------------------------------------------------------------------------------------------- Dispatch
- * @brief Takes the next slot, waits on that slot's timeline for its previous use, records the one Chomp and
+ * @brief Takes the next slot, waits on that slot's timeline for its previous use, records the one Slice and
  * the dimensions, and submits signaling the slot's next value.
- * @param chomp The Chomp id, resolved by the shader through the directory.
- * @param list Whether that Chomp holds one id per workgroup row.
+ * @param slice The Slice, pushed as it is for the shader to read its payload through.
+ * @param list Whether that Slice holds one Slice per workgroup row.
  * @param rows Workgroup rows along Y.
  * @param result The shared state completed when the dispatch retires.
  */
 void Shader::Impl::dispatch(
-    uint32_t chomp,
+    const Slice& slice,
     bool list,
     uint32_t rows,
     std::shared_ptr<ShaderResult::State> result
@@ -710,7 +708,7 @@ void Shader::Impl::dispatch(
         while (device.waitSemaphores(previous, UINT64_MAX) == vk::Result::eTimeout) {}
     }
     const vk::CommandBuffer command = commands[slot];
-    const Push push{chomp, list ? 1u : 0u, pool_address};
+    const uint32_t flags[4] = {list ? 1u : 0u, 0u, 0u, 0u};
     const vk::MemoryBarrier publication(vk::AccessFlagBits::eHostWrite,
         vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite);
     const vk::MemoryBarrier readback(vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead);
@@ -720,7 +718,8 @@ void Shader::Impl::dispatch(
     command.pipelineBarrier(vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eComputeShader,
         {}, 1, &publication, 0, nullptr, 0, nullptr);
     command.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
-    command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
+    command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(Slice), &slice);
+    command.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, sizeof(Slice), sizeof(flags), flags);
     command.dispatch(workgroups.load(std::memory_order_relaxed), rows, 1);
     command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost,
         {}, 1, &readback, 0, nullptr, 0, nullptr);
@@ -779,33 +778,33 @@ void Shader::set_workgroups(uint32_t count) {
     state_->workgroups.store(count, std::memory_order_relaxed);
 }
 /** --------------------------------------------------------------------------------------------------------- Shader Dispatch
- * @brief A list Chomp dispatches one row per id it holds; a single Chomp dispatches one row that is the
- * Chomp.
- * @param chomps The Chomp or list of Chomps to dispatch.
- * @param count The number of rows to dispatch for a list Chomp; ignored for a single Chomp.
+ * @brief A list Slice dispatches one row per id it holds; a single Slice dispatches one row that is the
+ * Slice.
+ * @param slices The Slice or list of Slices to dispatch.
+ * @param count The number of rows to dispatch for a list Slice; ignored for a single Slice.
  * @param done Callback to invoke when the dispatch completes.
  * @param context Context to pass to the callback.
  */
 ShaderResult Shader::operator()(
-    const Chomp& chomps,
+    const Slice& slices,
     size_t count,
     void (*done)(std::shared_ptr<void>),
     std::shared_ptr<void> context
 ) const {
     ShaderResult result(done, std::move(context));
-    state_->dispatch(chomps.id(), true, uint32_t(count), result.state_);
+    state_->dispatch(slices, true, uint32_t(count), result.state_);
     return result;
 }
-/** --------------------------------------------------------------------------------------------------------- Shader Dispatch (Single Chomp)
- * @brief Dispatches a single Chomp.
- * @param chomp The Chomp to dispatch.
+/** --------------------------------------------------------------------------------------------------------- Shader Dispatch (Single Slice)
+ * @brief Dispatches a single Slice.
+ * @param slice The Slice to dispatch.
  * @param done Callback to invoke when the dispatch completes.
  * @param context Context to pass to the callback.
  */
-ShaderResult Shader::operator()(const Chomp& chomp, void (*done)(std::shared_ptr<void>),
+ShaderResult Shader::operator()(const Slice& slice, void (*done)(std::shared_ptr<void>),
     std::shared_ptr<void> context) const {
     ShaderResult result(done, std::move(context));
-    state_->dispatch(chomp.id(), false, 1, result.state_);
+    state_->dispatch(slice, false, 1, result.state_);
     return result;
 }
 } // namespace buffetalligator

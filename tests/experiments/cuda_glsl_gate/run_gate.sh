@@ -24,7 +24,7 @@ perl -0777 -e '
     die "Current production prelude or experimental kernel body is missing\n"
         unless defined $core && defined $jobs && defined $public && defined $body;
     my @formats = (
-        ["public-list", $public, "vulkan_count()", "vulkan_chomp(vulkan_index())"],
+        ["public-list", $public, "vulkan_count()", "vulkan_slice(vulkan_index())"],
         ["job-table", $jobs, "vulkan_job_count()", "vulkan_job(vulkan_job_index())"]);
     for my $format (@formats) {
         open my $output, ">", "$destination/$format->[0].glsl" or die $!;

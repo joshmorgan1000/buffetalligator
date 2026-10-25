@@ -35,16 +35,16 @@ abort 'Candidate build must complete its registered tests before measurement.' u
     build_log.include?('100% tests passed, 0 tests failed') && !build_log.include?('No tests were found')
 test_log = File.read(File.join(build_directory, 'Testing/Temporary/LastTest.log'))
 candidates.each do |candidate|
-    %w[chomp_map_test chomp_map_concurrency_test chomp_core_regression_test global_chomp_lifetime_test growth].each do |check|
+    %w[slice_map_test slice_map_concurrency_test slice_core_regression_test global_slice_lifetime_test growth].each do |check|
         abort "Missing candidate correctness check: #{candidate}/#{check}" unless
             test_log.include?("Test: check_#{candidate}_#{check}\n")
     end
 end
-inputs = %w[src/containers/chompmap.cpp src/memory/chomp.cpp src/memory/alligator.cpp
+inputs = %w[src/containers/slicemap.cpp src/memory/slice.cpp src/memory/alligator.cpp
     src/memory/chainbuffet.cpp include/alligator.hpp include/alligator/containers.hpp
-    tests/benchmarks/chomp_map_benchmark.cpp tests/benchmarks/benchmark_support.hpp]
+    tests/benchmarks/slice_map_benchmark.cpp tests/benchmarks/benchmark_support.hpp]
 source_hashes = inputs.to_h { |path| [path, Digest::SHA256.file(File.join(root, path)).hexdigest] }
-{'manifest.json' => 'src/containers/chompmap.cpp', 'chomp_variants.json' => 'src/memory/chomp.cpp'}.each do |name, source|
+{'manifest.json' => 'src/containers/slicemap.cpp', 'slice_variants.json' => 'src/memory/slice.cpp'}.each do |name, source|
     generated = JSON.parse(File.read(File.join(build_directory, 'map-candidates', name)))
     abort "Rebuild candidates after source changes: #{source}" unless generated.fetch('source_sha256') == source_hashes.fetch(source)
 end
@@ -66,7 +66,7 @@ File.write(manifest_path, JSON.pretty_generate(manifest) + "\n")
 FileUtils.cp(File.join(build_directory, 'CMakeCache.txt'), results_directory)
 FileUtils.cp(File.join(build_directory, 'compile_commands.json'), results_directory)
 FileUtils.cp(File.join(build_directory, 'Testing/Temporary/LastTest.log'), File.join(results_directory, 'correctness.log'))
-%w[manifest.json chomp_variants.json].each do |name|
+%w[manifest.json slice_variants.json].each do |name|
     FileUtils.cp(File.join(build_directory, 'map-candidates', name), File.join(results_directory, name))
 end
 %w[uname sw_vers pmset].each do |command|

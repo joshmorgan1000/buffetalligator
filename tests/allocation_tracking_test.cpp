@@ -20,8 +20,8 @@ int main() {
     require(!BuffetDescriptors::allocation_tracking(), "allocation tracking did not turn off");
     const BuffetDescriptor& heap = *BuffetDescriptors::get(*AlignedHeapBuffer::type_idx());
     {
-        Chomp claimed(size_t{256}, &heap);
-        Chomp novel(size_t{8192}, true, &heap);
+        Slice claimed(size_t{256}, &heap);
+        Slice novel(size_t{8192}, true, &heap);
         require(claimed && novel, "untracked allocations failed");
     }
     require(Memory::total_allocations() == 0 && Memory::total_freed() == 0

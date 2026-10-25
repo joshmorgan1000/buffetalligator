@@ -5,7 +5,7 @@ foreach(source IN LISTS test_sources)
     add_executable(${target} "${source}")
     target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src")
     target_link_libraries(${target} PRIVATE alligator::alligator)
-    if(NOT name MATCHES "_functional_test$" AND NOT name STREQUAL "shader_chomp_test"
+    if(NOT name MATCHES "_functional_test$" AND NOT name STREQUAL "shader_slice_test"
             AND NOT name STREQUAL "backend_shader_test")
         add_test(NAME ${target} COMMAND ${target})
         set_tests_properties(${target} PROPERTIES TIMEOUT 120)
@@ -25,7 +25,7 @@ set(BUFFETALLIGATOR_TEST_VULKAN_BACKEND vulkan CACHE STRING
 set_property(CACHE BUFFETALLIGATOR_TEST_VULKAN_BACKEND PROPERTY STRINGS vulkan cpu)
 foreach(case IN ITEMS vulkan_shader_identity vulkan_list_dispatch vulkan_ring_wrap
         vulkan_callbacks vulkan_concurrent_dispatch)
-    add_test(NAME buffetalligator_${case} COMMAND buffetalligator_shader_chomp_test ${case})
+    add_test(NAME buffetalligator_${case} COMMAND buffetalligator_shader_slice_test ${case})
     set_tests_properties(buffetalligator_${case} PROPERTIES TIMEOUT 60 LABELS "gpu;functional"
         SKIP_RETURN_CODE 77 ENVIRONMENT "ALLIGATOR_GPU_BACKEND=${BUFFETALLIGATOR_TEST_VULKAN_BACKEND}")
 endforeach()
@@ -48,16 +48,16 @@ function(add_functional_cases component)
         set_tests_properties(buffetalligator_${case} PROPERTIES TIMEOUT 30 LABELS functional)
     endforeach()
 endfunction()
-add_functional_cases(chomp typed_chomps typed_lifecycle typed_views weak_chomps)
+add_functional_cases(slice typed_slices typed_lifecycle typed_views weak_slices)
 add_functional_cases(atomic native_atomics complex_atomics atomic_ownership atomic_exceptions
     concurrent_atomics atomic_wait_notify registry global_registry concurrent_registry registry_exceptions)
 add_functional_cases(map map_rows map_merge map_lifetime map_boundaries concurrent_map map_shared_ownership pipeline)
 add_functional_cases(simd id_search max_search min_search)
-set_tests_properties(buffetalligator_chomp_map_growth_test PROPERTIES TIMEOUT 30
+set_tests_properties(buffetalligator_slice_map_growth_test PROPERTIES TIMEOUT 30
     LABELS "containers;functional")
-set_tests_properties(buffetalligator_chomp_core_regression_test PROPERTIES TIMEOUT 120
+set_tests_properties(buffetalligator_slice_core_regression_test PROPERTIES TIMEOUT 120
     LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
-set_tests_properties(buffetalligator_global_chomp_startup_test PROPERTIES TIMEOUT 30
+set_tests_properties(buffetalligator_global_slice_startup_test PROPERTIES TIMEOUT 30
     LABELS "allocators;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
 add_test(NAME buffetalligator_installed_consumer
     COMMAND "${CMAKE_COMMAND}"

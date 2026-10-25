@@ -18,7 +18,7 @@ using benchmarks::Progress;
 using benchmarks::require;
 using buffetalligator::BuffetDescriptor;
 using buffetalligator::BuffetDescriptors;
-using buffetalligator::Chomp;
+using buffetalligator::Slice;
 constexpr size_t TOTAL_BYTES = size_t{1} << 30;
 constexpr std::array<size_t, 4> SIZES{64, 128, 4096, size_t{64} << 20};
 constexpr std::array<size_t, 2> THREADS{1, 16};
@@ -31,21 +31,21 @@ struct Workload {
     size_t bytes;
     size_t threads;
     size_t claims;
-    std::vector<std::vector<Chomp>> windows;
+    std::vector<std::vector<Slice>> windows;
     std::barrier<> start;
     Workload(const BuffetDescriptor* selected, size_t size, size_t workers)
     : placement(selected), bytes(size), threads(workers), claims(TOTAL_BYTES / size),
-      windows(workers, std::vector<Chomp>(WINDOW)), start(static_cast<std::ptrdiff_t>(workers + 1)) {}
+      windows(workers, std::vector<Slice>(WINDOW)), start(static_cast<std::ptrdiff_t>(workers + 1)) {}
     /** ------------------------------------------------------------------------------------------- Claim Range
      * @brief Claims one thread's even share, releasing the claim made a window earlier each time.
      */
     static void claim_range(Workload* work, size_t worker) {
         const size_t share = work->claims * (worker + 1) / work->threads
             - work->claims * worker / work->threads;
-        std::vector<Chomp>& window = work->windows[worker];
+        std::vector<Slice>& window = work->windows[worker];
         work->start.arrive_and_wait();
         for (size_t index = 0; index < share; ++index) {
-            window[index % WINDOW] = Chomp(work->bytes, work->placement);
+            window[index % WINDOW] = Slice(work->bytes, work->placement);
         }
     }
 };
@@ -62,7 +62,7 @@ double sample(const BuffetDescriptor* placement, size_t bytes, size_t threads) {
     for (auto& worker : workers) worker.join();
     const double seconds = std::chrono::duration<double>(Clock::now() - began).count();
     for (const auto& window : work.windows) {
-        for (const Chomp& claim : window) {
+        for (const Slice& claim : window) {
             require(claim.is_null() || claim.size_bytes() >= bytes, "A claim came back short.");
         }
     }
@@ -103,7 +103,7 @@ int main(int count, char** arguments) {
             require(std::from_chars(value.data(), value.data() + value.size(), repetitions).ec
                 == std::errc{} && repetitions > 0, "--repetitions takes a positive integer");
         }
-        const BuffetDescriptor* placement = Chomp::default_placement();
+        const BuffetDescriptor* placement = Slice::default_placement();
         LOG_INFO_STREAM << "Claim table: 1 GiB of claims per row, 64 live per thread, on " << placement->type_name_fn()
             << ", median of " << repetitions << " samples after one warmup"
             << ", allocation tracking on";

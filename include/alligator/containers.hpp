@@ -29,13 +29,13 @@
 #include <openssl/sha.h>
 
 namespace buffetalligator {
-class Chomp;
-/** --------------------------------------------------------------------------------------------------------- ChompMap
- * @class ChompMap
- * @brief Growing unique-key Michael hash table with sorted bucket chains and hazard-protected Chomp
+class Slice;
+/** --------------------------------------------------------------------------------------------------------- SliceMap
+ * @class SliceMap
+ * @brief Growing unique-key Michael hash table with sorted bucket chains and hazard-protected Slice
  * replacement.
  */
-class ChompMap {
+class SliceMap {
 private:
     struct State;
     std::atomic<State*> state_;
@@ -44,7 +44,7 @@ private:
     using Hook = void (*)(void*, void*, const size_t&);
     Hook publish_hook_ = nullptr;
     int64_t find_internal(int64_t identifier) const;
-    Chomp get_chomp_internal(int64_t identifier) const;
+    Slice get_slice_internal(int64_t identifier) const;
     void** pointer_view() const;
     void* payload_at(size_t index) const;
     int64_t identifier_at(size_t index) const;
@@ -60,35 +60,35 @@ public:
      * @brief Reserves an initial row hint without imposing a maximum key count.
      * @param capacity Initial row reservation and default wait expectation.
      */
-    explicit ChompMap(size_t capacity);
+    explicit SliceMap(size_t capacity);
     /** ------------------------------------------------------------------------------------------- Move only */
-    ChompMap(const ChompMap&) = delete;
-    ChompMap& operator=(const ChompMap&) = delete;
-    ChompMap(ChompMap&& other) noexcept;
-    ChompMap& operator=(ChompMap&& other) noexcept;
-    ~ChompMap();
-    /** ------------------------------------------------------------------------------------------- Add Chomp
-     * @brief Inserts a new key or replaces its Chomp at the existing stable position.
+    SliceMap(const SliceMap&) = delete;
+    SliceMap& operator=(const SliceMap&) = delete;
+    SliceMap(SliceMap&& other) noexcept;
+    SliceMap& operator=(SliceMap&& other) noexcept;
+    ~SliceMap();
+    /** ------------------------------------------------------------------------------------------- Add Slice
+     * @brief Inserts a new key or replaces its Slice at the existing stable position.
      * @param id Row identifier.
-     * @param chomp Owned payload transferred into the map.
+     * @param slice Owned payload transferred into the map.
      */
     template<typename ID>
         requires std::is_convertible_v<ID, int64_t>
-    void add_chomp(ID id, Chomp chomp) {
-        add_finalized(static_cast<int64_t>(id), std::move(chomp), nullptr);
+    void add_slice(ID id, Slice slice) {
+        add_finalized(static_cast<int64_t>(id), std::move(slice), nullptr);
     }
     /** ------------------------------------------------------------------------------------------- Merge
      * @brief Transfers a quiescent source into this map with source values replacing overlapping keys.
      * @param other Source map, emptied for reuse.
      * @return This map.
      */
-    ChompMap& merge(ChompMap& other);
+    SliceMap& merge(SliceMap& other);
     /** ------------------------------------------------------------------------------------------- Operator +
      * @brief Merges another map into this one using the + operator.
      * @param other Source map, emptied for reuse.
      * @return This map.
      */
-    ChompMap& operator+(ChompMap& other) { return merge(other); }
+    SliceMap& operator+(SliceMap& other) { return merge(other); }
     /** ------------------------------------------------------------------------------------------- Find
      * @brief Returns the key's stable position or -1 and pins the searched index on this thread
      * until its next lookup, so the located row outlives any reset or reclamation.
@@ -98,13 +98,13 @@ public:
     int64_t find(const ID& id) const {
         return find_internal(static_cast<int64_t>(id));
     }
-    /** ------------------------------------------------------------------------------------------- Get Chomp
+    /** ------------------------------------------------------------------------------------------- Get Slice
      * @brief Retains a payload inside its hazard window while insertions and replacements overlap.
      */
     template<typename ID>
         requires std::is_convertible_v<ID, int64_t>
-    Chomp get_chomp(ID id) {
-        return get_chomp_internal(static_cast<int64_t>(id));
+    Slice get_slice(ID id) {
+        return get_slice_internal(static_cast<int64_t>(id));
     }
     /** ------------------------------------------------------------------------------------------- Data
      * @brief Refreshes the cached contiguous pointer view while all map users are quiescent.
@@ -134,12 +134,12 @@ public:
      */
     template<typename T>
     const T* as(size_t index) const { return static_cast<const T*>(payload_at(index)); }
-    /** ------------------------------------------------------------------------------------------- Chomp At
+    /** ------------------------------------------------------------------------------------------- Slice At
      * @brief Retains a published position while payload replacements overlap.
-     * @param index The index of the slot to retrieve the chomp for.
-     * @return The chomp corresponding to the specified slot.
+     * @param index The index of the slot to retrieve the slice for.
+     * @return The slice corresponding to the specified slot.
      */
-    Chomp chomp_at(size_t index) const;
+    Slice slice_at(size_t index) const;
     /** ------------------------------------------------------------------------------------------- ID
      * @brief Reads a published position's immutable identifier before the next reset.
      * @tparam ID The type to which the identifier should be converted.
@@ -167,7 +167,7 @@ public:
     }
     /** ------------------------------------------------------------------------------------------- For Each
      * @brief Dispatches one hook-completed prefix concurrently and waits for every worker to finish.
-     * @param callback Receives protected callback-scoped Chomp copies in unspecified invocation order.
+     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
      * @param context Shared callback context whose concurrent accesses must be synchronized; the
      * workers hold it for the duration of the walk.
      * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking
@@ -175,19 +175,19 @@ public:
      * @throws Any callback exception after all dispatched workers have joined.
      */
     void for_each(
-        void (*callback)(int64_t id, Chomp* chomp, std::shared_ptr<void> context),
+        void (*callback)(int64_t id, Slice* slice, std::shared_ptr<void> context),
         std::shared_ptr<void> context,
         bool use_multithreading = false
     ) const;
     /** ------------------------------------------------------------------------------------------- For Each (borrowed)
      * @brief The same walk over a caller-owned context that outlives it; no ownership is taken.
-     * @param callback Receives protected callback-scoped Chomp copies in unspecified invocation order.
+     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
      * @param context Caller-owned context handed to every callback without a control block.
      * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking
      * the rows on the calling thread.
      */
     void for_each(
-        void (*callback)(int64_t id, Chomp* chomp, std::shared_ptr<void> context),
+        void (*callback)(int64_t id, Slice* slice, std::shared_ptr<void> context),
         void* context,
         bool use_multithreading = false
     ) const {
@@ -253,35 +253,35 @@ protected:
     /** ------------------------------------------------------------------------------------------- Add Finalized
      * @brief Transfers an object whose destructor runs when its row is safely reclaimed.
      * @param id The identifier for the row. Must be convertible to int64_t.
-     * @param chomp The chomp representing the object to be finalized.
+     * @param slice The slice representing the object to be finalized.
      * @param finalizer The function to be called to finalize the object.
      */
-    void add_finalized(const int64_t& id, Chomp&& chomp, Finalizer finalizer);
+    void add_finalized(const int64_t& id, Slice&& slice, Finalizer finalizer);
 };
-/** ----------------------------------------------------------------------------------------------- ChompMapT
- * @class ChompMapT
- * @brief Typed ChompMap entries constructed in place and finalized after safe replacement or removal.
+/** ----------------------------------------------------------------------------------------------- SliceMapT
+ * @class SliceMapT
+ * @brief Typed SliceMap entries constructed in place and finalized after safe replacement or removal.
  * @tparam T The payload type rows carry.
  */
 template<typename T>
-class ChompMapT final : public ChompMap {
+class SliceMapT final : public SliceMap {
 public:
     /** ------------------------------------------------------------------------------------------- Constructor with Capacity
      * @brief Reserves an initial row hint without limiting future growth.
      * @param capacity Initial reservation and default wait expectation.
      */
-    explicit ChompMapT(size_t capacity) : ChompMap(capacity) {}
+    explicit SliceMapT(size_t capacity) : SliceMap(capacity) {}
     /** ------------------------------------------------------------------------------------------- Move Only Semantics
      * @brief The payload slots hold live claims, so the set moves rather than copies.
      */
-    ChompMapT(const ChompMapT&) = delete;
-    ChompMapT& operator=(const ChompMapT&) = delete;
-    ChompMapT(ChompMapT&& other) noexcept = default;
-    ChompMapT& operator=(ChompMapT&& other) noexcept = default;
+    SliceMapT(const SliceMapT&) = delete;
+    SliceMapT& operator=(const SliceMapT&) = delete;
+    SliceMapT(SliceMapT&& other) noexcept = default;
+    SliceMapT& operator=(SliceMapT&& other) noexcept = default;
     /** ------------------------------------------------------------------------------------------- Emplace
      * @brief Constructs a typed row in place and publishes it under `id`, registering `~T()` as
      * the row's finalizer unless `T` is trivially destructible.
-     * Total atomic operations: the add_chomp protocol
+     * Total atomic operations: the add_slice protocol
      * Total branches: 0 (the finalizer choice resolves at compile time)
      * @param id The identifier for the row. Must be convertible to int64_t.
      * @param args Arguments forwarded to T's constructor.
@@ -289,10 +289,10 @@ public:
     template<typename ID, typename... Args>
         requires std::is_convertible_v<ID, int64_t>
     void emplace(ID id, Args&&... args) {
-        Chomp payload(sizeof(T));
+        Slice payload(sizeof(T));
         new (payload.data<void>()) T(std::forward<Args>(args)...);
         if constexpr (std::is_trivially_destructible_v<T>) {
-            add_chomp(id, std::move(payload));
+            add_slice(id, std::move(payload));
         } else {
             add_finalized(static_cast<int64_t>(id), std::move(payload), &finalize);
         }
@@ -303,10 +303,10 @@ public:
      * @return A reference to the payload.
      */
     T& as(size_t index) {
-        return *ChompMap::as<T>(index);
+        return *SliceMap::as<T>(index);
     }
     const T& as(size_t index) const {
-        return *ChompMap::as<T>(index);
+        return *SliceMap::as<T>(index);
     }
 private:
     /** ------------------------------------------------------------------------------------------- Finalize
@@ -317,78 +317,78 @@ private:
         static_cast<T*>(object)->~T();
     }
 };
-/** --------------------------------------------------------------------------------------------------------- WeakChomp
- * @class WeakChomp
+/** --------------------------------------------------------------------------------------------------------- WeakSlice
+ * @class WeakSlice
  * @brief A non-owning reference to an anonymous pointer.
  */
-class WeakChomp {
+class WeakSlice {
 private:
     /// @brief A std::span of bytes representing the memory block.
     std::span<std::byte> span_;
 public:
     /** ----------------------------------------------------------------------------------------- Valid
-     * @brief Checks if the WeakChomp is valid (non-empty).
-     * @return True if the WeakChomp is valid, false otherwise.
+     * @brief Checks if the WeakSlice is valid (non-empty).
+     * @return True if the WeakSlice is valid, false otherwise.
      */
     bool valid() const { return !span_.empty(); }
     /** ----------------------------------------------------------------------------------------- Conversion to bool
-     * @brief Converts the WeakChomp to a boolean value indicating its validity.
-     * @return True if the WeakChomp is valid, false otherwise.
+     * @brief Converts the WeakSlice to a boolean value indicating its validity.
+     * @return True if the WeakSlice is valid, false otherwise.
      */
     operator bool() const { return valid(); }
     /** ----------------------------------------------------------------------------------------- Null
-     * @brief Checks if the WeakChomp is null (empty).
-     * @return True if the WeakChomp is null, false otherwise.
+     * @brief Checks if the WeakSlice is null (empty).
+     * @return True if the WeakSlice is null, false otherwise.
      */
     bool is_null() const { return span_.empty(); }
     /** ----------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs a WeakChomp from a raw pointer and size.
+     * @brief Constructs a WeakSlice from a raw pointer and size.
      * @param ptr Pointer to the memory block.
      * @param size Size of the memory block in bytes.
      */
-    WeakChomp(void* ptr = nullptr, size_t size = 0)
+    WeakSlice(void* ptr = nullptr, size_t size = 0)
     : span_(static_cast<std::byte*>(ptr), size) {}
     /** ----------------------------------------------------------------------------------------- Constructor - Non-owning
-     * @brief Constructs a WeakChomp with a specified size, but throws an exception since it
+     * @brief Constructs a WeakSlice with a specified size, but throws an exception since it
      * cannot allocate memory.
      * @param size The size of the memory block in bytes.
      * @param unused A boolean parameter to differentiate this constructor.
      */
-    WeakChomp([[maybe_unused]] size_t size, bool) {
-        ALLIGATOR_THROW("WeakChomp: cannot allocate memory for non-owning chomp.");
+    WeakSlice([[maybe_unused]] size_t size, bool) {
+        ALLIGATOR_THROW("WeakSlice: cannot allocate memory for non-owning slice.");
     }
     /** ----------------------------------------------------------------------------------------- Constructor - Copy
-     * @brief Copy constructor for WeakChomp.
-     * @param other The WeakChomp object to copy from.
+     * @brief Copy constructor for WeakSlice.
+     * @param other The WeakSlice object to copy from.
      */
-    WeakChomp(const WeakChomp& other) : span_(other.span_) {}
+    WeakSlice(const WeakSlice& other) : span_(other.span_) {}
     /** ----------------------------------------------------------------------------------------- Operator= Copy
-     * @brief Copy assignment operator for WeakChomp.
-     * @param other The WeakChomp object to copy from.
-     * @return Reference to the current WeakChomp object.
+     * @brief Copy assignment operator for WeakSlice.
+     * @param other The WeakSlice object to copy from.
+     * @return Reference to the current WeakSlice object.
      */
-    WeakChomp& operator=(const WeakChomp& other) {
+    WeakSlice& operator=(const WeakSlice& other) {
         if (this != &other) span_ = other.span_;
         return *this;
     }
     /** ----------------------------------------------------------------------------------------- Constructor - Move
-     * @brief Move constructor for WeakChomp.
-     * @param other The WeakChomp object to move from.
+     * @brief Move constructor for WeakSlice.
+     * @param other The WeakSlice object to move from.
      */
-    WeakChomp(WeakChomp&& other) noexcept : span_(std::move(other.span_)) {}
+    WeakSlice(WeakSlice&& other) noexcept : span_(std::move(other.span_)) {}
     /** ----------------------------------------------------------------------------------------- Operator= Move
-     * @brief Move assignment operator for WeakChomp.
-     * @param other The WeakChomp object to move from.
-     * @return Reference to the current WeakChomp object.
+     * @brief Move assignment operator for WeakSlice.
+     * @param other The WeakSlice object to move from.
+     * @return Reference to the current WeakSlice object.
      */
-    WeakChomp& operator=(WeakChomp&& other) noexcept {
+    WeakSlice& operator=(WeakSlice&& other) noexcept {
         if (this != &other) span_ = std::move(other.span_);
         return *this;
     }
     /** ----------------------------------------------------------------------------------------- Destructor
-     * @brief Default destructor for WeakChomp.
+     * @brief Default destructor for WeakSlice.
      */
-    ~WeakChomp() = default;
+    ~WeakSlice() = default;
     /** ----------------------------------------------------------------------------------------- Placement
      * @brief Returns the placement of the memory block. Since this is a weak reference, we
      * don't know the actual placement.
@@ -428,45 +428,45 @@ public:
     size_t size_bytes() const {
         return span_.size();
     }
-    /** ----------------------------------------------------------------------------------------- Operator Chomp
-     * @brief Converts the WeakChomp to a Chomp object.
-     * @return A new Chomp object containing the memory from the WeakChomp.
+    /** ----------------------------------------------------------------------------------------- Operator Slice
+     * @brief Converts the WeakSlice to a Slice object.
+     * @return A new Slice object containing the memory from the WeakSlice.
      */
-    explicit operator Chomp() const {
-        return chomp();
+    explicit operator Slice() const {
+        return slice();
     }
-    /** ----------------------------------------------------------------------------------------- Chomp
-     * @brief Creates a new Chomp object representing a subrange of the memory block.
+    /** ----------------------------------------------------------------------------------------- Slice
+     * @brief Creates a new Slice object representing a subrange of the memory block.
      * @param offset The starting offset of the subrange.
      * @param size The size of the subrange in bytes.
-     * @return A new Chomp object containing the specified subrange.
+     * @return A new Slice object containing the specified subrange.
      */
-    Chomp chomp(size_t offset = 0, size_t size = SIZE_MAX) const {
+    Slice slice(size_t offset = 0, size_t size = SIZE_MAX) const {
         if (offset >= span_.size()) [[unlikely]] {
-            ALLIGATOR_THROW("WeakChomp::chomp(): offset out of bounds");
+            ALLIGATOR_THROW("WeakSlice::slice(): offset out of bounds");
         }
         if (size > span_.size() - offset) [[unlikely]] {
             size = span_.size() - offset;
         }
-        return Chomp(span_.data() + offset, size);
+        return Slice(span_.data() + offset, size);
     }
 };
-/** --------------------------------------------------------------------------------------------------------- ChompQueue
- * @class ChompQueue
- * @brief Unbounded multi-producer Chomp queue for one or two consumers. Each push is visible at
+/** --------------------------------------------------------------------------------------------------------- SliceQueue
+ * @class SliceQueue
+ * @brief Unbounded multi-producer Slice queue for one or two consumers. Each push is visible at
  * once; a consumer hands items one at a time to the single handler until the queue depth reaches
  * the high-water mark, then hands up to max_batch items at a time to the bulk handler.
  */
-class ChompQueue {
+class SliceQueue {
 public:
     /// @brief Receives one item while the depth is below the high-water mark.
-    using Single = void (*)(void* context, Chomp&& chomp);
+    using Single = void (*)(void* context, Slice&& slice);
     /// @brief Receives up to max_batch items once the depth reaches the high-water mark.
-    using Bulk = void (*)(void* context, std::span<Chomp> chomps);
+    using Bulk = void (*)(void* context, std::span<Slice> slices);
 private:
     struct Lane;
     struct State;
-    State* state_;  ///< Lanes, handlers, and wake state, defined in chompqueue.cpp.
+    State* state_;  ///< Lanes, handlers, and wake state, defined in slicequeue.cpp.
 public:
     /** ------------------------------------------------------------------------------------------- Producer
      * @brief Owns one producer lane; pushes publish immediately with no shared write.
@@ -476,7 +476,7 @@ public:
         Lane* lane_;  ///< This producer's segment chain.
         State* state_;  ///< Queue state for sleeping-consumer wakeups.
         Producer(Lane* lane, State* state) noexcept : lane_(lane), state_(state) {}
-        friend class ChompQueue;
+        friend class SliceQueue;
     public:
         Producer(const Producer&) = delete;
         Producer& operator=(const Producer&) = delete;
@@ -484,13 +484,13 @@ public:
         Producer& operator=(Producer&&) = delete;
         ~Producer();
         /** --------------------------------------------------------------------------------------- Push
-         * @brief Moves one Chomp into the lane and nulls the source.
+         * @brief Moves one Slice into the lane and nulls the source.
          */
-        void push(Chomp&& chomp);
+        void push(Slice&& slice);
         /** --------------------------------------------------------------------------------------- Push Bulk
-         * @brief Moves every Chomp in the span into the lane and nulls every source.
+         * @brief Moves every Slice in the span into the lane and nulls every source.
          */
-        void push(std::span<Chomp> chomps);
+        void push(std::span<Slice> slices);
     };
     /** ------------------------------------------------------------------------------------------- Consumer
      * @brief Owns one consumer index and runs the dispatch loop on its calling thread.
@@ -500,7 +500,7 @@ public:
         State* state_;  ///< Queue state.
         size_t index_;  ///< Consumer index, which staggers the lane scan.
         Consumer(State* state, size_t index) noexcept : state_(state), index_(index) {}
-        friend class ChompQueue;
+        friend class SliceQueue;
     public:
         Consumer(const Consumer&) = delete;
         Consumer& operator=(const Consumer&) = delete;
@@ -522,7 +522,7 @@ public:
      * @param single Handler for one item.
      * @param bulk Handler for a batch.
      */
-    ChompQueue(
+    SliceQueue(
         size_t producers,
         size_t consumers,
         size_t high_water,
@@ -530,14 +530,14 @@ public:
         Single single,
         Bulk bulk
     );
-    ChompQueue(const ChompQueue&) = delete;
-    ChompQueue& operator=(const ChompQueue&) = delete;
-    ChompQueue(ChompQueue&&) = delete;
-    ChompQueue& operator=(ChompQueue&&) = delete;
+    SliceQueue(const SliceQueue&) = delete;
+    SliceQueue& operator=(const SliceQueue&) = delete;
+    SliceQueue(SliceQueue&&) = delete;
+    SliceQueue& operator=(SliceQueue&&) = delete;
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Releases undelivered Chomps after every producer and consumer handle is gone.
+     * @brief Releases undelivered Slices after every producer and consumer handle is gone.
      */
-    ~ChompQueue();
+    ~SliceQueue();
     /** ------------------------------------------------------------------------------------------- Bind Producer
      * @brief Binds a producer index that no live handle holds.
      */
@@ -586,39 +586,12 @@ struct PriorityWords {
         return static_cast<uint32_t>(word);
     }
 };
-/** --------------------------------------------------------------------------------------------------------- ChompHandle
- * @struct ChompHandle
- * @brief Moves a Chomp's reference in and out of a bare pool index for containers that store ids.
- */
-struct ChompHandle {
-    ChompHandle() = delete;
-    /** ------------------------------------------------------------------------------------------- Detach
-     * @brief Takes a Chomp's pool index along with its reference, leaving the Chomp null.
-     * @param chomp The Chomp whose reference the container takes.
-     * @return The pool index.
-     */
-    static uint32_t detach(Chomp&& chomp) noexcept {
-        const uint32_t value = chomp.id_;
-        chomp.id_ = 0xFFFFFFFFu;
-        return value;
-    }
-    /** ------------------------------------------------------------------------------------------- Adopt
-     * @brief Wraps a pool index whose reference the container holds into an owning Chomp.
-     * @param value The pool index.
-     * @return The owning Chomp.
-     */
-    static Chomp adopt(uint32_t value) noexcept {
-        Chomp adopted;
-        adopted.id_ = value;
-        return adopted;
-    }
-};
-/** --------------------------------------------------------------------------------------------------------- PriorityChomp
- * @class PriorityChomp
- * @brief Lock-free bounded priority queue of packed key and value words living in one Chomp.
+/** --------------------------------------------------------------------------------------------------------- PrioritySlice
+ * @class PrioritySlice
+ * @brief Lock-free bounded priority queue of packed key and value words living in one Slice.
  *
  * Every entry is one 64-bit slot word holding 32 key bits in its high half and a 32-bit value in
- * its low half, so a Chomp's pool index or any other 32-bit handle rides along with its key.
+ * its low half, so a Slice's pool index or any other 32-bit handle rides along with its key.
  * Without a comparator the unsigned word order is the priority order, so the caller hands in
  * sortable key bits and ties resolve by value; with a comparator every scan hands it pointers to
  * copies of the two 4-byte keys. A push takes a free slot, or evicts the worst entry of its
@@ -632,7 +605,7 @@ struct ChompHandle {
  * relaxed under mixed load, where a pop landing between a push's scan and its CAS can let that
  * push keep a slightly worse entry.
  */
-class PriorityChomp : public PriorityWords {
+class PrioritySlice : public PriorityWords {
 public:
     /// @brief Header position storing the declared capacity before granule padding.
     static constexpr size_t CAPACITY_WORD = 7;
@@ -655,24 +628,24 @@ public:
      * @param novel_buffer Whether the storage is its own buffer rather than a slab claim.
      * @param placement The placement the storage is claimed from.
      */
-    explicit PriorityChomp(
+    explicit PrioritySlice(
         size_t capacity,
         Compare compare = nullptr,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = Chomp::default_placement()
+        const BuffetDescriptor* placement = Slice::default_placement()
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
      * @brief Reads capacity from CAPACITY_WORD and rebuilds caches over occupied and EMPTY words.
-     * @param storage The Chomp holding the header, the block caches, and the slot words.
+     * @param storage The Slice holding the header, the block caches, and the slot words.
      * @param compare The key order, or nullptr for the natural unsigned word order.
      */
-    explicit PriorityChomp(Chomp storage, Compare compare = nullptr);
+    explicit PrioritySlice(Slice storage, Compare compare = nullptr);
     /** ------------------------------------------------------------------------------------------- Move only */
-    PriorityChomp(const PriorityChomp&) = delete;
-    PriorityChomp& operator=(const PriorityChomp&) = delete;
-    PriorityChomp(PriorityChomp&& other) noexcept;
-    PriorityChomp& operator=(PriorityChomp&& other) noexcept;
-    ~PriorityChomp() = default;
+    PrioritySlice(const PrioritySlice&) = delete;
+    PrioritySlice& operator=(const PrioritySlice&) = delete;
+    PrioritySlice(PrioritySlice&& other) noexcept;
+    PrioritySlice& operator=(PrioritySlice&& other) noexcept;
+    ~PrioritySlice() = default;
     /** ------------------------------------------------------------------------------------------- Push
      * @brief Enters a word by taking a free slot or evicting the worst entry it beats, rejecting
      * without a scan whenever the queue is full and the word does not beat the cached threshold.
@@ -738,11 +711,11 @@ public:
      * @brief Another view of the header, block caches, and slot words, for kernels or transport.
      * @return A view sharing the storage.
      */
-    Chomp storage() const { return storage_.chomp(); }
+    Slice storage() const { return storage_.slice(); }
     /// @brief The slot words behind the header and block caches.
     const uint64_t* words() const noexcept { return words_; }
 private:
-    Chomp storage_;  ///< The header, the block caches, and the slot words.
+    Slice storage_;  ///< The header, the block caches, and the slot words.
     uint64_t* header_ = nullptr;  ///< Threshold word, free slot count, free slot hint.
     uint64_t* max_cache_ = nullptr;  ///< Per-block largest occupied word.
     uint64_t* min_cache_ = nullptr;  ///< Per-block smallest word, EMPTY for a block with none.
@@ -768,15 +741,15 @@ private:
     bool better(uint64_t word, uint64_t than) const noexcept;
     uint64_t worse_of(uint64_t left, uint64_t right) const noexcept;
 };
-/** --------------------------------------------------------------------------------------------------------- HeapChomp
- * @class HeapChomp
- * @brief Bounded min-max heap of packed key and value words living in one Chomp, for one owner.
+/** --------------------------------------------------------------------------------------------------------- HeapSlice
+ * @class HeapSlice
+ * @brief Bounded min-max heap of packed key and value words living in one Slice, for one owner.
  *
- * The same slot words as PriorityChomp, arranged as a min-max heap behind a 64-byte header
+ * The same slot words as PrioritySlice, arranged as a min-max heap behind a 64-byte header
  * holding the element count, so the best entry pops and the worst entry is evicted in
  * logarithmic time with no scans. It is not thread-safe: one owner mutates it at a time.
  */
-class HeapChomp : public PriorityWords {
+class HeapSlice : public PriorityWords {
 public:
     /// @brief Header position storing the declared capacity before granule padding.
     static constexpr size_t CAPACITY_WORD = 1;
@@ -792,24 +765,24 @@ public:
      * @param novel_buffer Whether the storage is its own buffer rather than a slab claim.
      * @param placement The placement the storage is claimed from.
      */
-    explicit HeapChomp(
+    explicit HeapSlice(
         size_t capacity,
         Compare compare = nullptr,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = Chomp::default_placement()
+        const BuffetDescriptor* placement = Slice::default_placement()
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
      * @brief Adopts a heap with count in word zero and capacity in CAPACITY_WORD.
-     * @param storage The Chomp holding the header and the heap positions.
+     * @param storage The Slice holding the header and the heap positions.
      * @param compare The key order, or nullptr for the natural unsigned word order.
      */
-    explicit HeapChomp(Chomp storage, Compare compare = nullptr);
+    explicit HeapSlice(Slice storage, Compare compare = nullptr);
     /** ------------------------------------------------------------------------------------------- Move only */
-    HeapChomp(const HeapChomp&) = delete;
-    HeapChomp& operator=(const HeapChomp&) = delete;
-    HeapChomp(HeapChomp&& other) noexcept;
-    HeapChomp& operator=(HeapChomp&& other) noexcept;
-    ~HeapChomp() = default;
+    HeapSlice(const HeapSlice&) = delete;
+    HeapSlice& operator=(const HeapSlice&) = delete;
+    HeapSlice(HeapSlice&& other) noexcept;
+    HeapSlice& operator=(HeapSlice&& other) noexcept;
+    ~HeapSlice() = default;
     /** ------------------------------------------------------------------------------------------- Push
      * @brief Enters a word, evicting the worst entry it beats once full.
      * @param word The packed entry.
@@ -873,11 +846,11 @@ public:
      * @brief Another view of the header and heap positions, for kernels or transport.
      * @return A view sharing the storage.
      */
-    Chomp storage() const { return storage_.chomp(); }
+    Slice storage() const { return storage_.slice(); }
     /// @brief The heap positions behind the header.
     const uint64_t* words() const noexcept { return words_; }
 private:
-    Chomp storage_;  ///< The header and the heap positions.
+    Slice storage_;  ///< The header and the heap positions.
     uint64_t* header_ = nullptr;  ///< The element count.
     uint64_t* words_ = nullptr;  ///< The heap positions.
     size_t capacity_ = 0;  ///< Position count.
@@ -886,10 +859,10 @@ private:
 /** --------------------------------------------------------------------------------------------------------- PriorityT
  * @class PriorityT
  * @brief Typed layer over a packed-word priority container: a key of at most 4 bytes and a
- * 4-byte value or an owned Chomp.
- * @tparam Queue PriorityChomp or HeapChomp.
+ * 4-byte value.
+ * @tparam Queue PrioritySlice or HeapSlice.
  * @tparam K The key type, trivially copyable and 1, 2 or 4 bytes wide.
- * @tparam V Chomp, whose reference the container owns, or any trivially copyable 4-byte type.
+ * @tparam V Any trivially copyable 4-byte type.
  * @tparam Order The three-way key order, or nullptr for ascending arithmetic order.
  */
 template<typename Queue, typename K, typename V, int (*Order)(const K*, const K*)>
@@ -898,10 +871,8 @@ class PriorityT final : public Queue {
         std::is_trivially_copyable_v<K> && (sizeof(K) == 1 || sizeof(K) == 2 || sizeof(K) == 4),
         "PriorityT keys must be trivially copyable and 1, 2 or 4 bytes wide"
     );
-    /// @brief Whether values are Chomps whose references the container owns.
-    static constexpr bool owns_chomps = std::is_same_v<V, Chomp>;
-    static_assert(owns_chomps || (std::is_trivially_copyable_v<V> && sizeof(V) == 4),
-        "PriorityT values must be Chomp or a trivially copyable 4-byte type");
+    static_assert(std::is_trivially_copyable_v<V> && sizeof(V) == 4,
+        "PriorityT values must be a trivially copyable 4-byte type");
     /// @brief The unsigned type as wide as K.
     using RawBits = std::conditional_t<sizeof(K) == 4, uint32_t,
         std::conditional_t<sizeof(K) == 2, uint16_t, uint8_t>>;
@@ -970,13 +941,13 @@ public:
     explicit PriorityT(
         size_t capacity,
         bool novel_buffer = false,
-        const BuffetDescriptor* placement = Chomp::default_placement()
+        const BuffetDescriptor* placement = Slice::default_placement()
     ) : Queue(capacity, erased(), novel_buffer, placement) {}
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
      * @brief Views existing storage laid out as the container expects.
-     * @param storage The Chomp holding the container.
+     * @param storage The Slice holding the container.
      */
-    explicit PriorityT(Chomp storage) : Queue(std::move(storage), erased()) {}
+    explicit PriorityT(Slice storage) : Queue(std::move(storage), erased()) {}
     /** ------------------------------------------------------------------------------------------- Move only */
     PriorityT(const PriorityT&) = delete;
     PriorityT& operator=(const PriorityT&) = delete;
@@ -987,14 +958,11 @@ public:
      * @return This container.
      */
     PriorityT& operator=(PriorityT&& other) noexcept {
-        if (this != &other) {
-            if constexpr (owns_chomps) clear();
-            Queue::operator=(std::move(other));
-        }
+        if (this != &other) Queue::operator=(std::move(other));
         return *this;
     }
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Releases every owned Chomp still held.
+     * @brief Clears the entries before the storage goes.
      */
     ~PriorityT() { clear(); }
     /** ------------------------------------------------------------------------------------------- Push
@@ -1003,25 +971,9 @@ public:
      * @param value The value.
      * @return True when the entry entered, false when the container was full of better entries.
      */
-    bool push(K key, V value) noexcept requires (!owns_chomps) {
+    bool push(K key, V value) noexcept {
         const uint64_t word = PriorityWords::pack(encode(key), std::bit_cast<uint32_t>(value));
         return Queue::push(word) != word;
-    }
-    /** ------------------------------------------------------------------------------------------- Push Chomp
-     * @brief Enters a key and takes the Chomp's reference, releasing whichever entry loses its
-     * place.
-     * @param key The key.
-     * @param value The Chomp the container takes ownership of.
-     * @return True when the entry entered, false when it was released as the worst.
-     */
-    bool push(K key, Chomp&& value) noexcept requires owns_chomps {
-        const uint32_t handle = ChompHandle::detach(std::move(value));
-        const uint64_t word = PriorityWords::pack(encode(key), handle);
-        const uint64_t displaced = Queue::push(word);
-        if (displaced != PriorityWords::EMPTY) {
-            ChompHandle::adopt(PriorityWords::value_of(displaced));
-        }
-        return displaced != word;
     }
     /** ------------------------------------------------------------------------------------------- Pop
      * @brief Removes the best entry into key and value, leaving both untouched when none is
@@ -1030,24 +982,11 @@ public:
      * @param value Receives the value.
      * @return True when an entry was removed.
      */
-    bool pop(K& key, V& value) noexcept requires (!owns_chomps) {
+    bool pop(K& key, V& value) noexcept {
         const uint64_t word = Queue::pop();
         if (word == PriorityWords::EMPTY) return false;
         key = decode(PriorityWords::key_of(word));
         value = std::bit_cast<V>(PriorityWords::value_of(word));
-        return true;
-    }
-    /** ------------------------------------------------------------------------------------------- Pop Chomp
-     * @brief Removes the best entry, handing its Chomp reference to the caller.
-     * @param key Receives the key.
-     * @param value Receives the owning Chomp.
-     * @return True when an entry was removed.
-     */
-    bool pop(K& key, Chomp& value) noexcept requires owns_chomps {
-        const uint64_t word = Queue::pop();
-        if (word == PriorityWords::EMPTY) return false;
-        key = decode(PriorityWords::key_of(word));
-        value = ChompHandle::adopt(PriorityWords::value_of(word));
         return true;
     }
     /** ------------------------------------------------------------------------------------------- Best
@@ -1056,7 +995,7 @@ public:
      * @param value Receives the value.
      * @return True when an entry was found.
      */
-    bool best(K& key, V& value) const noexcept requires (!owns_chomps) {
+    bool best(K& key, V& value) const noexcept {
         const uint64_t word = Queue::best();
         if (word == PriorityWords::EMPTY) return false;
         key = decode(PriorityWords::key_of(word));
@@ -1095,37 +1034,29 @@ public:
         return Queue::accepts(PriorityWords::pack(encode(key), PriorityWords::NULL_VALUE - 1));
     }
     /** ------------------------------------------------------------------------------------------- Clear
-     * @brief Removes every entry, releasing owned Chomps.
+     * @brief Removes every entry.
      */
-    void clear() noexcept {
-        if constexpr (owns_chomps) {
-            for (uint64_t word = Queue::pop(); word != PriorityWords::EMPTY; word = Queue::pop()) {
-                ChompHandle::adopt(PriorityWords::value_of(word));
-            }
-        } else {
-            Queue::clear();
-        }
-    }
+    void clear() noexcept { Queue::clear(); }
 };
-/// @brief Typed lock-free PriorityChomp.
+/// @brief Typed lock-free PrioritySlice.
 template<typename K, typename V, int (*Order)(const K*, const K*) = nullptr>
-using PriorityChompT = PriorityT<PriorityChomp, K, V, Order>;
-/// @brief Typed single-owner HeapChomp.
+using PrioritySliceT = PriorityT<PrioritySlice, K, V, Order>;
+/// @brief Typed single-owner HeapSlice.
 template<typename K, typename V, int (*Order)(const K*, const K*) = nullptr>
-using HeapChompT = PriorityT<HeapChomp, K, V, Order>;
+using HeapSliceT = PriorityT<HeapSlice, K, V, Order>;
 template<typename Key>
-class ChompCacheIterator;
+class SliceCacheIterator;
 template<typename Key = int64_t,
-    ChompCacheIterator<Key> (*Evict)(ChompCacheIterator<Key>, ChompCacheIterator<Key>) noexcept
+    SliceCacheIterator<Key> (*Evict)(SliceCacheIterator<Key>, SliceCacheIterator<Key>) noexcept
         = nullptr>
-class ChompCache;
-/** --------------------------------------------------------------------------------------------------------- Chomp Cache Iterator
- * @class ChompCacheIterator
- * @brief Borrows immutable key and Chomp pairs in most-to-least recently used order.
+class SliceCache;
+/** --------------------------------------------------------------------------------------------------------- Slice Cache Iterator
+ * @class SliceCacheIterator
+ * @brief Borrows immutable key and Slice pairs in most-to-least recently used order.
  * @tparam Key The cache key type.
  */
 template<typename Key>
-class ChompCacheIterator {
+class SliceCacheIterator {
 private:
     /** ------------------------------------------------------------------------------------------- Link
      * @brief Links entries in most-to-least recently used order.
@@ -1135,68 +1066,68 @@ private:
         mutable const Link* next = this;
     };
     /** ------------------------------------------------------------------------------------------- Entry
-     * @brief Holds one immutable key and its owned Chomp in a stable hash node.
+     * @brief Holds one immutable key and its owned Slice in a stable hash node.
      */
     struct Entry : Link {
         const size_t hash;
-        mutable std::pair<const Key, Chomp> value;
+        mutable std::pair<const Key, Slice> value;
         /** --------------------------------------------------------------------------------- Constructor
-         * @brief Copies the key and takes ownership of the Chomp.
+         * @brief Copies the key and takes ownership of the Slice.
          */
-        Entry(const Key& key, Chomp&& chomp)
-            : hash(std::hash<Key>{}(key)), value(key, std::move(chomp)) {}
+        Entry(const Key& key, Slice&& slice)
+            : hash(std::hash<Key>{}(key)), value(key, std::move(slice)) {}
     };
     const Link* entry_ = nullptr;
-    explicit ChompCacheIterator(const Link* entry) noexcept : entry_(entry) {}
+    explicit SliceCacheIterator(const Link* entry) noexcept : entry_(entry) {}
     template<typename CacheKey,
-        ChompCacheIterator<CacheKey> (*Select)(
-            ChompCacheIterator<CacheKey>, ChompCacheIterator<CacheKey>
+        SliceCacheIterator<CacheKey> (*Select)(
+            SliceCacheIterator<CacheKey>, SliceCacheIterator<CacheKey>
         ) noexcept>
-    friend class ChompCache;
+    friend class SliceCache;
 public:
     using iterator_category = std::bidirectional_iterator_tag;
-    using value_type = std::pair<const Key, Chomp>;
+    using value_type = std::pair<const Key, Slice>;
     using difference_type = std::ptrdiff_t;
     using pointer = const value_type*;
     using reference = const value_type&;
-    ChompCacheIterator() noexcept = default;
+    SliceCacheIterator() noexcept = default;
     reference operator*() const noexcept {
         return static_cast<const Entry*>(entry_)->value;
     }
     pointer operator->() const noexcept { return &operator*(); }
-    ChompCacheIterator& operator++() noexcept {
+    SliceCacheIterator& operator++() noexcept {
         entry_ = entry_->next;
         return *this;
     }
-    ChompCacheIterator operator++(int) noexcept {
-        ChompCacheIterator previous = *this;
+    SliceCacheIterator operator++(int) noexcept {
+        SliceCacheIterator previous = *this;
         ++*this;
         return previous;
     }
-    ChompCacheIterator& operator--() noexcept {
+    SliceCacheIterator& operator--() noexcept {
         entry_ = entry_->previous;
         return *this;
     }
-    ChompCacheIterator operator--(int) noexcept {
-        ChompCacheIterator previous = *this;
+    SliceCacheIterator operator--(int) noexcept {
+        SliceCacheIterator previous = *this;
         --*this;
         return previous;
     }
-    bool operator==(const ChompCacheIterator&) const noexcept = default;
+    bool operator==(const SliceCacheIterator&) const noexcept = default;
 };
-/** --------------------------------------------------------------------------------------------------------- ChompCache
- * @class ChompCache
- * @brief Owns Chomps within a byte budget with compile-time eviction for one mutating owner.
+/** --------------------------------------------------------------------------------------------------------- SliceCache
+ * @class SliceCache
+ * @brief Owns Slices within a byte budget with compile-time eviction for one mutating owner.
  * @tparam Key The copyable key type, supporting std::hash<Key> and equality.
  * @tparam Evict A noexcept selector returning an eligible iterator, or nullptr for LRU eviction.
  * @pre Evict returns within its nonempty [first, last) range without reentering the cache.
  */
 template<typename Key,
-    ChompCacheIterator<Key> (*Evict)(ChompCacheIterator<Key>, ChompCacheIterator<Key>) noexcept>
-class ChompCache {
+    SliceCacheIterator<Key> (*Evict)(SliceCacheIterator<Key>, SliceCacheIterator<Key>) noexcept>
+class SliceCache {
 private:
-    using Link = typename ChompCacheIterator<Key>::Link;
-    using Entry = typename ChompCacheIterator<Key>::Entry;
+    using Link = typename SliceCacheIterator<Key>::Link;
+    using Entry = typename SliceCacheIterator<Key>::Entry;
     /** ------------------------------------------------------------------------------------------- Identity
      * @brief Locates an owned node without invoking user key operations during eviction.
      */
@@ -1285,7 +1216,7 @@ private:
     /** ------------------------------------------------------------------------------------------- Take Order
      * @brief Reattaches transferred entries and empties the source order.
      */
-    void take_order(ChompCache& other) noexcept {
+    void take_order(SliceCache& other) noexcept {
         if (!map_.empty()) {
             order_.next = other.order_.next;
             order_.previous = other.order_.previous;
@@ -1295,21 +1226,21 @@ private:
         other.order_.next = other.order_.previous = &other.order_;
     }
 public:
-    using const_iterator = ChompCacheIterator<Key>;
+    using const_iterator = SliceCacheIterator<Key>;
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Creates an empty cache with a byte budget.
-     * @param max_bytes The total Chomp bytes kept before eviction begins.
+     * @param max_bytes The total Slice bytes kept before eviction begins.
      */
-    explicit ChompCache(size_t max_bytes) : capacity_(max_bytes) {}
+    explicit SliceCache(size_t max_bytes) : capacity_(max_bytes) {}
     /** ------------------------------------------------------------------------------------------- Move only */
-    ChompCache(const ChompCache&) = delete;
-    ChompCache& operator=(const ChompCache&) = delete;
-    ChompCache(ChompCache&& other) noexcept
+    SliceCache(const SliceCache&) = delete;
+    SliceCache& operator=(const SliceCache&) = delete;
+    SliceCache(SliceCache&& other) noexcept
         : map_(std::move(other.map_)), bytes_(std::exchange(other.bytes_, 0)),
           capacity_(std::exchange(other.capacity_, 0)) {
         take_order(other);
     }
-    ChompCache& operator=(ChompCache&& other) noexcept {
+    SliceCache& operator=(SliceCache&& other) noexcept {
         if (this != &other) {
             clear();
             map_ = std::move(other.map_);
@@ -1320,11 +1251,11 @@ public:
         return *this;
     }
     /** ------------------------------------------------------------------------------------------- Set
-     * @brief Stores and protects a Chomp while evicting policy-selected entries to meet the budget.
+     * @brief Stores and protects a Slice while evicting policy-selected entries to meet the budget.
      * @param key The key.
-     * @param value The owned Chomp, kept alone when larger than the budget.
+     * @param value The owned Slice, kept alone when larger than the budget.
      */
-    void set(const Key& key, Chomp&& value) {
+    void set(const Key& key, Slice&& value) {
         const size_t weight = value.size_bytes();
         auto found = map_.find(key);
         if (found == map_.end()) {
@@ -1342,39 +1273,39 @@ public:
         bytes_ += weight;
     }
     /** ------------------------------------------------------------------------------------------- Get
-     * @brief Borrows a key's Chomp and marks it most recently used.
+     * @brief Borrows a key's Slice and marks it most recently used.
      * @param key The key.
-     * @return The cached Chomp, valid until it is evicted or erased, or nullptr when absent.
+     * @return The cached Slice, valid until it is evicted or erased, or nullptr when absent.
      */
-    const Chomp* get(const Key& key) {
+    const Slice* get(const Key& key) {
         const auto found = map_.find(key);
         if (found == map_.end()) return nullptr;
         promote(*found);
         return &found->value.second;
     }
     /** ------------------------------------------------------------------------------------------- Peek
-     * @brief Borrows a key's Chomp without touching its recency.
+     * @brief Borrows a key's Slice without touching its recency.
      * @param key The key.
-     * @return The cached Chomp, or nullptr when absent.
+     * @return The cached Slice, or nullptr when absent.
      */
-    const Chomp* peek(const Key& key) const {
+    const Slice* peek(const Key& key) const {
         const auto found = map_.find(key);
         return found == map_.end() ? nullptr : &found->value.second;
     }
     /** ------------------------------------------------------------------------------------------- View
-     * @brief Returns an owning view of a key's Chomp that outlives eviction, marking it most
+     * @brief Returns an owning view of a key's Slice that outlives eviction, marking it most
      * recently used.
      * @param key The key.
-     * @return A view sharing the Chomp, or a null Chomp when absent.
+     * @return A view sharing the Slice, or a null Slice when absent.
      */
-    Chomp view(const Key& key) {
-        const Chomp* found = get(key);
-        return found == nullptr ? Chomp() : found->chomp();
+    Slice view(const Key& key) {
+        const Slice* found = get(key);
+        return found == nullptr ? Slice() : found->slice();
     }
     /// @brief Whether a key is cached.
     bool exists(const Key& key) const { return map_.find(key) != map_.end(); }
     /** ------------------------------------------------------------------------------------------- Erase
-     * @brief Drops a key and releases its Chomp.
+     * @brief Drops a key and releases its Slice.
      * @param key The key.
      */
     void erase(const Key& key) {
@@ -1385,7 +1316,7 @@ public:
     size_t size() const { return map_.size(); }
     /// @brief Whether no entry is cached.
     bool empty() const { return map_.empty(); }
-    /// @brief The bytes the cached Chomps weigh.
+    /// @brief The bytes the cached Slices weigh.
     size_t bytes() const { return bytes_; }
     /// @brief The byte budget.
     size_t capacity() const { return capacity_; }
@@ -1397,7 +1328,7 @@ public:
         capacity_ = max_bytes;
         while (bytes_ > capacity_) evict(order_.next);
     }
-    /// @brief Releases every Chomp.
+    /// @brief Releases every Slice.
     void clear() {
         map_.clear();
         order_.next = order_.previous = &order_;
@@ -1408,31 +1339,31 @@ public:
     /// @brief The end of the iteration.
     const_iterator end() const { return const_iterator(&order_); }
 };
-/** --------------------------------------------------------------------------------------------------------- ChompChannel
- * @class ChompChannel
- * @brief Exchanges Chomps across the network through listeners, one-shot sends, and replies.
+/** --------------------------------------------------------------------------------------------------------- SliceChannel
+ * @class SliceChannel
+ * @brief Exchanges Slices across the network through listeners, one-shot sends, and replies.
  */
-class ChompChannel {
+class SliceChannel {
 public:
     enum class Protocol : uint8_t {
         TCP, UDP, RDMA, EncryptedTCP = 128, EncryptedUDP, EncryptedRDMA
     };
-    ChompChannel() = delete;
+    SliceChannel() = delete;
     /** ------------------------------------------------------------------------------------------- Listen
-     * @brief Starts receiving Chomps on a port and protocol, invoking recv on the channel thread.
+     * @brief Starts receiving Slices on a port and protocol, invoking recv on the channel thread.
      */
-    static void listen(uint16_t port, Protocol protocol, void (*recv)(Chomp));
+    static void listen(uint16_t port, Protocol protocol, void (*recv)(Slice));
     /** ------------------------------------------------------------------------------------------- Close
      * @brief Closes the listener and pending exchanges for a port and protocol.
      */
     static void close(uint16_t port, Protocol protocol);
     /** ------------------------------------------------------------------------------------------- Send
-     * @brief Sends a Chomp, using an empty address inside recv to reply to its sender.
-     * @param resp Receives the peer's reply or a null Chomp on transport failure.
+     * @brief Sends a Slice, using an empty address inside recv to reply to its sender.
+     * @param resp Receives the peer's reply or a null Slice on transport failure.
      */
     static void send(
-        Chomp chomp, std::string address, uint16_t port, Protocol protocol,
-        void (*resp)(Chomp) = nullptr
+        Slice slice, std::string address, uint16_t port, Protocol protocol,
+        void (*resp)(Slice) = nullptr
     );
 };
 struct EncryptionKey;

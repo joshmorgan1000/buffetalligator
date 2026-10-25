@@ -2,7 +2,7 @@
 /** --------------------------------------------------------------------------------------------------------- EasyMmap
  * @file easymmap.hpp
  * @brief The mmap scratch-file buffet type: zero-filled MAP_SHARED mappings of unlinked files in a
- * caller-chosen directory, for disk- or RAM-filesystem-backed Chomps.
+ * caller-chosen directory, for disk- or RAM-filesystem-backed Slices.
  */
 #include <alligator.hpp>
 #include <cstddef>
@@ -84,22 +84,22 @@ public:
      */
     static const BuffetDescriptor* register_type(const std::string& directory);
     /** ------------------------------------------------------------------------------------------- Flush
-     * @brief Synchronously writes a Chomp's page-aligned mapped range back to its scratch file.
-     * @param chomp A Chomp claimed from this type.
+     * @brief Synchronously writes a Slice's page-aligned mapped range back to its scratch file.
+     * @param slice A Slice claimed from this type.
      */
-    static void flush(const Chomp& chomp);
+    static void flush(const Slice& slice);
     /** ------------------------------------------------------------------------------------------- File Descriptor
-     * @brief The borrowed descriptor of the scratch file behind a Chomp.
-     * @param chomp A Chomp claimed from this type.
-     * @return The descriptor, valid while the Chomp lives.
+     * @brief The borrowed descriptor of the scratch file behind a Slice.
+     * @param slice A Slice claimed from this type.
+     * @return The descriptor, valid while the Slice lives.
      */
-    static int file_descriptor(const Chomp& chomp);
+    static int file_descriptor(const Slice& slice);
     /** ------------------------------------------------------------------------------------------- File Offset
-     * @brief A Chomp's byte offset within its scratch file, including sub-chomp offsets.
-     * @param chomp A Chomp claimed from this type.
+     * @brief A Slice's byte offset within its scratch file, including sub-slice offsets.
+     * @param slice A Slice claimed from this type.
      * @return The byte offset.
      */
-    static uint64_t file_offset(const Chomp& chomp);
+    static uint64_t file_offset(const Slice& slice);
 };
 static_assert(IsABuffetType<MmapBuffet>, "MmapBuffet must satisfy IsABuffetType");
 } // namespace buffetalligator

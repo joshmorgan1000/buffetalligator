@@ -17,8 +17,8 @@ using functional::require;
 /** --------------------------------------------------------------------------------------------------------- Payload
  * @brief Creates an owned payload tagged with its expected row value.
  */
-static Chomp payload(uint64_t value) {
-    Chomp bytes(sizeof(value));
+static Slice payload(uint64_t value) {
+    Slice bytes(sizeof(value));
     bytes.get_as<uint64_t>() = value;
     return bytes;
 }
@@ -29,14 +29,14 @@ static void rows() {
     constexpr std::array<int64_t, 11> identifiers{
         0, 7, 8, 15, 16, 31, -2, INT64_MAX, UINT32_MAX, -1, INT64_MIN
     };
-    ChompMap map(identifiers.size());
-    require(map.size() == 0 && map.find(99) == -1 && map.get_chomp(99).is_null(),
+    SliceMap map(identifiers.size());
+    require(map.size() == 0 && map.find(99) == -1 && map.get_slice(99).is_null(),
         "empty map lookup did not miss");
     require(!map.published(0) && map.id<int64_t>(0) == -1 && map.as<uint64_t>(0) == nullptr
         && map.data<uint64_t>()[0] == nullptr, "unpublished position lost its empty views");
     for (size_t slot = 0; slot < identifiers.size(); ++slot) {
         require(map.size() == slot, "append changed the entry count unexpectedly");
-        map.add_chomp(identifiers[slot], payload(slot + 100));
+        map.add_slice(identifiers[slot], payload(slot + 100));
     }
     for (size_t slot = 0; slot < identifiers.size(); ++slot) {
         require(map.find(identifiers[slot]) == static_cast<int64_t>(slot), "ID lookup found wrong slot");
@@ -45,36 +45,36 @@ static void rows() {
         require(*map.as<uint64_t>(slot) == slot + 100 && *map.data<uint64_t>()[slot] == slot + 100,
             "map raw payload view differs");
     }
-    Chomp retained = map.chomp_at(0);
-    ChompMap moved(std::move(map));
+    Slice retained = map.slice_at(0);
+    SliceMap moved(std::move(map));
     require(map.size() == 0 && map.capacity() == 0 && map.wait_threshold() == 0,
         "move retained source ownership or wait expectation");
-    require(moved.get_chomp(identifiers.back()).get_as<uint64_t>() == 110, "move lost a row");
+    require(moved.get_slice(identifiers.back()).get_as<uint64_t>() == 110, "move lost a row");
     moved.reset();
     require(moved.size() == 0 && moved.find(0) == -1 && retained.get_as<uint64_t>() == 100,
         "reset lost shared storage or retained a row");
-    moved.add_chomp(55, payload(77));
-    require(moved.size() == 1 && moved.get_chomp(55).get_as<uint64_t>() == 77,
+    moved.add_slice(55, payload(77));
+    require(moved.size() == 1 && moved.get_slice(55).get_as<uint64_t>() == 77,
         "reset did not permit reuse");
 }
 /** --------------------------------------------------------------------------------------------------------- Merge
  * @brief Checks partially filled merges transfer owned entries and leave capacity for later inserts.
  */
 static void merge() {
-    ChompMap source(8), destination(4);
-    source.add_chomp(20, payload(200));
-    source.add_chomp(30, payload(300));
-    destination.add_chomp(10, payload(100));
+    SliceMap source(8), destination(4);
+    source.add_slice(20, payload(200));
+    source.add_slice(30, payload(300));
+    destination.add_slice(10, payload(100));
     destination.merge(source);
-    destination.add_chomp(40, payload(400));
+    destination.add_slice(40, payload(400));
     require(source.size() == 0 && source.find(20) == -1, "merge did not drain source");
     for (uint64_t value = 1; value <= 4; ++value) {
-        Chomp found = destination.get_chomp(value * 10);
+        Slice found = destination.get_slice(value * 10);
         require(found && found.get_as<uint64_t>() == value * 100,
             "partial merge lost a row or consumed unused source capacity");
     }
-    source.add_chomp(50, payload(500));
-    require(source.get_chomp(50).get_as<uint64_t>() == 500, "drained source could not be reused");
+    source.add_slice(50, payload(500));
+    require(source.get_slice(50).get_as<uint64_t>() == 500, "drained source could not be reused");
 }
 /** --------------------------------------------------------------------------------------------------------- Lifetime
  * @brief Checks typed row destructors run once after transfer, reset, and map destruction.
@@ -82,7 +82,7 @@ static void merge() {
 static void lifetime() {
     std::weak_ptr<int> first, second;
     {
-        ChompMapT<std::shared_ptr<int>> source(2), destination(2);
+        SliceMapT<std::shared_ptr<int>> source(2), destination(2);
         auto object = std::make_shared<int>(17);
         first = object;
         source.emplace(1, std::move(object));
@@ -101,26 +101,26 @@ static void lifetime() {
  * @brief Checks empty containers, null payloads, stable replacement, and move-assignment ownership.
  */
 static void container_boundaries() {
-    ChompMap empty(0), another_empty(0);
+    SliceMap empty(0), another_empty(0);
     require(empty.size() == 0 && empty.find(1) == -1, "zero-capacity map did not remain empty");
     empty.merge(another_empty);
     empty.reset();
-    ChompMap values(3);
-    values.add_chomp(10, Chomp());
-    values.add_chomp(20, payload(21));
-    values.add_chomp(20, payload(22));
-    require(values.find(10) == 0 && values.get_chomp(10).is_null(), "null entry lost its identity");
+    SliceMap values(3);
+    values.add_slice(10, Slice());
+    values.add_slice(20, payload(21));
+    values.add_slice(20, payload(22));
+    require(values.find(10) == 0 && values.get_slice(10).is_null(), "null entry lost its identity");
     require(values.size() == 2 && values.find(20) == 1
-        && values.get_chomp(20).get_as<uint64_t>() == 22,
+        && values.get_slice(20).get_as<uint64_t>() == 22,
         "duplicate replacement changed position, count, or value");
     std::weak_ptr<int> released;
-    ChompMapT<std::shared_ptr<int>> destination(1);
+    SliceMapT<std::shared_ptr<int>> destination(1);
     auto object = std::make_shared<int>(9);
     released = object;
     destination.emplace(9, std::move(object));
-    static_cast<ChompMap&>(destination) = std::move(values);
+    static_cast<SliceMap&>(destination) = std::move(values);
     require(released.expired() && values.size() == 0, "move assignment lost ownership cleanup");
-    require(destination.get_chomp(20).get_as<uint64_t>() == 22, "move assignment lost entries");
+    require(destination.get_slice(20).get_as<uint64_t>() == 22, "move assignment lost entries");
     destination.reset();
     destination.reset();
     require(destination.size() == 0, "repeated reset changed empty ownership");
@@ -130,7 +130,7 @@ static void container_boundaries() {
  */
 static void concurrent_map() {
     constexpr size_t workers = 8, rows_per_worker = 137, total = workers * rows_per_worker;
-    ChompMap map(total);
+    SliceMap map(total);
     std::barrier phase(static_cast<std::ptrdiff_t>(workers));
     std::vector<std::thread> team;
     for (size_t worker = 0; worker < workers; ++worker) {
@@ -138,12 +138,12 @@ static void concurrent_map() {
             phase.arrive_and_wait();
             for (size_t row = 0; row < rows_per_worker; ++row) {
                 const uint64_t identifier = worker * rows_per_worker + row;
-                map.add_chomp(identifier, payload(identifier));
+                map.add_slice(identifier, payload(identifier));
             }
             phase.arrive_and_wait();
             for (size_t row = 0; row < rows_per_worker; ++row) {
                 const uint64_t identifier = ((worker + 1) % workers) * rows_per_worker + row;
-                Chomp found = map.get_chomp(identifier);
+                Slice found = map.get_slice(identifier);
                 require(found && found.get_as<uint64_t>() == identifier,
                     "caller-synchronized map lookup lost another worker's entry");
             }
@@ -152,28 +152,28 @@ static void concurrent_map() {
     for (auto& worker : team) worker.join();
     require(map.size() == total, "concurrent appends lost an entry");
     for (uint64_t identifier = 0; identifier < total; ++identifier) {
-        Chomp found = map.get_chomp(identifier);
+        Slice found = map.get_slice(identifier);
         require(found && found.get_as<uint64_t>() == identifier, "map payload differs");
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Shared Ownership
- * @brief Checks retained Chomp handles keep payloads alive while the caller resets and reuses a map.
+ * @brief Checks retained Slice handles keep payloads alive while the caller resets and reuses a map.
  */
 static void shared_ownership() {
     constexpr size_t workers = 8, rounds = 40;
-    ChompMap map(workers);
+    SliceMap map(workers);
     std::barrier phase(static_cast<std::ptrdiff_t>(workers + 1));
     std::vector<std::thread> team;
     for (size_t worker = 0; worker < workers; ++worker) {
         team.emplace_back([&, worker] {
             for (size_t round = 0; round < rounds; ++round) {
                 phase.arrive_and_wait();
-                Chomp retained = map.get_chomp(worker);
+                Slice retained = map.get_slice(worker);
                 require(retained.is_novel(), "sharing a dedicated allocation changed its backing kind");
                 phase.arrive_and_wait();
                 phase.arrive_and_wait();
                 require(retained.get_as<uint64_t>() == round * workers + worker,
-                    "map reset invalidated memory still owned by another Chomp");
+                    "map reset invalidated memory still owned by another Slice");
                 phase.arrive_and_wait();
             }
         });
@@ -181,15 +181,15 @@ static void shared_ownership() {
     for (size_t round = 0; round < rounds; ++round) {
         map.reset();
         for (size_t worker = 0; worker < workers; ++worker) {
-            Chomp memory(sizeof(uint64_t), true);
+            Slice memory(sizeof(uint64_t), true);
             memory.get_as<uint64_t>() = round * workers + worker;
-            map.add_chomp(worker, std::move(memory));
+            map.add_slice(worker, std::move(memory));
         }
         phase.arrive_and_wait();
         phase.arrive_and_wait();
         map.reset();
         for (size_t worker = 0; worker < workers; ++worker) {
-            map.add_chomp(worker, payload(UINT64_MAX));
+            map.add_slice(worker, payload(UINT64_MAX));
         }
         phase.arrive_and_wait();
         phase.arrive_and_wait();
@@ -204,30 +204,30 @@ static void shared_ownership() {
  */
 struct alignas(64) PipelinePayload { uint64_t data; };
 struct PipelineStage {
-    ChompMapT<uint64_t>* results;
+    SliceMapT<uint64_t>* results;
     AtomicContainer* completed;
-    static void single(void* context, Chomp&& received) {
+    static void single(void* context, Slice&& received) {
         PipelineStage& stage = *static_cast<PipelineStage*>(context);
-        ChompT<PipelinePayload> typed(std::move(received));
+        SliceT<PipelinePayload> typed(std::move(received));
         const uint64_t value = typed.get_as().data;
         stage.results->emplace(value, value * value);
         stage.completed->fetch_add<uint64_t>(1, std::memory_order_relaxed);
     }
-    static void bulk(void* context, std::span<Chomp> received) {
-        for (Chomp& chomp : received) single(context, std::move(chomp));
+    static void bulk(void* context, std::span<Slice> received) {
+        for (Slice& slice : received) single(context, std::move(slice));
     }
-    static void consume(ChompQueue* queue, PipelineStage* stage) {
+    static void consume(SliceQueue* queue, PipelineStage* stage) {
         auto input = queue->consumer(0);
         input.run(stage);
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Pipeline
- * @brief Sends borrowed input through owned chomps and the queue into a typed result map.
+ * @brief Sends borrowed input through owned slices and the queue into a typed result map.
  */
 static void pipeline() {
     constexpr size_t count = 1027;
-    ChompQueue queue(1, 1, 256, 64, &PipelineStage::single, &PipelineStage::bulk);
-    ChompMapT<uint64_t> results(count);
+    SliceQueue queue(1, 1, 256, 64, &PipelineStage::single, &PipelineStage::bulk);
+    SliceMapT<uint64_t> results(count);
     AtomicRegistry registry;
     PipelineStage stage{&results, registry.create("completed", uint64_t(0))};
     std::thread consumer(&PipelineStage::consume, &queue, &stage);
@@ -235,15 +235,15 @@ static void pipeline() {
         auto output = queue.producer(0);
         for (uint64_t value = 0; value < count; ++value) {
             PipelinePayload payload{value};
-            WeakChomp input(&payload, sizeof(payload));
-            output.push(static_cast<Chomp>(input));
+            WeakSlice input(&payload, sizeof(payload));
+            output.push(static_cast<Slice>(input));
         }
     }
     queue.close();
     consumer.join();
     require(stage.completed->load<uint64_t>() == count, "pipeline lost a message");
     for (uint64_t value = 0; value < count; ++value) {
-        Chomp found = results.get_chomp(value);
+        Slice found = results.get_slice(value);
         require(found && found.get_as<uint64_t>() == value * value,
             "pipeline output differs from its input transformation");
     }

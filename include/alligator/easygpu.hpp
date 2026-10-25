@@ -19,7 +19,7 @@ EXCEPTION_CLASS(GPU)
 #define ALLIGATOR_GPU_THROW(msg) throw GPUException(msg)
 /** --------------------------------------------------------------------------------------------------------- GPU Backend
  * @enum GPUBackend
- * @brief The compute domain a process freezes on at its first Chomp or GPU operation.
+ * @brief The compute domain a process freezes on at its first Slice or GPU operation.
  */
 enum class GPUBackend { CPU, Vulkan, Metal, CUDA };
 /** --------------------------------------------------------------------------------------------------------- Device Memory Usage
@@ -173,28 +173,28 @@ public:
      */
     ~Shader();
     /** ------------------------------------------------------------------------------------------- Operator()
-     * @brief Dispatches one workgroup row per Chomp id in a list, as the list is; row Y resolves its own id.
-     * @param chomps The Chomp holding the ids, alive until the dispatch retires.
-     * @param count Number of ids in the list.
+     * @brief Dispatches one workgroup row per Slice in a list, as the list is; row Y resolves its own Slice.
+     * @param slices The Slice holding the Slices, alive until the dispatch retires.
+     * @param count Number of Slices in the list.
      * @param done Completion callback invoked once the work is finished.
      * @param context Caller context kept alive through callback return.
      * @return A ShaderResult representing the asynchronous operation.
      */
     ShaderResult operator()(
-        const Chomp& chomps,
+        const Slice& slices,
         size_t count,
         void (*done)(std::shared_ptr<void>) = nullptr,
         std::shared_ptr<void> context = nullptr
     ) const;
     /** ------------------------------------------------------------------------------------------- Operator()
-     * @brief Dispatches one workgroup row whose Chomp is the one given.
-     * @param chomp The Chomp, alive until the dispatch retires.
+     * @brief Dispatches one workgroup row whose Slice is the one given.
+     * @param slice The Slice, alive until the dispatch retires.
      * @param done Completion callback invoked once the work is finished.
      * @param context Caller context kept alive through callback return.
      * @return A ShaderResult representing the asynchronous operation.
      */
     ShaderResult operator()(
-        const Chomp& chomp,
+        const Slice& slice,
         void (*done)(std::shared_ptr<void>) = nullptr,
         std::shared_ptr<void> context = nullptr
     ) const;
@@ -206,7 +206,7 @@ public:
  */
 struct GPU {
     /** ------------------------------------------------------------------------------------------- Select
-     * @brief Chooses the backend the process freezes on; call it before the first Chomp or GPU
+     * @brief Chooses the backend the process freezes on; call it before the first Slice or GPU
      * operation, since a different choice after the freeze throws and a set ALLIGATOR_GPU_BACKEND
      * other than auto overrides it.
      * @param backend The backend to freeze on.

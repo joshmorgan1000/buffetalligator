@@ -20,7 +20,7 @@ void MemoryPressure::configure(
     HostMemoryUsage (*query)()
 ) {
     MemoryPressure& policy = instance();
-    if (policy.started_) ALLIGATOR_THROW("Enable mmap spillover before creating the first Chomp");
+    if (policy.started_) ALLIGATOR_THROW("Enable mmap spillover before creating the first Slice");
     if (policy.mapped_) ALLIGATOR_THROW("Mmap spillover is already enabled");
     if (!mapped) ALLIGATOR_THROW("Register the mmap scratch directory before enabling spillover");
     if (resume_bytes <= reserve_bytes) {

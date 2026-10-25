@@ -35,7 +35,7 @@ using buffetalligator::AlignedHeapBuffer;
 using buffetalligator::BuffetDescriptors;
 using kitchen_dispatch::Order;
 using namespace kitchen_dispatch;
-using buffetalligator::Chomp;
+using buffetalligator::Slice;
 using Clock = std::chrono::steady_clock;
 constexpr size_t block_bytes = 64 * 1024;
 constexpr size_t file_bytes = 64 * 1024 * 1024;
@@ -146,15 +146,15 @@ public:
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Host Buffer
- * @brief Uses the same explicit novel aligned host Chomp constructor on both installed APIs.
+ * @brief Uses the same explicit novel aligned host Slice constructor on both installed APIs.
  */
-Chomp host_buffer() {
-    return Chomp(block_bytes, true, BuffetDescriptors::get(AlignedHeapBuffer::type_idx()));
+Slice host_buffer() {
+    return Slice(block_bytes, true, BuffetDescriptors::get(AlignedHeapBuffer::type_idx()));
 }
 /** --------------------------------------------------------------------------------------------------------- Mark
  * @brief Identifies both ends of an otherwise constant deterministic file block.
  */
-void mark(Chomp& block, size_t identifier) {
+void mark(Slice& block, size_t identifier) {
     block.data<uint64_t>()[0] = identifier;
     block.data<uint64_t>()[block_bytes / sizeof(uint64_t) - 1] =
         static_cast<uint64_t>(identifier) ^ UINT64_C(0xd19a735ec8042fb6);
@@ -173,7 +173,7 @@ public:
         try {
             if (unlink(path.c_str()) != 0)
                 throw std::system_error(errno, std::generic_category(), "Unlinking file");
-            Chomp block = host_buffer();
+            Slice block = host_buffer();
             std::fill_n(block.data<unsigned char>(), block_bytes, 0xa5);
             for (size_t offset = 0; offset < file_bytes; offset += block_bytes) {
                 mark(block, offset / block_bytes);
@@ -202,11 +202,11 @@ struct Result {
     size_t identifier = SIZE_MAX;
 };
 /** --------------------------------------------------------------------------------------------------------- Request
- * @brief Gives identical callback code a shared Chomp and a completion state it can retain independently.
+ * @brief Gives identical callback code a shared Slice and a completion state it can retain independently.
  */
 struct Request {
     Result* result;
-    Chomp buffer;
+    Slice buffer;
     std::promise<void> completed;
     Clock::time_point submitted;
     size_t identifier;
@@ -219,7 +219,7 @@ struct Request {
         const auto entered = Clock::now();
         auto& request = *static_cast<Request*>(context);
         Result* result = request.result;
-        Chomp buffer = std::move(request.buffer);
+        Slice buffer = std::move(request.buffer);
         std::promise<void> completed = std::move(request.completed);
         const auto submitted = request.submitted;
         const size_t identifier = request.identifier;
@@ -244,8 +244,8 @@ struct Request {
  * @brief Keeps one request outstanding with reusable buffers and disjoint latency output slots.
  */
 struct Lane {
-    Chomp buffer = host_buffer();
-    Chomp expected = host_buffer();
+    Slice buffer = host_buffer();
+    Slice expected = host_buffer();
     Result result;
     std::exception_ptr error;
     size_t completed = 0;
@@ -385,7 +385,7 @@ int run(const Options& options) {
         << ", depth=" << options.depth << ", requests=" << options.requests
         << ", hardware_threads=" << std::thread::hardware_concurrency();
     LOG_INFO_STREAM << "Persistent producer lanes; promise creation outside per-request latency; "
-        << "same callback and shared Chomp transfer; all requests include completion publication.";
+        << "same callback and shared Slice transfer; all requests include completion publication.";
     LOG_INFO_STREAM << "Read workload: 64 MiB buffered file, 64 KiB blocks, full payload verification; "
         << "setup/fsync excluded, no cache eviction, no cold-disk throughput claim.";
     LOG_INFO_STREAM << "Entry, work-finish and producer-observed completion start before submission; "

@@ -43,7 +43,7 @@ MetalBuffer::MetalBuffer(size_t size) {
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Release
- * @brief Removes an allocation after its final Chomp owner and accepted GPU user have retired.
+ * @brief Removes an allocation after its final Slice owner and accepted GPU user have retired.
  */
 void MetalBuffer::release() {
     if (!buffer_) return;
@@ -77,7 +77,7 @@ const BuffetDescriptor* MetalBuffer::register_type(void* device) {
         if (context.device != selected) ALLIGATOR_THROW("A different Metal device is already registered");
         return context.descriptor;
     }
-    if (!context.initialize(selected)) ALLIGATOR_THROW("Metal device cannot execute the Chomp pointer ABI");
+    if (!context.initialize(selected)) ALLIGATOR_THROW("Metal device cannot execute the Slice pointer ABI");
     context.probed = true;
     return context.descriptor;
 }

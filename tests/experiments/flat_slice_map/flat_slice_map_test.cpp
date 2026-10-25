@@ -1,8 +1,8 @@
-/** --------------------------------------------------------------------------------------------------------- Flat Chomp Map Ownership
- * @file flat_chomp_map_test.cpp
+/** --------------------------------------------------------------------------------------------------------- Flat Slice Map Ownership
+ * @file flat_slice_map_test.cpp
  * @brief Tests retained ownership and published read phases through the experimental flat map.
  */
-#include "flat_chomp_map.hpp"
+#include "flat_slice_map.hpp"
 #include "../../functional_support.hpp"
 #include <array>
 #include <atomic>
@@ -15,8 +15,8 @@ namespace {
 using buffetalligator::AlignedHeapBuffer;
 using buffetalligator::BuffetDescriptor;
 using buffetalligator::BuffetDescriptors;
-using buffetalligator::Chomp;
-using experiments::FlatChompMap;
+using buffetalligator::Slice;
+using experiments::FlatSliceMap;
 using functional::require;
 std::atomic<size_t> released_payloads{0};
 /** --------------------------------------------------------------------------------------------------------- Tracked Factory
@@ -38,8 +38,8 @@ const BuffetDescriptor tracked_placement{
 /** --------------------------------------------------------------------------------------------------------- Payload
  * @brief Creates a dedicated three-granule payload with observable ownership and view contents.
  */
-Chomp payload(uint64_t value) {
-    Chomp result(192, true, &tracked_placement);
+Slice payload(uint64_t value) {
+    Slice result(192, true, &tracked_placement);
     result.data<uint64_t>()[0] = value;
     result.data<uint64_t>()[8] = value + 1;
     result.data<uint64_t>()[16] = value + 2;
@@ -48,8 +48,8 @@ Chomp payload(uint64_t value) {
 /** --------------------------------------------------------------------------------------------------------- Heap Payload
  * @brief Creates a single-granule row for deterministic growth and reader workloads.
  */
-Chomp heap_payload(uint64_t value) {
-    Chomp result(64, BuffetDescriptors::descriptor_for(static_cast<AlignedHeapBuffer*>(nullptr)));
+Slice heap_payload(uint64_t value) {
+    Slice result(64, BuffetDescriptors::descriptor_for(static_cast<AlignedHeapBuffer*>(nullptr)));
     result.get_as<uint64_t>() = value;
     return result;
 }
@@ -58,32 +58,32 @@ Chomp heap_payload(uint64_t value) {
  */
 void null_and_keys() {
     LOG_INFO_STREAM << "Checking flat map missing keys, null rows, and signed key extremes";
-    FlatChompMap map(0);
-    require(map.size() == 0 && !map.get_chomp(-1), "empty flat map lookup was not null");
-    map.add_chomp(-1, Chomp());
-    require(map.size() == 1 && !map.get_chomp(-1), "null payload did not retain its key");
+    FlatSliceMap map(0);
+    require(map.size() == 0 && !map.get_slice(-1), "empty flat map lookup was not null");
+    map.add_slice(-1, Slice());
+    require(map.size() == 1 && !map.get_slice(-1), "null payload did not retain its key");
     const size_t before = released_payloads.load(std::memory_order_relaxed);
-    map.add_chomp(-1, payload(101));
-    require(map.size() == 1 && map.get_chomp(-1).get_as<uint64_t>() == 101,
+    map.add_slice(-1, payload(101));
+    require(map.size() == 1 && map.get_slice(-1).get_as<uint64_t>() == 101,
         "non-null replacement failed or added another key");
-    map.add_chomp(-1, payload(202));
+    map.add_slice(-1, payload(202));
     require(released_payloads.load(std::memory_order_relaxed) == before + 1,
         "replacement retained the previous unshared backing");
-    map.add_chomp(-1, Chomp());
-    require(map.size() == 1 && !map.get_chomp(-1)
+    map.add_slice(-1, Slice());
+    require(map.size() == 1 && !map.get_slice(-1)
         && released_payloads.load(std::memory_order_relaxed) == before + 2,
         "null replacement did not release the previous backing");
     constexpr int64_t minimum = std::numeric_limits<int64_t>::min();
     constexpr int64_t maximum = std::numeric_limits<int64_t>::max();
-    map.add_chomp(minimum, heap_payload(303));
-    map.add_chomp(maximum, heap_payload(404));
-    map.add_chomp(0, heap_payload(505));
-    require(map.size() == 4 && map.get_chomp(minimum).get_as<uint64_t>() == 303
-        && map.get_chomp(maximum).get_as<uint64_t>() == 404
-        && map.get_chomp(0).get_as<uint64_t>() == 505 && !map.get_chomp(-2),
+    map.add_slice(minimum, heap_payload(303));
+    map.add_slice(maximum, heap_payload(404));
+    map.add_slice(0, heap_payload(505));
+    require(map.size() == 4 && map.get_slice(minimum).get_as<uint64_t>() == 303
+        && map.get_slice(maximum).get_as<uint64_t>() == 404
+        && map.get_slice(0).get_as<uint64_t>() == 505 && !map.get_slice(-2),
         "flat map confused signed extremes, zero, or a missing key");
     map.reset();
-    require(map.size() == 0 && !map.get_chomp(minimum), "reset did not erase all keys");
+    require(map.size() == 0 && !map.get_slice(minimum), "reset did not erase all keys");
 }
 /** --------------------------------------------------------------------------------------------------------- Retained Ownership
  * @brief Checks independent IDs and metadata through growth, replacement, reset, and destruction.
@@ -91,51 +91,51 @@ void null_and_keys() {
 void retained_ownership() {
     LOG_INFO_STREAM << "Checking flat map retained ownership across growth and mutation";
     const size_t before = released_payloads.load(std::memory_order_relaxed);
-    Chomp original_result;
-    Chomp original_peer;
-    Chomp replacement_result;
-    Chomp destruction_result;
+    Slice original_result;
+    Slice original_peer;
+    Slice replacement_result;
+    Slice destruction_result;
     {
-        FlatChompMap map(1);
-        Chomp original = payload(1001);
+        FlatSliceMap map(1);
+        Slice original = payload(1001);
         const uint32_t inserted_identifier = original.id();
         const void* inserted_pointer = original.raw();
-        map.add_chomp(-7, std::move(original));
+        map.add_slice(-7, std::move(original));
         require(!original, "flat map insertion did not move the caller's ownership");
-        original_result = map.get_chomp(-7);
-        original_peer = map.get_chomp(-7);
+        original_result = map.get_slice(-7);
+        original_peer = map.get_slice(-7);
         require(original_result.id() == inserted_identifier
             && original_peer.id() == inserted_identifier
             && original_result.raw() == inserted_pointer && original_peer.raw() == inserted_pointer,
             "retained flat map lookup did not share the inserted zero-copy slot");
         original_result.resize(64, true, false, &tracked_placement);
         require(original_result.size_bytes() == 64 && original_peer.size_bytes() == 192
-            && map.get_chomp(-7).size_bytes() == 192,
+            && map.get_slice(-7).size_bytes() == 192,
             "changing retained view metadata changed another claim");
         constexpr size_t growth_rows = 4096;
         for (size_t index = 0; index < growth_rows; ++index) {
-            map.add_chomp(static_cast<int64_t>(index), heap_payload(index));
+            map.add_slice(static_cast<int64_t>(index), heap_payload(index));
         }
         require(map.size() == growth_rows + 1 && original_peer.data<uint64_t>()[16] == 1003
-            && map.get_chomp(-7).raw() == inserted_pointer,
+            && map.get_slice(-7).raw() == inserted_pointer,
             "flat table growth invalidated a retained or stored payload");
         for (size_t index = 0; index < growth_rows; ++index) {
-            require(map.get_chomp(static_cast<int64_t>(index)).get_as<uint64_t>() == index,
+            require(map.get_slice(static_cast<int64_t>(index)).get_as<uint64_t>() == index,
                 "flat table growth lost a published key");
         }
-        map.add_chomp(-7, payload(2001));
-        replacement_result = map.get_chomp(-7);
+        map.add_slice(-7, payload(2001));
+        replacement_result = map.get_slice(-7);
         require(map.size() == growth_rows + 1 && replacement_result.get_as<uint64_t>() == 2001
             && original_result.get_as<uint64_t>() == 1001
             && released_payloads.load(std::memory_order_relaxed) == before,
             "replacement changed a retained value or released its backing early");
         map.reset();
-        require(map.size() == 0 && !map.get_chomp(-7)
+        require(map.size() == 0 && !map.get_slice(-7)
             && replacement_result.data<uint64_t>()[16] == 2003
             && released_payloads.load(std::memory_order_relaxed) == before,
             "reset invalidated a retained result");
-        map.add_chomp(-7, payload(3001));
-        destruction_result = map.get_chomp(-7);
+        map.add_slice(-7, payload(3001));
+        destruction_result = map.get_slice(-7);
         require(map.size() == 1, "flat map could not be reused after reset");
     }
     require(destruction_result.data<uint64_t>()[16] == 3003
@@ -154,11 +154,11 @@ void retained_ownership() {
 /** --------------------------------------------------------------------------------------------------------- Published Reader
  * @brief Exercises only const lookup after the owner has published the complete table.
  */
-void published_reader(const FlatChompMap& map, size_t worker) {
+void published_reader(const FlatSliceMap& map, size_t worker) {
     constexpr size_t rows = 128;
     for (size_t round = 0; round < 512; ++round) {
         const size_t identifier = (round + worker) % rows;
-        Chomp retained = map.get_chomp(static_cast<int64_t>(identifier));
+        Slice retained = map.get_slice(static_cast<int64_t>(identifier));
         require(retained && retained.get_as<uint64_t>() == identifier,
             "published concurrent const lookup returned the wrong payload");
     }
@@ -168,9 +168,9 @@ void published_reader(const FlatChompMap& map, size_t worker) {
  */
 void published_readers() {
     LOG_INFO_STREAM << "Checking flat map concurrent readers after exclusive publication";
-    FlatChompMap map(128);
+    FlatSliceMap map(128);
     for (size_t index = 0; index < 128; ++index) {
-        map.add_chomp(static_cast<int64_t>(index), heap_payload(index));
+        map.add_slice(static_cast<int64_t>(index), heap_payload(index));
     }
     std::array<std::thread, 4> readers;
     for (size_t worker = 0; worker < readers.size(); ++worker) {
@@ -182,13 +182,13 @@ void published_readers() {
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
- * @brief Runs the flat map ownership checks using the public Chomp ABI.
+ * @brief Runs the flat map ownership checks using the public Slice ABI.
  */
 int main() {
-    static_assert(sizeof(Chomp) == 4);
+    static_assert(sizeof(Slice) == 4);
     BuffetDescriptors::register_descriptor(&tracked_placement);
     null_and_keys();
     retained_ownership();
     published_readers();
-    LOG_INFO_STREAM << "Flat Chomp map ownership and published-reader checks passed";
+    LOG_INFO_STREAM << "Flat Slice map ownership and published-reader checks passed";
 }

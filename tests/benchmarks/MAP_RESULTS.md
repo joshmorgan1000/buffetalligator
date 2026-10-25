@@ -1,12 +1,12 @@
 # Map comparison results — 2026-09-17
 
-> **REVIEW-STALE (2026-09-26):** snapshot of 2026-09-17. ChompMap has changed three times since (growing unique-key map, 32-bit pool index collapse, aarch64 yield), so its column no longer describes the current implementation; the contenders other than ChompMap and VecSet exist only inside the experiment source. Rerun or keep as history.
+> **REVIEW-STALE (2026-09-26):** snapshot of 2026-09-17. SliceMap has changed three times since (growing unique-key map, 32-bit pool index collapse, aarch64 yield), so its column no longer describes the current implementation; the contenders other than SliceMap and VecSet exist only inside the experiment source. Rerun or keep as history.
 
-## Full-contract ring: every contender meets the ChompMap ABI
+## Full-contract ring: every contender meets the SliceMap ABI
 
-The contenders now all provide what the library ChompMap provides: unique keys
+The contenders now all provide what the library SliceMap provides: unique keys
 with last-write-wins replacement, stable dense positions, the cached contiguous
-`data()` view, `find`/`get_chomp`/`chomp_at`/`id`/`published`, `size`,
+`data()` view, `find`/`get_slice`/`slice_at`/`id`/`published`, `size`,
 `wait_until_full`, publish hooks, merge, and reset. HazardMap and VersionMap
 carry a shared PositionLedger (dense position cells, hook-gated contiguous
 watermark, cached view) on their own lock-free cores; MutexMap implements the
@@ -16,7 +16,7 @@ for every full-contract contender - so the comparison isolates the hash-table
 core itself.
 
 Two library-grade bugs surfaced under the 32-worker first-insert race and were
-fixed in both the shared ledger and the production ChompMap: the boundary-only
+fixed in both the shared ledger and the production SliceMap: the boundary-only
 watermark advance could legally read a stale publish flag under acquire-only
 ordering and strand the watermark (fixed by seq_cst on the flag/boundary pair),
 and an advance whose walk stopped at a just-published row returned after its
@@ -31,7 +31,7 @@ measurement round; all numbers below are Release (-O3), confirmed by flags.
 Five-round medians at 65,536 rows, full contract on every column except the
 fixed-capacity control:
 
-| Workload | ChompMap (Michael) | HazardMap (chain) | VersionMap (versions) | mutex | VecSet |
+| Workload | SliceMap (Michael) | HazardMap (chain) | VersionMap (versions) | mutex | VecSet |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Fill 1w, ns/row | 25.46 | 26.73 | 21.41 | 21.29 | 14.02 |
 | Gather 2p, us | 5,427 | 4,575 | 1,592 | 2,245 | 3,023 |
@@ -73,7 +73,7 @@ Reproduce:
 ./run_build.sh --skip-tests -DBUFFETALLIGATOR_BUILD_TESTS=ON -DBUFFETALLIGATOR_BUILD_BENCHMARKS=ON
 ctest --test-dir build --output-on-failure
 for case in fill gather lookup stream growth view combine duplicates; do
-  ./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+  ./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
       --case $case --csv build/map-full-$case.csv
 done
 ```
@@ -101,7 +101,7 @@ individually (the retire stack walked freed memory into a cycle); a
 and hazard records were never released back to the domain, which exhausted the
 256 slots over the sweep's thread lifetimes.
 
-Both contenders now pass the same contract gauntlet as ChompMap: ownership
+Both contenders now pass the same contract gauntlet as SliceMap: ownership
 with retained handles, 32-worker concurrent first insertion, shared-key
 replacement with retained reads and exact reclamation accounting, and uneven
 merges. A 50-round oversubscribed stress (16 writers, 16 readers, torn and
@@ -111,7 +111,7 @@ Five-round medians at 65,536 rows, all contenders contract-honest; the three
 lock-free columns are the real comparison and VecSet (fixed capacity) and the
 mutex map remain labeled controls:
 
-| Workload | ChompMap | HazardMap | VersionMap | mutex | VecSet |
+| Workload | SliceMap | HazardMap | VersionMap | mutex | VecSet |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Fill 1w, ns/row | 25.39 | 19.14 | 16.39 | 13.55 | 12.90 |
 | Gather 2p, us | 2,835 | 752 | 798 | 1,521 | 3,086 |
@@ -127,10 +127,10 @@ mutex map remain labeled controls:
 
 Reading: among honest lock-free maps, the bounded VersionMap leads fill,
 growth, 16-producer gather, and single-reader lookups; HazardMap leads
-contended streaming and two-reader lookups; ChompMap leads shared-key
-replacement and merges. Only ChompMap also provides stable positions, the
+contended streaming and two-reader lookups; SliceMap leads shared-key
+replacement and merges. Only SliceMap also provides stable positions, the
 contiguous `data()` view, wait semantics, and merge hooks - the others are
-map primitives, not drop-in replacements. ChompMap's remaining write-side gap
+map primitives, not drop-in replacements. SliceMap's remaining write-side gap
 versus VersionMap measures the position/watermark work its contract requires,
 and per-thread position batching is the identified next optimization. The
 mutex map still wins several single-threaded shapes and 16-reader hot-key
@@ -143,14 +143,14 @@ watchdog is marginal once every contender pays reclamation):
 ./run_build.sh --skip-tests -DBUFFETALLIGATOR_BUILD_TESTS=ON -DBUFFETALLIGATOR_BUILD_BENCHMARKS=ON
 ctest --test-dir build --output-on-failure
 for case in fill gather lookup stream growth view combine duplicates; do
-  ./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+  ./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
       --case $case --csv build/map-honest-$case.csv
 done
 ```
 
-## Michael-style ChompMap rewrite
+## Michael-style SliceMap rewrite
 
-`src/containers/chompmap.cpp` now implements Michael's lock-free hash table:
+`src/containers/slicemap.cpp` now implements Michael's lock-free hash table:
 buckets are chains sorted by the full 64-bit hash (the Fibonacci product is a
 bijection on int64 identifiers, so chains are collision-free and identifiers
 recover through the modular inverse), insertion is one CAS at the sorted
@@ -187,7 +187,7 @@ Bugs fixed during the rewrite, all reproduced with focused stress before fixing:
 
 The concurrency test's "readers made no progress" check failed against the new
 implementation because its reader pass (~40 us) now finishes before the
-writers' first payloads land: the first `Chomp` claim per thread costs ~8-11 ms
+writers' first payloads land: the first `Slice` claim per thread costs ~8-11 ms
 of allocator warmup, which the benchmark's pre-claimed `payload_pool` never
 exposes. The old implementation passed only because its slower readers were
 still polling through that warmup. Readers in the test now keep polling with a
@@ -202,7 +202,7 @@ pointer-view construction) ran clean after the fixes.
 This run's 15-sample medians at 65,536 rows, Apple M4 Max, versus the previous
 implementation's recorded numbers:
 
-| Workload, 65,536 rows | Previous | Michael ChompMap | Best of field (who) |
+| Workload, 65,536 rows | Previous | Michael SliceMap | Best of field (who) |
 | --- | ---: | ---: | --- |
 | Unique fill, 1 writer, ns/row | 83.38 | 25.61 | 6.22 (HazardMap) |
 | Gather, 2 producers, us/batch | — | 2,756 | 272 (HazardMap) |
@@ -215,7 +215,7 @@ implementation's recorded numbers:
 | Eight-part merge, us/merge | 6,621 | 1,306 | 971 (VecSet indexed) |
 | View rebuild after replacement | 96.8 us | 133.5 us | — |
 
-ChompMap's category wins among the field: miss lookups at 16 readers (5.08
+SliceMap's category wins among the field: miss lookups at 16 readers (5.08
 ns/op), quarter-full lookups at 2 and 16 readers, sequential-hit and mixed-50
 at 2 readers. The 1M-entry 15-writer regression improved from 13.5x behind the
 mutex map to 6.2x (188.9 ms vs 30.5 ms insert; 22.5 ns vs 11.0 ns hit; 13.0 ns
@@ -223,7 +223,7 @@ vs 10.7 ns miss).
 
 Remaining gaps are structural. HazardMap (append-only, not a unique-key map)
 and VersionMap (retains every obsolete version until quiescence) skip the
-unique-key, stable-position, and reclamation work the ChompMap contract
+unique-key, stable-position, and reclamation work the SliceMap contract
 requires; their leads measure that omission, not a faster map discipline. The
 residual producer contention is the shared-counter traffic (in-flight window,
 position claim) that resize safety and dense positions require; a per-thread
@@ -234,14 +234,14 @@ Reproduce:
 ```sh
 ./run_build.sh --skip-tests -DBUFFETALLIGATOR_BUILD_TESTS=ON -DBUFFETALLIGATOR_BUILD_BENCHMARKS=ON
 ctest --test-dir build --output-on-failure
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset --csv build/map-michael.csv
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset --csv build/map-michael.csv
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --rows 65536 --rounds 15 --csv build/map-michael-opt.csv
 ```
 
 ## Large-map regression and reference design (previous implementation)
 
-The current ChompMap is an extendible hash tree with immutable leaf replacement
+The current SliceMap is an extendible hash tree with immutable leaf replacement
 and a global stable-position publication mechanism; it is not Michael's
 bucket-linked-list hash table. Its use of hazard pointers does not make those
 additional structures part of Michael's algorithm.
@@ -249,7 +249,7 @@ additional structures part of Michael's algorithm.
 On the Apple M4 Max, a larger standalone run used 8,388,608 unique entries,
 8,388,608 lookups per phase, two warmups, and seven measured repetitions:
 
-| Operation | ChompMap median | unordered_map + mutex median | ChompMap slowdown |
+| Operation | SliceMap median | unordered_map + mutex median | SliceMap slowdown |
 | --- | ---: | ---: | ---: |
 | Insert, 15 writers | 4,015.28 ms | 296.790 ms | 13.53x |
 | Hit lookup, 1 reader | 520.190 ms | 100.432 ms | 5.18x |
@@ -257,14 +257,14 @@ On the Apple M4 Max, a larger standalone run used 8,388,608 unique entries,
 
 Insertion ranges were 3,952.46–4,040.82 ms and 293.040–317.088 ms respectively.
 The harness label `15P/1C` describes successive insertion and lookup phases;
-writers and readers do not overlap in this run. Keys and Chomp handles alone
+writers and readers do not overlap in this run. Keys and Slice handles alone
 occupy 192 MiB, excluding map metadata and the 512 MiB payload span. This exceeds
 the reported CPU cluster L2 caches, but hardware cache-miss counts and the
 system-level cache capacity have not been measured. This run reproduces the
 insertion regression; it does not establish comprehensive contention coverage.
 
 ```sh
-./build/tests/benchmarks/buffetalligator_chomp_map_benchmark \
+./build/tests/benchmarks/buffetalligator_slice_map_benchmark \
     --items 8388608 --lookups 8388608 --warmup 2 --repetitions 7 \
     --timeout 600 --producers 15 --consumers 1 \
     --csv build/map-eight-million-15p.csv
@@ -272,7 +272,7 @@ insertion regression; it does not establish comprehensive contention coverage.
 
 A separate single-writer Time Profiler capture used 1,048,576 entries, one warmup,
 50 measured repetitions, and one lookup per phase. Among 4,794 ms of samples
-whose stacks contained `ChompMap::add_finalized`, allocation/deallocation stacks
+whose stacks contained `SliceMap::add_finalized`, allocation/deallocation stacks
 accounted for 2,760 ms (57.6%), and `State::position_of` stacks accounted for
 1,601 ms (33.4%). These inclusive categories overlap and must not be added.
 These samples identify costs in this implementation, not a cost inherent in
@@ -288,12 +288,12 @@ describes protecting reader references and reclaiming retired nodes in batches.
 SIMD bucket scans are an extension to evaluate separately from that linked-list
 reference. Neither candidate has been implemented or measured in this follow-up.
 
-## Growing SIMD-bucket ChompMap
+## Growing SIMD-bucket SliceMap
 
-The current ChompMap has unique keys, replacement at the existing stable
+The current SliceMap has unique keys, replacement at the existing stable
 position, growing SIMD hash buckets, and hazard-protected payload reclamation.
-It releases the replaced Chomp's ownership while preserving independently
-retained Chomp handles. The implementation is in `src/containers/chompmap.cpp`;
+It releases the replaced Slice's ownership while preserving independently
+retained Slice handles. The implementation is in `src/containers/slicemap.cpp`;
 the public header exposes the container interface.
 
 **This implementation is not the fastest measured map and is not qualified as
@@ -305,7 +305,7 @@ by 15 measured samples for every workload at 65,536 rows. Both runs used two
 warmups, rotating candidate order, macOS ARM64, 16 logical CPUs, and Apple Clang
 17.0.0. These are the final implementation's 15-sample medians:
 
-| Workload, 65,536 rows | ChompMap | VecSet indexed | unordered_map + mutex | VersionMap |
+| Workload, 65,536 rows | SliceMap | VecSet indexed | unordered_map + mutex | VersionMap |
 | --- | ---: | ---: | ---: | ---: |
 | Unique fill, ns/row | 83.38 | 13.46 | 18.19 | 26.00 |
 | Gather, 16 producers, ms/batch | 29.792 | 5.748 | 5.327 | 1.573 |
@@ -316,9 +316,9 @@ warmups, rotating candidate order, macOS ARM64, 16 logical CPUs, and Apple Clang
 | Shared-key updates, 8 writers + 8 readers, ms/batch | 10.987 | 17.224 | 4.634 | 3.988 |
 | Eight-part merge, ms/merge | 6.621 | 0.989 | 1.713 | 4.150 |
 
-ChompMap's 16-reader lookup range was 41.30–61.60 ns/op, overlapping the mutex
+SliceMap's 16-reader lookup range was 41.30–61.60 ns/op, overlapping the mutex
 map's 46.47–76.05 ns/op. That small median difference does not establish a win.
-For shared-key replacement, ChompMap beat VecSet in this run but lost to the
+For shared-key replacement, SliceMap beat VecSet in this run but lost to the
 mutex map and VersionMap. VersionMap still defers collection until quiescence;
 those timings include collection but do not qualify concurrent reclamation.
 
@@ -351,8 +351,8 @@ Reproduce the final measurements:
 ```sh
 ./run_build.sh --skip-tests -DBUFFETALLIGATOR_BUILD_TESTS=ON -DBUFFETALLIGATOR_BUILD_BENCHMARKS=ON
 ctest --test-dir build --output-on-failure
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset --csv build/map-bucket-final.csv
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset --csv build/map-bucket-final.csv
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --rows 65536 --rounds 15 --csv build/map-bucket-final-confirmation.csv
 ```
 
@@ -361,14 +361,14 @@ second place for the largest case in each section.
 
 ## Historical measurements before the bucket repair
 
-The remaining sections describe the earlier flat-scan ChompMap baseline and do
-not describe the current ChompMap implementation or its performance.
+The remaining sections describe the earlier flat-scan SliceMap baseline and do
+not describe the current SliceMap implementation or its performance.
 
 The measurements favor a **hashed index for general ID lookup**, while dense
 pointer-list storage remains useful for batch results and cheap combining.
 They do not establish one production winner across all workloads.
 
-The repaired experiment is `chompmapvsvecset.cpp`. Measurements below use macOS
+The repaired experiment is `slicemapvsvecset.cpp`. Measurements below use macOS
 ARM64, 16 reported logical CPUs, Apple Clang 17.0.0, and CMake Release. The default
 sweep completed all 216 workload/size/team combinations: six sizes from 64 through
 65,536 rows, six lookup patterns, and single-worker and concurrent shapes.
@@ -399,13 +399,13 @@ five-sample sweep favored VersionMap; the longer repeat illustrates why that
 alone was insufficient evidence. VersionMap's 16-producer gather also had a wide
 1.124–5.066 ms range, overlapping the mutex map's 3.265–14.430 ms.
 
-ChompMap's unique-input eight-part merge was much cheaper: 105.58 us versus
+SliceMap's unique-input eight-part merge was much cheaper: 105.58 us versus
 955.88 us for VecSet, 1,535.17 us for the mutex map, and 4,522.96 us for VersionMap.
-That operation preserves ChompMap's append behavior; it does not qualify
+That operation preserves SliceMap's append behavior; it does not qualify
 duplicate replacement. HazardMap performed well in several unique-input
 gather/stream workloads, but it also appends duplicate rows.
 
-Retained Chomp lookup includes the library's shared backing-buffer reference
+Retained Slice lookup includes the library's shared backing-buffer reference
 count increment. These results therefore measure the actual ownership contract,
 not just finding a raw pointer; shared-counter contention may influence scaling.
 That is a hypothesis from the implementation, not a separately isolated result.
@@ -450,11 +450,11 @@ on the supported ARM and x86 platforms.
 
 ```sh
 ./run_build.sh
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --csv build/map-comparison.csv
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --case gather --rows 65536 --rounds 15 --csv build/map-gather-confirmation.csv
-./build/tests/benchmarks/buffetalligator_chompmapvsvecset \
+./build/tests/benchmarks/buffetalligator_slicemapvsvecset \
     --case duplicates --rows 65536 --rounds 15 --csv build/map-duplicates-confirmation.csv
 ```
 

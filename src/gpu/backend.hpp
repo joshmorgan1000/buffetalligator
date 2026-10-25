@@ -34,7 +34,7 @@ constexpr std::string_view backend_name(GPUBackend backend) {
  */
 std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16, std::string_view name);
 /** --------------------------------------------------------------------------------------------------------- Public Shader Source
- * @brief Wraps a user body defining `void alligator_main(Chomp)` with the Chomp prelude and entry point.
+ * @brief Wraps a user body defining `void alligator_main(Slice)` with the Slice prelude and entry point.
  * @param body The user's GLSL body.
  * @return The complete GLSL source.
  */
@@ -95,7 +95,7 @@ struct GPUStatic {
         if (selection_started().load(std::memory_order_seq_cst) && gpu_device().kind != backend) {
             ALLIGATOR_GPU_THROW("GPU::select(" + std::string(backend_name(backend))
                 + ") arrived after the process froze on " + std::string(backend_name(gpu_device().kind))
-                + "; select the backend before the first Chomp or GPU operation");
+                + "; select the backend before the first Slice or GPU operation");
         }
     }
     /** ------------------------------------------------------------------------------------------- GPU Memory Usage
@@ -176,7 +176,7 @@ inline GPUSelection::GPUSelection() {
     if (choice == "cuda") ALLIGATOR_GPU_THROW("This build has no qualified CUDA backend");
     if ((choice == "auto" || choice == "vulkan") && VulkanContext::device_present()) {
         const DeviceProperties& properties = VulkanContext::device_properties();
-        /// Chomps default to device-visible memory from here on, so a shader can read any of them.
+        /// Slices default to device-visible memory from here on, so a shader can read any of them.
         BuffetDescriptors::register_descriptor<VulkanBuffer>(true);
         device = {GPUBackend::Vulkan, VulkanContext::buffer_placement(), VulkanContext::device_unified(),
             VulkanKernel::device_name(), properties.max_allocation_bytes,

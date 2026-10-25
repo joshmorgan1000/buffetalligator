@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Queue Comparison Benchmark
  * @file queue_comparison_benchmark.cpp
- * @brief Runs the high-water-mark consumer contract on ChompQueue and on moodycamel: every push is
+ * @brief Runs the high-water-mark consumer contract on SliceQueue and on moodycamel: every push is
  * visible at once, consumers dispatch singles below the mark and bulk batches at or above it.
  * Producers alternate back-to-back bursts with spaced trickles, and each payload carries its push
  * time so the handlers record push-to-handler latency.
@@ -14,10 +14,10 @@
 namespace {
 using benchmarks::Options;
 using benchmarks::Shape;
-using benchmarks::Chomp;
+using benchmarks::Slice;
 using benchmarks::require;
 using benchmarks::Clock;
-using buffetalligator::ChompQueue;
+using buffetalligator::SliceQueue;
 /** --------------------------------------------------------------------------------------------------------- Now
  * @brief Steady-clock nanoseconds, the unit stamped into payloads.
  */
@@ -37,13 +37,13 @@ struct Pacing {
     /** ------------------------------------------------------------------------------------------- Before Push
      * @brief Waits out the trickle gap for this position, then stamps the payload.
      */
-    void before_push(Chomp& chomp, size_t position) {
+    void before_push(Slice& slice, size_t position) {
         uint64_t stamp = now();
         if (trickle && position % (burst + trickle) >= burst) {
             while (stamp < next) stamp = now();
             next = stamp + gap_ns;
         }
-        static_cast<uint64_t*>(chomp.raw())[1] = stamp;
+        static_cast<uint64_t*>(slice.raw())[1] = stamp;
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Receipts
@@ -59,38 +59,38 @@ struct alignas(128) Receipts {
     /** ------------------------------------------------------------------------------------------- Single
      * @brief The single handler both arms call.
      */
-    static void single(void* context, Chomp&& chomp) {
+    static void single(void* context, Slice&& slice) {
         Receipts& receipts = *static_cast<Receipts*>(context);
-        receipts.identifiers.push_back(chomp.get_as<uint64_t>());
-        receipts.latencies.push_back(now() - static_cast<const uint64_t*>(chomp.raw())[1]);
+        receipts.identifiers.push_back(slice.get_as<uint64_t>());
+        receipts.latencies.push_back(now() - static_cast<const uint64_t*>(slice.raw())[1]);
         ++receipts.single_items;
-        chomp.free();
+        slice.free();
     }
     /** ------------------------------------------------------------------------------------------- Bulk
      * @brief The bulk handler both arms call.
      */
-    static void bulk(void* context, std::span<Chomp> chomps) {
+    static void bulk(void* context, std::span<Slice> slices) {
         Receipts& receipts = *static_cast<Receipts*>(context);
         const uint64_t arrived = now();
-        for (Chomp& chomp : chomps) {
-            receipts.identifiers.push_back(chomp.get_as<uint64_t>());
-            receipts.latencies.push_back(arrived - static_cast<const uint64_t*>(chomp.raw())[1]);
-            chomp.free();
+        for (Slice& slice : slices) {
+            receipts.identifiers.push_back(slice.get_as<uint64_t>());
+            receipts.latencies.push_back(arrived - static_cast<const uint64_t*>(slice.raw())[1]);
+            slice.free();
         }
-        receipts.bulk_items += chomps.size();
+        receipts.bulk_items += slices.size();
         ++receipts.bulk_calls;
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Alligator Arm
- * @brief ChompQueue with its built-in watermark dispatch.
+ * @brief SliceQueue with its built-in watermark dispatch.
  */
 class AlligatorArm {
 private:
-    ChompQueue queue_;
+    SliceQueue queue_;
     std::atomic<size_t> producers_remaining_{0};
     size_t producers_;
 public:
-    static constexpr const char* name = "chompqueue";
+    static constexpr const char* name = "slicequeue";
     AlligatorArm(const Shape& shape, const Options& options)
     : queue_(shape.producers, shape.consumers, options.high_water, options.max_batch,
         &Receipts::single, &Receipts::bulk), producers_(shape.producers) {}
@@ -98,7 +98,7 @@ public:
         queue_.reset();
         producers_remaining_.store(producers_, std::memory_order_relaxed);
     }
-    void produce(size_t index, std::span<Chomp> input, Pacing pacing) {
+    void produce(size_t index, std::span<Slice> input, Pacing pacing) {
         {
             auto producer = queue_.producer(index);
             for (size_t position = 0; position < input.size(); ++position) {
@@ -118,7 +118,7 @@ public:
  */
 class MoodyArm {
 private:
-    moodycamel::BlockingConcurrentQueue<Chomp> queue_;
+    moodycamel::BlockingConcurrentQueue<Slice> queue_;
     std::vector<moodycamel::ProducerToken> tokens_;
     std::atomic<size_t> producers_done_{0};
     size_t producers_;
@@ -133,7 +133,7 @@ public:
         for (size_t index = 0; index < shape.producers; ++index) tokens_.emplace_back(queue_);
     }
     void prepare() { producers_done_.store(0, std::memory_order_relaxed); }
-    void produce(size_t index, std::span<Chomp> input, Pacing pacing) {
+    void produce(size_t index, std::span<Slice> input, Pacing pacing) {
         for (size_t position = 0; position < input.size(); ++position) {
             pacing.before_push(input[position], position);
             if (!queue_.enqueue(tokens_[index], std::move(input[position]))) throw std::bad_alloc();
@@ -142,13 +142,13 @@ public:
     }
     void consume(size_t, Receipts& receipts) {
         moodycamel::ConsumerToken token(queue_);
-        std::unique_ptr<Chomp[]> batch(new Chomp[max_batch_]);
-        Chomp item;
+        std::unique_ptr<Slice[]> batch(new Slice[max_batch_]);
+        Slice item;
         for (;;) {
             if (queue_.size_approx() >= high_water_) {
                 const size_t count = queue_.try_dequeue_bulk(token, batch.get(), max_batch_);
                 if (count) {
-                    Receipts::bulk(&receipts, std::span<Chomp>(batch.get(), count));
+                    Receipts::bulk(&receipts, std::span<Slice>(batch.get(), count));
                     continue;
                 }
             }
@@ -164,11 +164,11 @@ public:
 };
 /** --------------------------------------------------------------------------------------------------------- Tuned Moody Arm
  * @brief Plain moodycamel with no per-push semaphore, depth rescanned every quarter mark like
- * ChompQueue, and consumers that yield rather than sleep when idle.
+ * SliceQueue, and consumers that yield rather than sleep when idle.
  */
 class TunedMoodyArm {
 private:
-    moodycamel::ConcurrentQueue<Chomp> queue_;
+    moodycamel::ConcurrentQueue<Slice> queue_;
     std::vector<moodycamel::ProducerToken> tokens_;
     std::atomic<size_t> producers_done_{0};
     size_t producers_;
@@ -185,7 +185,7 @@ public:
         for (size_t index = 0; index < shape.producers; ++index) tokens_.emplace_back(queue_);
     }
     void prepare() { producers_done_.store(0, std::memory_order_relaxed); }
-    void produce(size_t index, std::span<Chomp> input, Pacing pacing) {
+    void produce(size_t index, std::span<Slice> input, Pacing pacing) {
         for (size_t position = 0; position < input.size(); ++position) {
             pacing.before_push(input[position], position);
             if (!queue_.enqueue(tokens_[index], std::move(input[position]))) throw std::bad_alloc();
@@ -194,17 +194,17 @@ public:
     }
     void consume(size_t, Receipts& receipts) {
         moodycamel::ConsumerToken token(queue_);
-        std::unique_ptr<Chomp[]> batch(new Chomp[max_batch_]);
+        std::unique_ptr<Slice[]> batch(new Slice[max_batch_]);
         for (;;) {
             const bool done = producers_done_.load(std::memory_order_acquire) == producers_;
             const size_t depth = queue_.size_approx();
             if (depth >= high_water_) {
                 const size_t count = queue_.try_dequeue_bulk(token, batch.get(), max_batch_);
-                if (count) Receipts::bulk(&receipts, std::span<Chomp>(batch.get(), count));
+                if (count) Receipts::bulk(&receipts, std::span<Slice>(batch.get(), count));
                 continue;
             }
             size_t dispatched = 0;
-            Chomp item;
+            Slice item;
             while (dispatched < refresh_ && queue_.try_dequeue(token, item)) {
                 Receipts::single(&receipts, std::move(item));
                 ++dispatched;
@@ -225,7 +225,7 @@ private:
     const Options& options_;
     Shape shape_;
     Arm arm_;
-    std::vector<Chomp> input_;
+    std::vector<Slice> input_;
     std::vector<Receipts> receipts_;
 public:
     Workload(const Options& options, Shape shape)
@@ -236,7 +236,7 @@ public:
             receipt.latencies.reserve(options.items);
         }
     }
-    void prepare(const std::vector<Chomp>& payloads) {
+    void prepare(const std::vector<Slice>& payloads) {
         arm_.prepare();
         input_ = payloads;
         for (auto& receipt : receipts_) {
@@ -252,7 +252,7 @@ public:
         }
         const size_t first = benchmarks::partition(options_.items, worker, shape_.producers);
         const size_t last = benchmarks::partition(options_.items, worker + 1, shape_.producers);
-        arm_.produce(worker, std::span<Chomp>(input_.data() + first, last - first),
+        arm_.produce(worker, std::span<Slice>(input_.data() + first, last - first),
             Pacing{options_.burst, options_.trickle, options_.gap_ns});
     }
     void validate(size_t& single_items, size_t& bulk_items, size_t& bulk_calls,
@@ -285,7 +285,7 @@ double percentile(const std::vector<uint64_t>& sorted, double fraction) {
  * @brief Runs warmups and samples for one arm and reports the median and the dispatch mix.
  */
 template<typename Arm>
-void measure_arm(const Options& options, const Shape& shape, const std::vector<Chomp>& payloads,
+void measure_arm(const Options& options, const Shape& shape, const std::vector<Slice>& payloads,
     benchmarks::Reporter& reporter) {
     Workload<Arm> workload(options, shape);
     benchmarks::Team<Workload<Arm>> team(workload, shape.producers + shape.consumers);

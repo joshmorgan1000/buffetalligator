@@ -1,6 +1,6 @@
 # Slang native-pointer bridge experiment
 
-This experiment establishes a CUDA source-emission route for the current Chomp shader ABI while preserving application GLSL bodies. It does not change production code or qualify CUDA execution.
+This experiment establishes a CUDA source-emission route for the current Slice shader ABI while preserving application GLSL bodies. It does not change production code or qualify CUDA execution.
 
 Run from the repository root:
 
@@ -22,7 +22,7 @@ this records the experiment tool and does not establish a packaged dependency pi
 | Actual public-list vector body | Pass | Pass |
 | Actual job-table vector body | Pass | Pass |
 | Production typed scalar/vector/packed test body | Pass | Pass |
-| Production nested Chomp/boundary test body | Pass | Pass |
+| Production nested Slice/boundary test body | Pass | Pass |
 | Production L2 reduction example | Pass | Pass |
 | Production reference-ring test body | Pass | Pass |
 | Every typed helper, float32 arithmetic | Pass | Pass |
@@ -37,7 +37,7 @@ The final PTX probe exits 255 because this host cannot load `nvrtc`. The script 
 
 The generator changes only the injected prelude and wrapper. Application bodies are appended directly from their current source files; the manifest records their SHA-256 values.
 
-- Physical buffer-reference blocks become native pointer fields with Slang constructors that cast their uint64 address; the Chomp reference constructor loads the same four-byte ID.
+- Physical buffer-reference blocks become native pointer fields with Slang constructors that cast their uint64 address; the Slice reference constructor loads the same four-byte ID.
 - The arena directory lookup, 24-bit ID decomposition, 8-byte location words, 64-bit byte-address arithmetic, granule shifts, 4-byte stage IDs, 32-byte job records, reference-ring fields, and typed helper algorithms remain in the extracted production text.
 - Runtime packed stores use `InterlockedAnd` and `InterlockedOr`, which emit CUDA `atomicAnd` and `atomicOr`; the original GLSL intrinsic spellings are rejected for CUDA by this compiler.
 - The runtime reduction uses `GroupMemoryBarrierWithGroupSync`, which emits `__syncthreads`; its scratch array emits shared storage.

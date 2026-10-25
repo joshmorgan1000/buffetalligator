@@ -8,17 +8,17 @@ require 'json'
 class FlatMapAnalysis
     HEADERS = %w[container workload shape items operations capacity_per_producer batch sample
         seconds operations_per_second].freeze
-    CONTAINERS = %w[ChompMap unordered_map FlatChompMap].freeze
+    CONTAINERS = %w[SliceMap unordered_map FlatSliceMap].freeze
     WORKLOADS = %w[insert lookup-hit lookup-miss replace].freeze
     SHAPES = {'single' => 'one-thread', 'readers8' => '1P/8C'}.freeze
     FILE_PATTERN = /\Aflatmap__([1-9][0-9]*)__
         (sequential|strided)__(reserved|growing)__(single|readers8)__series([1-3])\.csv\z/x
     SUMMARY_HEADERS = %w[scope items layout reservation shape workload series series_count
         samples_per_process operations capacity_per_producer batch range_basis
-        chompmap_median_ns_op chompmap_min_ns_op chompmap_max_ns_op
+        slicemap_median_ns_op slicemap_min_ns_op slicemap_max_ns_op
         unordered_map_median_ns_op unordered_map_min_ns_op unordered_map_max_ns_op
         flat_median_ns_op flat_min_ns_op flat_max_ns_op
-        unordered_map_over_flat chompmap_over_flat].freeze
+        unordered_map_over_flat slicemap_over_flat].freeze
     def initialize(input, output)
         @input = File.expand_path(input)
         @output = File.expand_path(output)
@@ -184,22 +184,22 @@ class FlatMapAnalysis
             row.fetch("#{prefix}_min_ns_op"), row.fetch("#{prefix}_max_ns_op"))
     end
     def write_markdown(rows)
-        lines = ['# FlatChompMap experiment results', '',
+        lines = ['# FlatSliceMap experiment results', '',
             'Validated 42 processes: 14 configurations, three process series, two warmups, and ' +
                 '11 measured samples for each container/workload pair.', '',
             'Each cell reports the median of three process medians in aggregate nanoseconds per ' +
                 'operation, followed by the minimum and maximum process medians. Lower is faster; ' +
                 'these ranges are descriptive and are not confidence intervals. Ratios above 1x ' +
-                'favor FlatChompMap and are calculated from the displayed medians.', '',
-            'All three containers return independently owned Chomp handles on successful lookups. ' +
+                'favor FlatSliceMap and are calculated from the displayed medians.', '',
+            'All three containers return independently owned Slice handles on successful lookups. ' +
                 'Payload preparation, reset, releasing returned handles, and correctness checks ' +
                 'occur outside timing. The 1P/8C topology has one writer followed by eight readers ' +
                 'of an unchanged map; it does not overlap mutation with reads. Neither standard ' +
-                'unordered_map nor FlatChompMap has a benchmark mutex in that read phase.', '',
+                'unordered_map nor FlatSliceMap has a benchmark mutex in that read phase.', '',
             'The matrix covers deterministic sequential and strided keys with reserved and growing ' +
                 'tables; growing tables start at 16 reserved rows and growth is timed. Every sample ' +
                 'constructs a fresh map and makes its initial reservation outside timing. A separate flat map does not ' +
-                "implement ChompMap's stable positions, publication hooks, waits, or concurrent reset.", '',
+                "implement SliceMap's stable positions, publication hooks, waits, or concurrent reset.", '',
             "Recorded Abseil version: `#{@manifest.fetch('abseil').fetch('version')}`. " +
                 'Source/dependency hashes, binary hash, compiler commands, build flags, host details, ' +
                 'correctness output, commands, and per-process logs are preserved beside this file.', '',
@@ -208,16 +208,16 @@ class FlatMapAnalysis
                 'or shorter-lived activity. Results remain specific to the recorded host and build.', '']
         configurations.each do |items, layout, reservation, shape|
             lines.concat(["## #{items} rows · #{layout} · #{reservation} · #{SHAPES.fetch(shape)}", '',
-                '| Workload | ChompMap ns/op [process range] | std ns/op [process range] | ' +
-                    'FlatChompMap ns/op [process range] | std / flat | ChompMap / flat |',
+                '| Workload | SliceMap ns/op [process range] | std ns/op [process range] | ' +
+                    'FlatSliceMap ns/op [process range] | std / flat | SliceMap / flat |',
                 '| --- | ---: | ---: | ---: | ---: | ---: |'])
             rows.select { |row| row.fetch('scope') == 'aggregate' &&
                 row.values_at('items', 'layout', 'reservation', 'shape') ==
                     [items, layout, reservation, shape] }.each do |row|
-                lines << "| #{row.fetch('workload')} | #{measurement(row, 'chompmap')} | " +
+                lines << "| #{row.fetch('workload')} | #{measurement(row, 'slicemap')} | " +
                     "#{measurement(row, 'unordered_map')} | #{measurement(row, 'flat')} | " +
                     format('%.3fx | %.3fx |', row.fetch('unordered_map_over_flat'),
-                        row.fetch('chompmap_over_flat'))
+                        row.fetch('slicemap_over_flat'))
             end
             lines << ''
         end
@@ -246,6 +246,6 @@ begin
     end
     FlatMapAnalysis.new(ARGV.fetch(0), ARGV.fetch(1, ARGV.fetch(0))).run
 rescue ArgumentError, KeyError, JSON::ParserError, CSV::MalformedCSVError, SystemCallError => error
-    warn "FlatChompMap analysis failed: #{error.message}"
+    warn "FlatSliceMap analysis failed: #{error.message}"
     exit 1
 end

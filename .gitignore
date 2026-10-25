@@ -31,7 +31,7 @@
 # debug information files
 *.dwo
 CLAUDE.md
-build/
+build*/
 CMakeCache.txt
 compile_commands.json
 .cache/

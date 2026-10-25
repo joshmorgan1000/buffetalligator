@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Global Atomic Registry
  * @file registry.cpp
- * @brief Retires globally owned values while Chomp metadata and detached accounting remain live.
+ * @brief Retires globally owned values while Slice metadata and detached accounting remain live.
  */
 #include <alligator/atomics.hpp>
 

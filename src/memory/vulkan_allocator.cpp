@@ -114,10 +114,10 @@ void* vulkan_host_pointer(Placemat::Handle* handle) {
  */
 void* vulkan_context() { return &context; }
 /** --------------------------------------------------------------------------------------------------------- Allocation
- * @brief Resolves the native allocation backing a Chomp from this placement.
+ * @brief Resolves the native allocation backing a Slice from this placement.
  */
-VulkanAllocation& allocation_for(const Chomp& chomp) {
-    return *static_cast<VulkanAllocation*>(Placemat::get_for(&chomp)->substrate_handle);
+VulkanAllocation& allocation_for(const Slice& slice) {
+    return *static_cast<VulkanAllocation*>(Placemat::get_for(&slice)->substrate_handle);
 }
 }
 /** --------------------------------------------------------------------------------------------------------- Register Type
@@ -168,15 +168,15 @@ const Placemat* VulkanAllocator::register_type(VkPhysicalDevice physical_device,
     return context.placement;
 }
 /** --------------------------------------------------------------------------------------------------------- Buffer
- * @brief Returns the native buffer for a Chomp from this placement.
+ * @brief Returns the native buffer for a Slice from this placement.
  */
-VkBuffer VulkanAllocator::buffer(const Chomp& chomp) { return allocation_for(chomp).buffer; }
+VkBuffer VulkanAllocator::buffer(const Slice& slice) { return allocation_for(slice).buffer; }
 /** --------------------------------------------------------------------------------------------------------- Buffer Offset
- * @brief Resolves the Chomp's byte offset inside its slab buffer.
+ * @brief Resolves the Slice's byte offset inside its slab buffer.
  */
-VkDeviceSize VulkanAllocator::buffer_offset(const Chomp& chomp) {
-    return static_cast<const char*>(chomp.raw()) -
-        static_cast<const char*>(allocation_for(chomp).mapping);
+VkDeviceSize VulkanAllocator::buffer_offset(const Slice& slice) {
+    return static_cast<const char*>(slice.raw()) -
+        static_cast<const char*>(allocation_for(slice).mapping);
 }
 /** --------------------------------------------------------------------------------------------------------- Memory Usage
  * @brief Queries the selected heap's dynamic budget when advertised by the physical device.

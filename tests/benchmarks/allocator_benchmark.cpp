@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Allocator Benchmark
  * @file allocator_benchmark.cpp
- * @brief Measures public Chomp allocation and ownership with persistent workers and checked deterministic traces.
+ * @brief Measures public Slice allocation and ownership with persistent workers and checked deterministic traces.
  */
 #include "benchmark_support.hpp"
 #include <array>
@@ -84,8 +84,8 @@ struct Workload {
     size_t stride;
     Operation operation;
     bool instrumented = false;
-    std::vector<Chomp> sources;
-    std::vector<Chomp> outputs;
+    std::vector<Slice> sources;
+    std::vector<Slice> outputs;
     std::vector<void*> addresses;
     std::vector<double> nanoseconds;
     Workload(const BuffetDescriptor* selected, size_t size, size_t items, size_t threads,
@@ -103,8 +103,8 @@ struct Workload {
             sources[index].free();
             nanoseconds[index] = -1;
             if (operation == Operation::claim || operation == Operation::novel) continue;
-            Chomp& source = operation == Operation::release ? outputs[index] : sources[index];
-            source = Chomp(bytes, operation == Operation::release, placement);
+            Slice& source = operation == Operation::release ? outputs[index] : sources[index];
+            source = Slice(bytes, operation == Operation::release, placement);
             addresses[index] = source.raw();
             source.data<uint64_t>()[0] = index + 1;
             source.data<uint64_t>()[source.size<uint64_t>() - 1] = ~(uint64_t(index) + 1);
@@ -121,12 +121,12 @@ struct Workload {
             Clock::time_point started;
             if (sampled) started = Clock::now();
             switch (operation) {
-            case Operation::claim: outputs[index] = Chomp(bytes, false, placement); break;
-            case Operation::novel: outputs[index] = Chomp(bytes, true, placement); break;
+            case Operation::claim: outputs[index] = Slice(bytes, false, placement); break;
+            case Operation::novel: outputs[index] = Slice(bytes, true, placement); break;
             case Operation::copy: outputs[index] = sources[index]; break;
             case Operation::move: outputs[index] = std::move(sources[index]); break;
             case Operation::view:
-                outputs[index] = sources[index].chomp(1, sources[index].size_bytes() - 2);
+                outputs[index] = sources[index].slice(1, sources[index].size_bytes() - 2);
                 break;
             case Operation::release: outputs[index].free(); break;
             }
@@ -142,9 +142,9 @@ struct Workload {
     void validate() const {
         const size_t represented = (bytes + 63) & ~size_t(63);
         for (size_t index = 0; index < count; ++index) {
-            const Chomp& output = outputs[index];
+            const Slice& output = outputs[index];
             if (operation == Operation::release) {
-                require(output.is_null(), "Release retained an owning Chomp.");
+                require(output.is_null(), "Release retained an owning Slice.");
                 continue;
             }
             require(output.valid() && output.size_bytes() == represented,
@@ -157,7 +157,8 @@ struct Workload {
             if (operation == Operation::claim || operation == Operation::novel) {
                 require(first == 0 && last == 0, "Fresh allocation payload was not initialized.");
                 require(output.is_novel() == (operation == Operation::novel
-                    || represented >= placement->default_size_method()), "Allocation backing kind differs.");
+                    || represented + sizeof(buffetalligator::SliceRecord) >= placement->default_size_method()),
+                    "Allocation backing kind differs.");
             } else {
                 require(output.raw() == addresses[index], "Ownership operation copied payload storage.");
                 require(first == index + 1 && last == ~(uint64_t(index) + 1),
@@ -182,7 +183,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
     options.capacity = 0;
     const Shape shape{workers, 0, workers == 1};
     const size_t represented = (bytes + 63) & ~size_t(63);
-    LOG_INFO_STREAM << "Chomp requested=" << bytes << " B; represented=" << represented
+    LOG_INFO_STREAM << "Slice requested=" << bytes << " B; represented=" << represented
         << " B; workers=" << workers << "; retained payload budget="
         << options.items * represented << " B; boundary=" << boundary;
     for (const Operation operation : operations) {
@@ -190,7 +191,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
             || operation == Operation::view)) continue;
         const std::string label = std::string(operation_names[static_cast<size_t>(operation)])
             + '-' + std::to_string(bytes) + "B";
-        Progress progress("Chomp " + label + ' ' + shape.label(), options.timeout);
+        Progress progress("Slice " + label + ' ' + shape.label(), options.timeout);
         Workload workload(placement, bytes, options.items, workers,
             config.latency_samples, operation);
         Team team(workload, workers);
@@ -202,7 +203,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
             workload.validate();
             if (sample >= options.warmup) elapsed.push_back(seconds);
         }
-        reporter.report("Chomp", label, shape, options, options.items, std::move(elapsed));
+        reporter.report("Slice", label, shape, options, options.items, std::move(elapsed));
         workload.instrumented = true;
         std::vector<double> latencies;
         for (size_t sample = 0; sample < options.repetitions; ++sample) {
@@ -223,7 +224,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
         std::sort(latencies.begin(), latencies.end());
         const size_t zero_samples = std::upper_bound(latencies.begin(), latencies.end(), 0.0)
             - latencies.begin();
-        LOG_INFO_STREAM << "Chomp " << label << ' ' << shape.label()
+        LOG_INFO_STREAM << "Slice " << label << ' ' << shape.label()
             << " instrumented operation latency: p50=" << latencies[(latencies.size() - 1) / 2]
             << " ns, p95=" << latencies[(latencies.size() - 1) * 95 / 100]
             << " ns, p99=" << latencies[(latencies.size() - 1) * 99 / 100]
@@ -242,7 +243,7 @@ int main(int count, char** arguments) {
                 << "--workers N --single-thread --latency-samples N (128 per repetition) "
                 << "--timeout SECONDS (120) --csv PATH (allocator_samples.csv) --untracked";
             LOG_INFO_STREAM << "Default workers: powers of two through reported CPU concurrency "
-                << "and twice that concurrency; all producer workers perform the same Chomp trace.";
+                << "and twice that concurrency; all producer workers perform the same Slice trace.";
             LOG_INFO_STREAM << "Slab boundaries use one retained allocation and one worker; "
                 << "latencies use a separate instrumented pass and PATH.latencies.csv.";
             return 0;
@@ -255,20 +256,20 @@ int main(int count, char** arguments) {
         std::ofstream latency_csv(config.common.csv + ".latencies.csv");
         require(latency_csv.is_open(), "Cannot open allocator latency CSV output.");
         latency_csv << "workload,workers,requested_bytes,represented_bytes,repetition,operation_index,nanoseconds\n";
-        Chomp initial;
+        Slice initial;
         double initialization = 0;
         {
-            Progress progress("Chomp first public claim", config.common.timeout);
+            Progress progress("Slice first public claim", config.common.timeout);
             const auto initialized = Clock::now();
-            initial = Chomp(64);
+            initial = Slice(64);
             initialization = std::chrono::duration<double>(Clock::now() - initialized).count();
         }
         require(initial.valid() && initial.size_bytes() == 64 && initial.get_as<uint64_t>() == 0,
-            "First public Chomp claim failed validation.");
+            "First public Slice claim failed validation.");
         const BuffetDescriptor* placement = initial.placement();
         initial.free();
         LOG_INFO_STREAM << "Placement=" << placement->type_name_fn() << "; first public claim="
-            << initialization * 1000 << " ms; Chomp handle=" << sizeof(Chomp)
+            << initialization * 1000 << " ms; Slice handle=" << sizeof(Slice)
             << " B; slab=" << placement->default_size_method() << " B; startup time excluded.";
         LOG_INFO_STREAM << "Throughput and instrumented latency are separate; represented payload "
             << "budgets exclude internal metadata and prepared backing slabs.";

@@ -1,7 +1,7 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- Network Interface
  * @file ba_network.h
- * @brief Defines the private C transport boundary and Chomp framing operations.
+ * @brief Defines the private C transport boundary and Slice framing operations.
  */
 #include "core/ba_descriptor.h"
 #include <uv.h>
@@ -29,18 +29,18 @@ typedef struct ba_net_frame {
  */
 int ba_net_listen(uint16_t port, uint8_t protocol, ba_net_callback callback, uint64_t timeout_ms);
 int ba_net_close(uint16_t port, uint8_t protocol);
-int ba_net_send(const ba_chomp_t* chomp, const char* address, uint16_t port, uint8_t protocol,
+int ba_net_send(const ba_slice_t* slice, const char* address, uint16_t port, uint8_t protocol,
                 ba_net_callback callback, uint64_t timeout_ms);
 void ba_net_shutdown(void);
-int ba_net_deliver(ba_net_callback callback, ba_chomp_t* chomp);
+int ba_net_deliver(ba_net_callback callback, ba_slice_t* slice);
 void ba_net_log(const char* message);
 /** --------------------------------------------------------------------------------------------------------- Framing Functions
- * @brief Encodes and verifies bounded frames before publishing received Chomps.
+ * @brief Encodes and verifies bounded frames before publishing received Slices.
  */
 int ba_net_key(unsigned char key[32]);
-int ba_net_snapshot(const ba_chomp_t* chomp, unsigned flags, ba_net_frame* frame);
+int ba_net_snapshot(const ba_slice_t* slice, unsigned flags, ba_net_frame* frame);
 void ba_net_seal(ba_net_frame* frame, const unsigned char token[16], const unsigned char key[32]);
-int ba_net_encode(const ba_chomp_t* chomp, unsigned flags, const unsigned char token[16],
+int ba_net_encode(const ba_slice_t* slice, unsigned flags, const unsigned char token[16],
                   const unsigned char key[32], ba_net_frame* frame);
 int ba_net_control_encode(unsigned flags, const unsigned char token[16],
                           const unsigned char challenge[16], const unsigned char key[32],
@@ -49,7 +49,7 @@ int ba_net_control_decode(const unsigned char* frame, size_t size, const unsigne
                           unsigned char challenge[16]);
 int ba_net_frame_size(const unsigned char* header, size_t* size);
 int ba_net_decode(const unsigned char* frame, size_t size, uint8_t protocol,
-                  const unsigned char key[32], ba_chomp_t* chomp);
+                  const unsigned char key[32], ba_slice_t* slice);
 /** --------------------------------------------------------------------------------------------------------- Placement Resolution
  * @brief Resolves a received placement name to its registered identifier.
  */
