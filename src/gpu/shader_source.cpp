@@ -13,7 +13,7 @@ namespace buffetalligator {
 inline constexpr std::string_view PUBLIC_GLSL_TAIL = R"glsl(
 Slice vulkan_slice(uint index) {
     if (vulkan_push.vulkan_slice_list == 0u) return vulkan_push.vulkan_slice;
-    return slice_read(slice_address(vulkan_push.vulkan_slice) + uint64_t(index) * 64ul);
+    return slice_read(slice_address(vulkan_push.vulkan_slice) + uint64_t(index) * 32ul);
 }
 uint vulkan_index() { return gl_WorkGroupID.y; }
 uint vulkan_count() { return gl_NumWorkGroups.y; }

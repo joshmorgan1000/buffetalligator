@@ -9,17 +9,18 @@
 
 #define BA_NULL_ID ((void*)0)
 enum { BA_CLAIM_NOVEL = 1u << 0 };
+enum { BA_SLICE_VALID = 1u << 2 };  /* The type word's status bit: clear on a null descriptor. */
 /** --------------------------------------------------------------------------------------------------------- Descriptor
  * @brief One alligator Slice, byte for byte; consumers transfer descriptors without interpreting
  * their contents and resolve size and pointer through the boundary helpers.
  */
-typedef struct __attribute__((aligned(64))) ba_slice {
-    uint64_t address;  ///< The backing slab's device address.
-    uint32_t size;     ///< The payload length in 64-byte granules.
-    uint32_t offset;   ///< The payload's slab-relative offset in 64-byte granules.
-    void* host;        ///< The payload's host pointer.
-    void* record;      ///< The alligator's lifecycle granule; BA_NULL_ID when null.
-    uint64_t info[4];  ///< Reserved.
+typedef struct __attribute__((aligned(32))) ba_slice {
+    uint64_t address;  ///< The payload's device address.
+    uint32_t size;     ///< The payload length in the type word's unit.
+    uint32_t length;   ///< The element count.
+    void* parent;      ///< The claim's root Slice; BA_NULL_ID when null.
+    uint32_t type;     ///< The type word.
+    int32_t count;     ///< The root's owner count.
 } ba_slice_t;
 /** --------------------------------------------------------------------------------------------------------- Claim
  * @brief Claims zeroed arena storage for a registered placement or returns nonzero.

@@ -33,7 +33,7 @@ struct alignas(16) CountedHeap {
     static void* host_ptr(void* buffer) { return static_cast<CountedHeap*>(buffer)->memory.raw(); }
     static size_t size_of(void* buffer) { return static_cast<CountedHeap*>(buffer)->memory.size(); }
     static void* factory(size_t bytes) { return new CountedHeap(bytes); }
-    static size_t default_size() { return 256; }
+    static size_t default_size() { return 256ull << 20; }
     static size_t* type_idx() { static size_t idx = 0; return &idx; }
     static const char* type_name() { return "GlobalStartup"; }
     static uint64_t device_address(void* buffer) { return reinterpret_cast<uint64_t>(host_ptr(buffer)); }
@@ -85,7 +85,7 @@ GlobalOwner owner;
  * @brief Confirms global CPU construction completed before process-exit ownership checks run.
  */
 int main() {
-    if (GPU::exists() || owner.dedicated.size_bytes() != 256 || owner.view.size_bytes() != 128)
+    if (GPU::exists() || owner.dedicated.size_bytes() != 193 || owner.view.size_bytes() != 128)
         return EXIT_FAILURE;
     LOG_INFO_STREAM << "CPU global Slice initialization passed; verifying final release at process exit";
     return 0;

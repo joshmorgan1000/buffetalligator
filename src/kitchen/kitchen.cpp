@@ -49,7 +49,13 @@ void Kitchen::work(Kitchen* kitchen) {
         if (kitchen->order_queue_.wait_dequeue_timed(order, std::chrono::milliseconds(100))) {
             order.execute();
         }
-        if (kitchen->stop_.load(std::memory_order_acquire)) return;
+        if (kitchen->stop_.load(std::memory_order_acquire)) break;
+    }
+    /// Stopping completes every accepted Order before the worker leaves.
+    for (;;) {
+        Order remaining;
+        if (!kitchen->order_queue_.try_dequeue(remaining)) return;
+        remaining.execute();
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Submit Internal

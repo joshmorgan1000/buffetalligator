@@ -79,7 +79,8 @@ struct SliceNetworkAccess {
      * @brief Resolves a live descriptor's host pointer without taking its ownership.
      */
     static void* ptr_of(const ba_slice_t* descriptor) noexcept {
-        return const_cast<void*>(reinterpret_cast<const Slice*>(descriptor)->raw());
+        const Slice& slice = *reinterpret_cast<const Slice*>(descriptor);
+        return slice.valid() ? const_cast<void*>(slice.raw()) : nullptr;
     }
 };
 /** --------------------------------------------------------------------------------------------------------- Listen

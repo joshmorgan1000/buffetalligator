@@ -13,16 +13,6 @@
 
 namespace buffetalligator {
 struct BuffetDescriptor; class Slice;
-/** --------------------------------------------------------------------------------------------------------- Vulkan Exception
- * @class VulkanException
- * @brief Exception type for Vulkan-related errors.
- */
-class VulkanException : public threadsafe_logger::Exception {
-public:
-    using threadsafe_logger::Exception::Exception;
-    using threadsafe_logger::Exception::what;
-};
-#define ALLIGATOR_VULKAN_THROW(msg) throw VulkanException(msg)
 /** --------------------------------------------------------------------------------------------------------- DeviceProperties
  * @struct DeviceProperties
  * @brief Queried physical-device limits relevant to dispatch sizing and batch planning.
@@ -51,96 +41,6 @@ struct DeviceProperties {
     bool supports_timeline_semaphore;          ///< Timeline semaphores available.
     bool unified_memory;                       ///< Host and device share physical memory.
 };
-/** --------------------------------------------------------------------------------------------------------- VulkanBuffer
- * @class VulkanBuffer
- * @brief The Vulkan handles behind one slab: buffer, memory, mapping, and device address.
- */
-class VulkanBuffer {
-private:
-    vk::Buffer buffer_{};          ///< Vulkan buffer handle (the compute target).
-    vk::DeviceMemory memory_{};    ///< Backing memory allocation.
-    void* host_ = nullptr;         ///< Persistent CPU mapping.
-    uint64_t address_ = 0;         ///< Device address (the shader-side pointer).
-    size_t size_ = 0;              ///< Size in bytes.
-    /** ------------------------------------------------------------------------------------------- release
-     * @brief Unmaps and frees the Vulkan objects; shared by the destructor and move assignment.
-     */
-    void release();
-    friend class VulkanContext;
-public:
-    VulkanBuffer() = default;
-    /** ------------------------------------------------------------------------------------------- Allocating Constructor
-     * @brief The five-call Vulkan allocation: create, get requirements, allocate, bind, map, plus
-     * the device-address query and the zero-fill the slab contract requires.
-     * @param size_bytes Buffer size in bytes.
-     */
-    VulkanBuffer(size_t size_bytes);
-    /** ------------------------------------------------------------------------------------------- Allocating Constructor (typed)
-     * @brief The same five-call allocation against an explicit memory type index.
-     * @param size_bytes Buffer size in bytes.
-     * @param memory_type_index The memory type to allocate from.
-     */
-    VulkanBuffer(size_t size_bytes, uint32_t memory_type_index);
-    /** ------------------------------------------------------------------------------------------- Move-only ownership */
-    VulkanBuffer(const VulkanBuffer&) = delete;
-    VulkanBuffer& operator=(const VulkanBuffer&) = delete;
-    VulkanBuffer(VulkanBuffer&& other) noexcept
-    : buffer_(std::exchange(other.buffer_, nullptr)), memory_(std::exchange(other.memory_, nullptr))
-    , host_(std::exchange(other.host_, nullptr)), address_(std::exchange(other.address_, 0))
-    , size_(std::exchange(other.size_, 0)) {}
-    VulkanBuffer& operator=(VulkanBuffer&& other) noexcept {
-        std::swap(buffer_, other.buffer_); std::swap(memory_, other.memory_); std::swap(host_, other.host_);
-        std::swap(address_, other.address_); std::swap(size_, other.size_); return *this;
-    }
-    /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Unmap and destroy the Vulkan objects. Defined in vulkan.cpp.
-     */
-    ~VulkanBuffer() { release(); }
-    operator bool() const { return host_ != nullptr; }
-    bool operator==(std::nullptr_t) const { return host_ == nullptr; }
-    bool operator!=(std::nullptr_t) const { return host_ != nullptr; }
-    /** ------------------------------------------------------------------------------------------- Buffet Hooks
-     * @brief The static hooks BuffetDescriptors::descriptor_for binds for this type.
-     */
-    static void deleter_impl(void* ptr) { delete static_cast<VulkanBuffer*>(ptr); }
-    static void (*deleter())(void*) { return deleter_impl; }
-    static void* host_ptr(void* ptr) { return static_cast<VulkanBuffer*>(ptr)->host_; }
-    static size_t size_of_impl(void* ptr) { return static_cast<VulkanBuffer*>(ptr)->size_; }
-    static size_t size_of(void* ptr) { return size_of_impl(ptr); }
-    static size_t (*size_of())(void*) { return size_of_impl; }
-    static void* factory(size_t size) {
-        if (size > (uint64_t{UINT32_MAX} << 6))
-            ALLIGATOR_VULKAN_THROW("VulkanBuffer exceeds the 64-byte-granule size limit");
-        return new VulkanBuffer((size + 63) & ~size_t{63});
-    }
-    static size_t default_size() { return 64 * 1024 * 1024; }
-    static size_t* type_idx() { static size_t idx = 1; return &idx; }
-    static const char* type_name() { return "VulkanBuffer"; }
-    static uint64_t device_address(void* ptr) { return static_cast<VulkanBuffer*>(ptr)->address_; }
-    /** ------------------------------------------------------------------------------------------- address
-     * @brief Retrieves the device address of the Vulkan buffer.
-     * @return The device address.
-     */
-    uint64_t address() const { return address_; }
-    /** ------------------------------------------------------------------------------------------- size
-     * @brief Retrieves the size of the Vulkan buffer.
-     * @return The size of the buffer in bytes.
-     */
-    size_t size() const { return size_; }
-    /** ------------------------------------------------------------------------------------------- host
-     * @brief Retrieves the host pointer of the Vulkan buffer.
-     * @return The host pointer.
-     */
-    void* host() const { return host_; }
-    /** ------------------------------------------------------------------------------------------- buffer
-     * @brief The Vulkan buffer handle, for indirect dispatch commands recorded against it.
-     * @return The buffer handle.
-     */
-    vk::Buffer buffer() const { return buffer_; }
-    void* raw() { return host_; }
-    const void* raw() const { return host_; }
-};
-static_assert(IsABuffetType<VulkanBuffer>, "VulkanBuffer must satisfy IsABuffetType");
 /** --------------------------------------------------------------------------------------------------------- PlacementIndex
  * @enum PlacementIndex
  * @brief The memory-type ladder rungs resolved by the Vulkan context.
@@ -419,17 +319,16 @@ inline constexpr std::string_view VULKAN_GLSL_KERNEL_CORE = R"glsl(#extension GL
 #endif
 #ifndef VULKAN_GLSL_KERNEL_CORE_INCLUDED
 #define VULKAN_GLSL_KERNEL_CORE_INCLUDED 1
-// ------------------------------------------------------------------------------------------------- Slice (64 bytes, as the host holds it)
+// ------------------------------------------------------------------------------------------------- Slice (32 bytes, as the host holds it)
 struct Slice {
-    uint64_t address;  ///< The backing slab's device address
-    uint32_t size;     ///< The payload length in 64-byte granules
-    uint32_t offset;   ///< The payload's slab-relative offset in 64-byte granules
-    uint64_t host;     ///< The host's pointer, not for the device
-    uint64_t record;   ///< The host's lifecycle granule, not for the device
-    uvec4 info_low;    ///< Reserved
-    uvec4 info_high;   ///< Reserved
+    uint64_t address;  ///< The payload's device address
+    uint32_t size;     ///< The payload length in the type word's unit
+    uint32_t elements; ///< The element count; `length` is a GLSL method name
+    uint64_t parent;   ///< The host's root Slice, not for the device
+    uint32_t type;     ///< The type word: unit in bits 0-1, valid in bit 2, bitwidth in bits 16-19
+    int count;         ///< The host's owner count, not for the device
 };
-// ------------------------------------------------------------------------------------------------- Push block (80 bytes)
+// ------------------------------------------------------------------------------------------------- Push block (48 bytes)
 // One Slice per dispatch, as the host holds it, and whether it is a list of the rows' Slices.
 layout(push_constant) uniform AlligatorPush {
     Slice vulkan_slice;             ///< The dispatched Slice
@@ -439,7 +338,7 @@ layout(push_constant) uniform AlligatorPush {
     uint32_t vulkan_reserved2;
 } vulkan_push;
 // ------------------------------------------------------------------------------------------------- Slice in memory
-layout(buffer_reference, std430, buffer_reference_align = 64) readonly buffer SliceRef { Slice slice; };
+layout(buffer_reference, std430, buffer_reference_align = 32) readonly buffer SliceRef { Slice slice; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer I32Array { int v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer F32Array { float v[]; };
@@ -449,10 +348,12 @@ layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array 
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
 // ------------------------------------------------------------------------------------------------- Slice basics
-// The Slice's first 16 bytes locate the payload.
-uint64_t slice_address(Slice s) { return s.address + (uint64_t(s.offset) << 6); }
-bool slice_is_null(Slice s) { return s.address == 0ul; }
-uint64_t slice_size(Slice s) { return uint64_t(s.size) << 6; }
+// The Slice's first 16 bytes locate the payload; the unit in its type word scales the size.
+const uint SLICE_UNIT_SHIFTS[4] = uint[4](0u, 6u, 8u, 12u);
+uint64_t slice_address(Slice s) { return s.address; }
+bool slice_is_null(Slice s) { return (s.type & 4u) == 0u; }
+uint64_t slice_size(Slice s) { return uint64_t(s.size) << SLICE_UNIT_SHIFTS[s.type & 3u]; }
+uint slice_length(Slice s) { return s.elements; }
 Slice slice_read(uint64_t address) { return SliceRef(address).slice; }
 // ------------------------------------------------------------------------------------------------- Word-native loads
 uint  slice_load_u32(Slice s, uint index) { return U32Array(slice_address(s)).v[index]; }

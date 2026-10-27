@@ -576,7 +576,7 @@ void VulkanBuffer::release() {
 struct Shader::Impl {
     /// @brief The GLSL push block's bytes: the Slice as the host holds it, then whether it lists the rows.
     static constexpr uint32_t PUSH_BYTES = sizeof(Slice) + 4 * sizeof(uint32_t);
-    static_assert(PUSH_BYTES == 80, "The push block must mirror the GLSL AlligatorPush block");
+    static_assert(PUSH_BYTES == 48, "The push block must mirror the GLSL AlligatorPush block");
     /// @brief One dispatch handed to the retirement thread: which slot's timeline, which value, whose result.
     struct Pending {
         std::shared_ptr<ShaderResult::State> result;

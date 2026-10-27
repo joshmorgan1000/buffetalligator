@@ -107,7 +107,7 @@ struct Workload {
             source = Slice(bytes, operation == Operation::release, placement);
             addresses[index] = source.raw();
             source.data<uint64_t>()[0] = index + 1;
-            source.data<uint64_t>()[source.size<uint64_t>() - 1] = ~(uint64_t(index) + 1);
+            source.data<uint64_t>()[source.capacity() / sizeof(uint64_t) - 1] = ~(uint64_t(index) + 1);
         }
     }
     /** ------------------------------------------------------------------------------------------- Run
@@ -126,7 +126,7 @@ struct Workload {
             case Operation::copy: outputs[index] = sources[index]; break;
             case Operation::move: outputs[index] = std::move(sources[index]); break;
             case Operation::view:
-                outputs[index] = sources[index].slice(1, sources[index].size_bytes() - 2);
+                outputs[index] = sources[index].slice(1, sources[index].capacity() - 2);
                 break;
             case Operation::release: outputs[index].free(); break;
             }
@@ -147,17 +147,19 @@ struct Workload {
                 require(output.is_null(), "Release retained an owning Slice.");
                 continue;
             }
-            require(output.valid() && output.size_bytes() == represented,
+            /// A claim reports the bytes requested and a view its whole-unit span; both hold the padded units.
+            const size_t expected = operation == Operation::view ? represented : bytes;
+            require(output.valid() && output.size_bytes() == expected && output.capacity() == represented,
                 "Allocator operation returned the wrong represented range.");
             require(reinterpret_cast<uintptr_t>(output.raw()) % 64 == 0,
                 "Allocator operation returned an unaligned range.");
             require(output.placement() == placement, "Allocator operation changed placement.");
             const uint64_t first = output.data<uint64_t>()[0];
-            const uint64_t last = output.data<uint64_t>()[output.size<uint64_t>() - 1];
+            const uint64_t last = output.data<uint64_t>()[output.capacity() / sizeof(uint64_t) - 1];
             if (operation == Operation::claim || operation == Operation::novel) {
                 require(first == 0 && last == 0, "Fresh allocation payload was not initialized.");
                 require(output.is_novel() == (operation == Operation::novel
-                    || represented + sizeof(buffetalligator::SliceRecord) >= placement->default_size_method()),
+                    || represented >= placement->default_size_method()),
                     "Allocation backing kind differs.");
             } else {
                 require(output.raw() == addresses[index], "Ownership operation copied payload storage.");
@@ -233,7 +235,7 @@ void measure(const Configuration& config, Reporter& reporter, std::ofstream& lat
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
- * @brief Benchmarks granule edges, warmed ownership, slab rollover, and bounded oversubscription.
+ * @brief Benchmarks 64-byte edges, warmed ownership, slab rollover, and bounded oversubscription.
  */
 int main(int count, char** arguments) {
     try {
@@ -251,7 +253,8 @@ int main(int count, char** arguments) {
 #ifndef NDEBUG
         throw std::runtime_error("Allocator performance runs require a Release build from ./run_build.sh.");
 #endif
-        LOG_INFO_STREAM << "Allocation tracking: on";
+        if (config.untracked) BuffetDescriptors::set_allocation_tracking(false);
+        LOG_INFO_STREAM << "Allocation tracking: " << (BuffetDescriptors::allocation_tracking() ? "on" : "off");
         Reporter reporter(config.common);
         std::ofstream latency_csv(config.common.csv + ".latencies.csv");
         require(latency_csv.is_open(), "Cannot open allocator latency CSV output.");

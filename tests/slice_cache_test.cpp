@@ -157,8 +157,7 @@ void byte_budget() {
         require(!cache.exists(1) && cache.exists(2) && cache.exists(3) && cache.exists(4),
             "the cache did not evict the least recently used entry");
         require(cache.bytes() == 256 && cache.size() == 3, "eviction did not restore the budget");
-        /// A novel payload frees together with the record granule in front of it.
-        require(frees_reached(before + 64 + sizeof(SliceRecord)) == before + 64 + sizeof(SliceRecord),
+        require(frees_reached(before + 64) == before + 64,
             "the evicted Slice was not released");
         const Slice* second = cache.get(2);
         require(second != nullptr && second->get_as<uint64_t>() == 2,
@@ -174,7 +173,7 @@ void byte_budget() {
         cache.set(6, payload(6, 64));
         require(!cache.exists(4) && cache.exists(2), "peek promoted its entry");
     }
-    require(frees_reached(before + 448 + 6 * sizeof(SliceRecord)) == before + 448 + 6 * sizeof(SliceRecord),
+    require(frees_reached(before + 448) == before + 448,
         "destruction did not release the cached Slices");
 }
 /** --------------------------------------------------------------------------------------------------------- Ownership
@@ -194,13 +193,13 @@ void ownership() {
         require(!cache.exists("alpha") && cache.bytes() == 128, "erase did not drop the entry");
         require(Memory::total_freed() == before, "erase released a Slice a view still holds");
         view.free();
-        require(frees_reached(before + 128 + sizeof(SliceRecord)) == before + 128 + sizeof(SliceRecord),
+        require(frees_reached(before + 128) == before + 128,
             "the last view did not release the Slice");
         cache.erase("missing");
         cache.set("gamma", payload(3, 1024));
         require(cache.size() == 1 && cache.exists("gamma") && cache.bytes() == 1024,
             "an oversize entry was not kept alone");
-        require(frees_reached(before + 256 + 2 * sizeof(SliceRecord)) == before + 256 + 2 * sizeof(SliceRecord),
+        require(frees_reached(before + 256) == before + 256,
             "the entry it displaced was not released");
         cache.set("delta", payload(4, 64));
         require(!cache.exists("gamma") && cache.bytes() == 64,
@@ -211,11 +210,11 @@ void ownership() {
             "resize did not prune to the new budget");
         cache.clear();
         require(cache.empty() && cache.bytes() == 0, "clear left entries");
-        require(frees_reached(before + 1408 + 5 * sizeof(SliceRecord)) == before + 1408 + 5 * sizeof(SliceRecord),
+        require(frees_reached(before + 1408) == before + 1408,
             "clear and pruning did not release every Slice");
         cache.set("zeta", payload(6, 64));
     }
-    require(frees_reached(before + 1472 + 6 * sizeof(SliceRecord)) == before + 1472 + 6 * sizeof(SliceRecord),
+    require(frees_reached(before + 1472) == before + 1472,
         "destruction did not release the remaining Slice");
 }
 /** --------------------------------------------------------------------------------------------------------- Replacement

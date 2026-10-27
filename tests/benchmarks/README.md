@@ -271,7 +271,7 @@ compare dedicated-buffer churn with and without the tracker.
 
 The slab churn harness models normal operation: workers keep a ring of live Slices,
 replace the oldest with each claim, and cycle mostly small requests up to 64 KiB, so
-every sample rolls through many 64 MiB slabs. It runs a counted heap placement, which
+every sample rolls through many 256 MiB slabs. It runs a counted heap placement, which
 counts its own buffers independently of the tracker, and the default device placement.
 
 ```sh

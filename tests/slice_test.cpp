@@ -75,7 +75,7 @@ int main() {
     require(window.data<uint8_t>()[0] == 0x77, "a sub-slice did not keep the slab view alive");
     const char text[] = "buffet alligator";
     buffetalligator::Slice external(text, sizeof(text));
-    require(external.size_bytes() == 64 && std::memcmp(external.raw(), text, sizeof(text)) == 0,
+    require(external.size_bytes() == sizeof(text) && std::memcmp(external.raw(), text, sizeof(text)) == 0,
         "the external copy constructor did not copy the bytes");
     bool rejected_null_source = false;
     try {
@@ -99,7 +99,7 @@ int main() {
     require(grown.size_bytes() == 64, "a discarding resize has the wrong size");
     buffetalligator::Slice revived;
     revived.resize(96);
-    require(revived.valid() && revived.size_bytes() == 128, "resize on a null slice did not allocate");
+    require(revived.valid() && revived.size_bytes() == 96, "resize on a null slice did not allocate");
     buffetalligator::Slice heap(100, buffetalligator::BuffetDescriptors::get(0));
     buffetalligator::Slice heap_next(16, buffetalligator::BuffetDescriptors::get(0));
     require(heap.placement() == buffetalligator::BuffetDescriptors::get(0), "an explicit placement was not honored");

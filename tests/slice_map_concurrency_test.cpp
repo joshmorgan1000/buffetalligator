@@ -57,8 +57,8 @@ void replacement_ownership() {
     Slice warmup(64);
     SliceMap map(1);
     const size_t before = Memory::total_freed();
-    /// A novel payload frees together with the record granule in front of it.
-    constexpr size_t novel = 64 + sizeof(SliceRecord);
+    /// A novel payload frees on its own.
+    constexpr size_t novel = 64;
     map.add_slice(7, payload(7, 1, true));
     map.add_slice(7, payload(7, 2, true));
     require(frees_reached(before + novel) == before + novel,

@@ -62,7 +62,7 @@ public:
     static size_t size_of(void* ptr) { return size_of_impl(ptr); }
     static size_t (*size_of())(void*) { return size_of_impl; }
     static void* factory(size_t size) { return new MmapBuffet(size); }
-    static size_t default_size() { return 64 * 1024 * 1024; }
+    static size_t default_size() { return 256 * 1024 * 1024; }
     static size_t* type_idx() { static size_t idx = 3; return &idx; }
     static const char* type_name() { return "Memory Mapped File"; }
     static uint64_t device_address(void*) { return 0; }

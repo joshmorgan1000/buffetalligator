@@ -33,7 +33,7 @@ public:
      * @brief One outstanding slice: its bytes and the public caller that made it.
      */
     struct Bite {
-        uint32_t bytes;                 ///< The slice's granule-rounded bytes.
+        uint32_t bytes;                 ///< The slice's alignment-rounded bytes.
         std::source_location location;  ///< The public caller, by value since the caller's frame is gone.
     };
     /** ------------------------------------------------------------------------------------------- Site guard
@@ -99,7 +99,7 @@ public:
      * @brief Records one slice under its ChainBuffet with the public caller named for this thread.
      * @param id The slice id.
      * @param buffet The ChainBuffet the slice's slot counts against.
-     * @param bytes The slice's granule-rounded bytes.
+     * @param bytes The slice's alignment-rounded bytes.
      */
     static void record_slice(uint32_t id, ChainBuffet* buffet, size_t bytes) {
         PerChain& chain = instance().shard(id);

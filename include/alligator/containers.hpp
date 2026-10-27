@@ -607,7 +607,7 @@ struct PriorityWords {
  */
 class PrioritySlice : public PriorityWords {
 public:
-    /// @brief Header position storing the declared capacity before granule padding.
+    /// @brief Header position storing the declared capacity before alignment padding.
     static constexpr size_t CAPACITY_WORD = 7;
     /// @brief Slot words per block the natural-order caches summarize.
     static constexpr size_t BLOCK_WORDS = 32;
@@ -751,7 +751,7 @@ private:
  */
 class HeapSlice : public PriorityWords {
 public:
-    /// @brief Header position storing the declared capacity before granule padding.
+    /// @brief Header position storing the declared capacity before alignment padding.
     static constexpr size_t CAPACITY_WORD = 1;
     /** ------------------------------------------------------------------------------------------- Header Bytes
      * @brief Bytes ahead of the heap positions, the same for every capacity.

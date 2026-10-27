@@ -15,35 +15,35 @@ using namespace buffetalligator;
 using functional::require;
 using functional::require_throws;
 /** --------------------------------------------------------------------------------------------------------- Aligned Value
- * @brief Stores a test value in one aligned slice granule.
+ * @brief Stores a test value in one 64-byte aligned slice.
  */
 struct alignas(64) AlignedValue {
     uint32_t value;
 };
 /** --------------------------------------------------------------------------------------------------------- Aligned Text
- * @brief Stores character data in one aligned slice granule.
+ * @brief Stores character data in one 64-byte aligned slice.
  */
 struct alignas(64) AlignedText {
     std::array<char, 64> characters;
 };
 /** --------------------------------------------------------------------------------------------------------- Aligned Numbers
- * @brief Stores integer data in one aligned slice granule.
+ * @brief Stores integer data in one 64-byte aligned slice.
  */
 struct alignas(64) AlignedNumbers {
     std::array<uint32_t, 16> numbers;
 };
 /** --------------------------------------------------------------------------------------------------------- Slice Element
- * @brief Checks whether an element type satisfies the typed slice constraint.
+ * @brief Checks that any element type up to the SIMD line's alignment is a typed slice element.
  */
 template<typename Element>
 concept SliceElement = requires { typename SliceT<Element>; };
 static_assert(SliceElement<AlignedValue>);
 static_assert(SliceElement<AlignedText>);
 static_assert(SliceElement<AlignedNumbers>);
-static_assert(!SliceElement<uint32_t>);
-static_assert(!SliceElement<uint64_t>);
-static_assert(!SliceElement<std::string_view>);
-static_assert(!SliceElement<std::span<uint32_t>>);
+static_assert(SliceElement<uint32_t>);
+static_assert(SliceElement<uint64_t>);
+static_assert(SliceElement<std::string_view>);
+static_assert(SliceElement<std::span<uint32_t>>);
 /** --------------------------------------------------------------------------------------------------------- Typed Slices
  * @brief Checks element access, byte views, placement, and shared ownership of a one-element typed claim.
  */
@@ -74,7 +74,7 @@ static void typed_slices() {
     require(empty.is_null() && copy.raw() == moved.raw(), "typed assignment lost ownership");
     SliceT<AlignedValue> adopted{Slice(sizeof(AlignedValue))};
     require(adopted.size() == 1 && adopted.root_slice().placement() == Slice::default_placement(),
-        "adopting a raw granule did not keep its slot");
+        "adopting a raw Slice did not keep its slot");
 }
 /** --------------------------------------------------------------------------------------------------------- Counted Value
  * @brief Counts live constructions so typed slots can be checked for exactly-once destruction.
@@ -101,8 +101,11 @@ static void typed_lifecycle() {
         require(CountedValue::live.load() == 1,
             "a typed slot destroyed its element while a copy remained");
         shared.free();
-        require(CountedValue::live.load() == 0 && view.size_bytes() == 64,
-            "the last typed handle did not destroy its element, or a view of its buffer lost the buffer");
+        /// A view of the element's bytes holds the buffer, and the element with it, until it goes.
+        require(CountedValue::live.load() == 1 && view.size_bytes() == 64,
+            "a view of a typed element let the element go, or lost its bytes");
+        view.free();
+        require(CountedValue::live.load() == 0, "the last handle on a typed element did not destroy it");
     }
     {
         SliceT<CountedValue> single(true, true);
@@ -118,19 +121,19 @@ static void typed_views() {
     constexpr std::string_view text = "abcdefghijklmnop";
     SliceT<AlignedText> characters{Slice(text.data(), text.size())};
     const auto& character_view = characters.get_as().characters;
-    require(character_view.size() == 64 && characters.size_bytes() == character_view.size()
+    require(character_view.size() == 64 && characters.root_slice().capacity() == character_view.size()
         && std::string_view(character_view.data(), text.size()) == text,
         "string view does not cover the represented payload");
     const auto& constant_characters = characters;
     const auto& constant_character_view = constant_characters.get_as().characters;
     require(constant_character_view.size() == 64
-        && constant_characters.size_bytes() == constant_character_view.size()
+        && constant_characters.root_slice().capacity() == constant_character_view.size()
         && std::string_view(constant_character_view.data(), text.size()) == text,
         "const string view differs");
     const std::array<uint32_t, 4> input{2, 3, 5, 7};
     SliceT<AlignedNumbers> numbers{Slice(input.data(), sizeof(input))};
     auto& view = numbers.get_as().numbers;
-    require(view.size() == 16 && numbers.size<uint32_t>() == view.size() && view[3] == 7,
+    require(view.size() == 16 && numbers.root_slice().capacity() / sizeof(uint32_t) == view.size() && view[3] == 7,
         "array view does not cover the payload");
     view[1] = 11;
     const auto& constant_numbers = numbers;
@@ -155,11 +158,11 @@ static void weak_slices() {
     Slice middle = weak.slice(sizeof(uint32_t), 2 * sizeof(uint32_t));
     Slice suffix = weak.slice(2 * sizeof(uint32_t));
     Slice clamped = weak.slice(sizeof(uint32_t), SIZE_MAX - 1);
-    require(middle.size_bytes() == 64 && middle.data<uint32_t>()[0] == 22 &&
+    require(middle.size_bytes() == 2 * sizeof(uint32_t) && middle.data<uint32_t>()[0] == 22 &&
         middle.data<uint32_t>()[1] == 33, "weak subrange copy has the wrong offset");
-    require(suffix.size_bytes() == 64 && suffix.get_as<uint32_t>() == 33,
+    require(suffix.size_bytes() == 2 * sizeof(uint32_t) && suffix.get_as<uint32_t>() == 33,
         "weak default-length subrange did not copy the suffix");
-    require(clamped.size_bytes() == 64 && clamped.get_as<uint32_t>() == 22,
+    require(clamped.size_bytes() == 3 * sizeof(uint32_t) && clamped.get_as<uint32_t>() == 22,
         "weak length overflow did not clamp to the available bytes");
     input.fill(0);
     require(whole.get_as<uint32_t>() == 12 && middle.get_as<uint32_t>() == 22,

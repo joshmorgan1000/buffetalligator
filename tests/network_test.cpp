@@ -70,7 +70,7 @@ struct alignas(16) TestPlacement {
     static void* host_ptr(void* handle) { return static_cast<TestPlacement*>(handle)->memory; }
     static size_t size_of(void* handle) { return static_cast<TestPlacement*>(handle)->bytes; }
     static void* factory(size_t size) { return new TestPlacement(size); }
-    static size_t default_size() { return 16u * 1024u * 1024u; }
+    static size_t default_size() { return 256u * 1024u * 1024u; }
     static size_t* type_idx() { static size_t idx = 0; return &idx; }
     static const char* type_name() { return name; }
     static uint64_t device_address(void* handle) { return reinterpret_cast<uint64_t>(host_ptr(handle)); }

@@ -63,7 +63,7 @@ int ba_net_frame_size(const unsigned char* header, size_t* size) {
  * @brief Captures the Slice view before its receiver issues an encryption challenge.
  */
 int ba_net_snapshot(const ba_slice_t* slice, unsigned flags, ba_net_frame* frame) {
-    if (slice->record == BA_NULL_ID) return UV_EINVAL;
+    if (!(slice->type & BA_SLICE_VALID)) return UV_EINVAL;
     const size_t bytes = ba_slice_size(slice);
     const char* name = ba_placement_name(ba_slice_placement(slice));
     if (!name) return UV_EINVAL;

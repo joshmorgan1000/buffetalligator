@@ -25,13 +25,12 @@
     #include <altivec.h>
     #define ALLIGATOR_SIMD_MODE 5
 #endif
+#include <alligator.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
 namespace buffetalligator {
-/// @brief Dependent false for static_assert inside constexpr-if chains.
-template<typename> struct always_false : std::false_type {};
 /** --------------------------------------------------------------------------------------------------------- SIMDMisc
  * @struct SIMDMisc
  * @brief Static utility class for SIMD operations

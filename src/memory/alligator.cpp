@@ -10,8 +10,10 @@
 #include <gpu/backend.hpp>
 #include <gpu/easyvulkan.hpp>
 #include <memory/chainbuffet.hpp>
+#include <memory/slicetype.hpp>
 #include <memory/tracker.hpp>
 #include <atomic>
+#include <cstring>
 #include <thread>
 
 namespace buffetalligator {
@@ -43,10 +45,6 @@ void BuffetDescriptors::record_deallocation(size_t type, size_t bytes, const voi
     Memory::record_deallocation(*BuffetDescriptors::get(type), bytes);
     Memory::forget_code_location(buffet);
 }
-/** --------------------------------------------------------------------------------------------------------- Chain Lane
- * @brief The lane this thread claims from, picked at its first claim.
- */
-thread_local size_t Alligator::chain_lane = SIZE_MAX;
 /** --------------------------------------------------------------------------------------------------------- Current ChainBuffet for Placement
  * @brief The current link of this thread's lane of the placement's chains, made on the first touch; with an
  * expected link it is a compare-and-swap of the lane's current link instead.
@@ -55,27 +53,68 @@ thread_local size_t Alligator::chain_lane = SIZE_MAX;
  * @param desired The link to move the lane to.
  * @return The current link, or the desired link when the swap landed and null when it did not.
  */
+/// @brief The lanes' current links, four per placement, grown as placements register; the sentinel while growing.
+static std::atomic<void*> heads;
+/// @brief The placements the lanes cover.
+static std::atomic<size_t> num_heads{0};
 ChainBuffet* Alligator::current_for(const BuffetDescriptor* desc, ChainBuffet** expected, ChainBuffet* desired) {
-    static std::array<std::atomic<ChainBuffet*>, 128 * CHAIN_LANES> heads{};
     static std::atomic<size_t> lane_counter{0};
-    /// A thread's lane is fixed at its first claim, so a placement's claimers spread across its chains.
-    if (chain_lane == SIZE_MAX) chain_lane = lane_counter.fetch_add(1, std::memory_order_relaxed) % CHAIN_LANES;
-    std::atomic<ChainBuffet*>& current = heads[*desc->type_idx_getter() * CHAIN_LANES + chain_lane];
-    if (expected != nullptr || desired != nullptr) {
-        return current.compare_exchange_strong(*expected, desired, std::memory_order_acq_rel) ? desired : nullptr;
-    }
-    ChainBuffet* link = current.load(std::memory_order_acquire);
-    while (link == nullptr || link == PENDING_LINK) {
-        ChainBuffet* none = nullptr;
-        if (current.compare_exchange_strong(none, PENDING_LINK, std::memory_order_acq_rel)) {
-            link = ChainBuffet::open(desc, desc->default_size_method(), false, true);
-            current.store(link, std::memory_order_release);
-            return link;
+    static thread_local size_t lane = lane_counter.fetch_add(1, std::memory_order_relaxed) % 4;
+    const size_t current_size = num_heads.load(std::memory_order_acquire);
+    if (current_size <= desc->index) {
+        /// A probe or swap of lanes that have no links yet finds nothing; only a claim grows the heads.
+        if (expected != nullptr || desired != nullptr) return nullptr;
+        void* desired = reinterpret_cast<void*>(-1ll);
+        void* expected = heads.load(std::memory_order_acquire);
+        if (expected != desired && heads.compare_exchange_strong(expected, desired, std::memory_order_acq_rel)) {
+            /// The new lanes start empty; each makes its link on its first claim.
+            std::atomic<ChainBuffet*>* lane_heads = new std::atomic<ChainBuffet*>[(desc->index + 1) * 4]();
+            std::memcpy(lane_heads, expected, current_size * 4 * sizeof(std::atomic<ChainBuffet*>));
+            num_heads.store(desc->index + 1, std::memory_order_release);
+            heads.store(reinterpret_cast<void*>(lane_heads), std::memory_order_release);
         }
-        std::this_thread::yield();
-        link = current.load(std::memory_order_acquire);
     }
-    return link;
+    while (heads.load(std::memory_order_acquire) == reinterpret_cast<void*>(-1ll)) {
+        std::this_thread::yield();
+    }
+    if (desired == nullptr && expected == nullptr) {
+        std::atomic<ChainBuffet*>& current =
+            reinterpret_cast<std::atomic<ChainBuffet*>*>(heads.load(std::memory_order_acquire))[desc->index * 4 + lane];
+        ChainBuffet* link = current.load(std::memory_order_acquire);
+        while (link == nullptr || link == PENDING_LINK) {
+            ChainBuffet* none = nullptr;
+            if (current.compare_exchange_strong(none, PENDING_LINK, std::memory_order_acq_rel)) {
+                /// A lane's first link carries the placement's own table when it has one, otherwise the chain's.
+                const types::SliceSemantics* table = desc->semantics != nullptr
+                    ? static_cast<const types::SliceSemantics*>(desc->semantics)
+                    : &SliceStatics::semantics_of(typeid(ChainBuffet));
+                std::atomic<ChainBuffet*>* lane_heads =
+                    reinterpret_cast<std::atomic<ChainBuffet*>*>(heads.load(std::memory_order_acquire));
+                link = new ChainBuffet(
+                    desc,
+                    desc->default_size_method(),
+                    const_cast<types::SliceSemantics*>(table),
+                    desc->type != 0 ? desc->type : table->type,
+                    lane_heads + desc->index * 4 + lane,
+                    1,
+                    false
+                );
+                current.store(link, std::memory_order_release);
+                return link;
+            }
+            std::this_thread::yield();
+            link = current.load(std::memory_order_acquire);
+        }
+        return link;
+    }
+    reinterpret_cast<std::atomic<ChainBuffet*>*>(
+        heads.load(std::memory_order_acquire)
+    )[desc->index * 4 + lane].compare_exchange_strong(
+        *expected,
+        desired,
+        std::memory_order_acq_rel
+    );
+    return *expected;
 }
 /** --------------------------------------------------------------------------------------------------------- Buffet Of
  * @brief The buffet object behind a Slice's bytes: the link's buffer as the placement's hooks see it.
@@ -83,18 +122,8 @@ ChainBuffet* Alligator::current_for(const BuffetDescriptor* desc, ChainBuffet** 
  * @return The buffet object.
  */
 void* Alligator::buffet_of(const Slice& slice) {
-    const uintptr_t bits = reinterpret_cast<uintptr_t>(slice.record_);
-    return reinterpret_cast<SliceRecord*>(bits & ~SLICE_VIEW_FLAG)->link->buffer_;
-}
-/** --------------------------------------------------------------------------------------------------------- Retain
- * @brief One more Slice on a claim: an owner on the record, or a view on the link whose bytes it keeps.
- * @param slice The Slice being shared.
- */
-void Alligator::retain(const Slice& slice) {
-    const uintptr_t bits = reinterpret_cast<uintptr_t>(slice.record_);
-    SliceRecord* record = reinterpret_cast<SliceRecord*>(bits & ~SLICE_VIEW_FLAG);
-    if (bits & SLICE_VIEW_FLAG) record->link->count_.fetch_add(1, std::memory_order_acq_rel);
-    else std::atomic_ref<uint32_t>(record->owners).fetch_add(1, std::memory_order_acq_rel);
+    return slice.is_pooled() ? static_cast<ChainBuffet*>(slice.parent_)->handle_
+                             : static_cast<Slice*>(slice.parent_)->parent_;
 }
 /** --------------------------------------------------------------------------------------------------------- Instance
  * @brief The process Alligator, built on first use and never destroyed before static owners retire.
@@ -105,23 +134,11 @@ Alligator& Alligator::inst() {
     return *alligator;
 }
 /** --------------------------------------------------------------------------------------------------------- Destroy
- * @brief Drops one Slice from its claim: a view lets go of the link it kept; the last owner out runs the element
- * type's destructor over the whole claim and lets go of the link it is on.
- * @param slice The Slice to destroy.
+ * @brief A chain root's last handle is gone: the root's count leaves its link.
+ * @param root The root.
  */
-void Alligator::destroy(Slice& slice) {
-    const uintptr_t bits = reinterpret_cast<uintptr_t>(slice.record_);
-    SliceRecord* record = reinterpret_cast<SliceRecord*>(bits & ~SLICE_VIEW_FLAG);
-    if (bits & SLICE_VIEW_FLAG) {
-        record->link->release();
-        return;
-    }
-    if (std::atomic_ref<uint32_t>(record->owners).fetch_sub(1, std::memory_order_acq_rel) != 1) return;
-    if (record->type != 0) {
-        const SliceTypeRecord* type = SliceTypes::get(record->type);
-        type->destroy(record->host, (size_t(record->gpu.size) << 6) / type->size_per_element);
-    }
-    record->link->release();
+void Alligator::destroy(Slice& root) {
+    SliceStatics::CHAIN_BUFFER_SEMANTICS.destructor_fn(root);
 }
 /** --------------------------------------------------------------------------------------------------------- Alligator Constructor
  * @brief Registers every buffet type and lets the GPU probe make its placement the default.
@@ -134,70 +151,56 @@ Alligator::Alligator() {
     LOG_INFO_STREAM << "Buffet Alligator initialized";
 }
 /** --------------------------------------------------------------------------------------------------------- Finalize
- * @brief The teardown's allocator phase, after the Kitchen has stopped: every lane's current link, the one ahead
- * of it and the one behind it let go of the chain's hold, so a drained chain frees its slabs, and the parked
- * spares go back to their placements.
+ * @brief The teardown's allocator phase, after the Kitchen has stopped: every lane of every placement lets go
+ * of its current link, the one ahead of it and the one behind it, so a drained chain frees its slabs.
  */
 void Alligator::finalize() {
-    for (size_t index = 0; const BuffetDescriptor* desc = BuffetDescriptors::get(index); ++index) {
-        for (size_t lane = 0; lane < CHAIN_LANES; ++lane) {
-            chain_lane = lane;
-            ChainBuffet* probe = nullptr;
-            current_for(desc, &probe, nullptr);
-            ChainBuffet* current = probe;
-            if (current == nullptr || current == PENDING_LINK) continue;
-            ChainBuffet* links[3] = {current->prev_.load(std::memory_order_acquire), current,
-                current->next_.load(std::memory_order_acquire)};
-            ChainBuffet* retiring = current;
-            current_for(desc, &retiring, nullptr);
-            for (ChainBuffet* link : links) {
-                if (link == nullptr || link == PENDING_LINK) continue;
-                link->close();
-            }
+    void* grown = heads.load(std::memory_order_acquire);
+    if (grown == nullptr || grown == reinterpret_cast<void*>(-1ll)) return;
+    std::atomic<ChainBuffet*>* lanes = static_cast<std::atomic<ChainBuffet*>*>(grown);
+    const size_t slots = num_heads.load(std::memory_order_acquire) * 4;
+    for (size_t slot = 0; slot < slots; ++slot) {
+        ChainBuffet* current = lanes[slot].exchange(nullptr, std::memory_order_acq_rel);
+        if (current == nullptr || current == PENDING_LINK) continue;
+        ChainBuffet* links[3] = {current->prev_.load(std::memory_order_acquire), current,
+            current->next_.load(std::memory_order_acquire)};
+        if (links[0] == current) links[0] = nullptr;
+        for (ChainBuffet* link : links) {
+            if (link == nullptr || link == PENDING_LINK) continue;
+            while (ChainBuffet::decrement_refcount(link)) {}
         }
-        /// The pending sentinel closes the slot, so a slab retired after teardown frees instead of parking.
-        void* spare = ChainBuffet::spares_[index].exchange(PENDING_LINK, std::memory_order_acq_rel);
-        if (spare && spare != PENDING_LINK) desc->active_deleter(spare);
     }
-    chain_lane = SIZE_MAX;
 }
 /** --------------------------------------------------------------------------------------------------------- Alligator Destructor
  * @brief The Alligator owns nothing of its own beyond the lanes, which finalize has already drained.
  */
 Alligator::~Alligator() {}
-/** --------------------------------------------------------------------------------------------------------- Alligator::claim
- * @brief Claims a Slice: a record and its payload cut from this thread's lane of the placement, or a dedicated
- * link for a novel or slab-sized request.
- * @param size The size of the Slice to claim.
- * @param novel Whether the Slice should be allocated in a novel buffet.
- * @param placement The placement descriptor for the Slice.
- * @param type The type index for the Slice.
- * @return The claimed Slice.
+/** --------------------------------------------------------------------------------------------------------- For Type
+ * @brief Retrieves the placement descriptor for the given type index.
+ * @param type The type index.
+ * @return The placement descriptor for the type.
  */
-Slice Alligator::claim(
-    size_t size,
-    bool novel,
-    const BuffetDescriptor* placement,
-    uint32_t type
-) {
-    if (size == 0) [[unlikely]] return Slice{};
-    if (size > 0xFFFFFFFFu - 63u) [[unlikely]] ALLIGATOR_THROW("Alligator::claim: requested size exceeds 32-bit limit");
-    const size_t total = sizeof(SliceRecord) + ((size + 63u) & ~size_t{63});
-    SliceRecord* record;
-    if (novel || total >= placement->default_size_method()) {
-        /// A dedicated link serves this one record and closes behind it, so the record's release frees it.
-        ChainBuffet* link = ChainBuffet::open(placement, total, true, false);
-        record = link->claim(total);
-        link->count_.fetch_add(ChainBuffet::CLOSED, std::memory_order_release);
-    } else {
-        record = current_for(placement)->claim(total);
-    }
-    record->owners = 1u;
-    record->type = type;
-    Slice slice;
-    slice.gpu_ = record->gpu;
-    slice.host_ = record->host;
-    slice.record_ = record;
-    return slice;
+const BuffetDescriptor* Alligator::for_type(uint32_t type) {
+    const BuffetDescriptor* placement = SliceStatics::semantics(type).placement;
+    return placement != nullptr ? placement : Slice::default_placement();
+}
+/** --------------------------------------------------------------------------------------------------------- Add Typed Placement
+ * @brief A type's placement: the base placement's hooks under the registry's next index, so the type's claims
+ * come from chains of their own that carry its table and type word.
+ * @param base The placement whose memory the type's claims come from.
+ * @param semantics The type's table.
+ * @param type The type word its claims carry.
+ * @return The type's placement descriptor.
+ */
+const BuffetDescriptor* BuffetDescriptors::add_typed(const BuffetDescriptor& base, const void* semantics, uint32_t type) {
+    std::unique_lock write_lock(mutex_);
+    const size_t index = list_.size();
+    BuffetDescriptor* placement = new BuffetDescriptor(base);
+    placement->semantics = semantics;
+    placement->type = type;
+    placement->index = index;
+    placement->base = base.base;
+    list_.emplace_back(placement);
+    return placement;
 }
 } // namespace buffetalligator

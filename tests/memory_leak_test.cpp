@@ -40,23 +40,22 @@
 using namespace buffetalligator;
 using functional::require;
 namespace {
-constexpr size_t slab_bytes = 64ull << 20;  ///< The built-in placements' slab size.
 constexpr size_t rounds = 4;                ///< Churn rounds per placement.
 constexpr size_t ring_length = 4;           ///< Slices each thread keeps alive at once.
+constexpr size_t minimum_chain_bytes = 64 * 1024 * 1024;  ///< Smallest buffer a chain links; smaller buffers are novel.
+constexpr size_t links_per_lane = 5;  ///< The link that just filled plus the four take_to_front keeps past it.
 /** --------------------------------------------------------------------------------------------------------- Settle
- * @brief Waits up to ten seconds for retired backing usage to recover.
+ * @brief Waits up to ten seconds for backing usage to fall to what the placement's chains retain by design.
  */
-bool settle(const BuffetDescriptor& placement, size_t usage) {
+bool settle(const BuffetDescriptor& placement, size_t ceiling) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     auto report_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-    /// One retired slab may sit parked as the placement's spare, so usage may rest one slab either way.
-    while (Memory::placement_usage(placement) > usage + slab_bytes
-        || usage > Memory::placement_usage(placement) + slab_bytes) {
+    while (Memory::placement_usage(placement) > ceiling) {
         const auto now = std::chrono::steady_clock::now();
         if (now > deadline) return false;
         if (now >= report_at) {
             LOG_INFO_STREAM << placement.type_name_fn() << ": waiting for backing usage "
-                << Memory::placement_usage(placement) << " to recover to " << usage << " bytes";
+                << Memory::placement_usage(placement) << " to fall to " << ceiling << " bytes";
             report_at = now + std::chrono::seconds(1);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -120,14 +119,14 @@ void churn(const BuffetDescriptor* placement, size_t max_claim, size_t claims, s
             slot = Slice(mixed, true, placement);
             slot.data<uint8_t>()[0] = marker;
             slot.resize(mixed + 4096, true, true, placement);
-            require(slot.size_bytes() == ((mixed + 4096 + 63) & ~size_t(63)) && slot.data<uint8_t>()[0] == marker,
+            require(slot.size_bytes() == mixed + 4096 && slot.data<uint8_t>()[0] == marker,
                 "novel growth lost its size or payload");
             break;
         case 1:  // Shrinking keeps the backing and narrows to a view.
             slot = Slice(mixed + 64, true, placement);
             slot.data<uint8_t>()[0] = marker;
             slot.resize(mixed / 2 + 1, true, true, placement);
-            require(slot.size_bytes() == ((mixed / 2 + 1 + 63) & ~size_t(63)) && slot.data<uint8_t>()[0] == marker,
+            require(slot.size_bytes() == mixed / 2 + 1 && slot.data<uint8_t>()[0] == marker,
                 "shrink lost its size or payload");
             break;
         case 2: {  // A shared novel buffer must grow by copy and leave the other owner intact.
@@ -135,31 +134,34 @@ void churn(const BuffetDescriptor* placement, size_t max_claim, size_t claims, s
             slot.data<uint8_t>()[0] = marker;
             Slice other_owner = slot;
             slot.resize(mixed + 4096, true, true, placement);
-            require(slot.size_bytes() == ((mixed + 4096 + 63) & ~size_t(63)) && slot.data<uint8_t>()[0] == marker &&
-                other_owner.size_bytes() == ((mixed + 63) & ~size_t(63)) && other_owner.data<uint8_t>()[0] == marker,
-                "shared growth disturbed an owner");
+            require(slot.size_bytes() == mixed + 4096 && slot.data<uint8_t>()[0] == marker &&
+                other_owner.size_bytes() == mixed && other_owner.data<uint8_t>()[0] == marker,
+                "shared growth disturbed an owner: requested ", mixed, " then ", mixed + 4096, ", grown ",
+                slot.size_bytes(), " bytes marker ", unsigned(slot.data<uint8_t>()[0]), ", other owner ",
+                other_owner.size_bytes(), " bytes marker ", unsigned(other_owner.data<uint8_t>()[0]),
+                " expected ", unsigned(marker));
             break;
         }
         case 3:  // A chain claim grows by copy out of its slab.
             slot = Slice(mixed, false, placement);
             slot.data<uint8_t>()[0] = marker;
             slot.resize(mixed + 4096, true, false, placement);
-            require(slot.size_bytes() == ((mixed + 4096 + 63) & ~size_t(63)) && slot.data<uint8_t>()[0] == marker,
+            require(slot.size_bytes() == mixed + 4096 && slot.data<uint8_t>()[0] == marker,
                 "chain growth lost its size or payload");
             break;
         case 4:  // Discarding resize reallocates without carrying the payload.
             slot = Slice(mixed, false, placement);
             slot.resize(mixed + 4096, false, false, placement);
-            require(slot.size_bytes() == ((mixed + 4096 + 63) & ~size_t(63)), "discarding resize returned the wrong size");
+            require(slot.size_bytes() == mixed + 4096, "discarding resize returned the wrong size");
             break;
         case 5:  // Resizing a null Slice claims fresh storage.
             slot = Slice();
             slot.resize(mixed, true, false, placement);
-            require(slot.size_bytes() == ((mixed + 63) & ~size_t(63)), "null resize returned the wrong size");
+            require(slot.size_bytes() == mixed, "null resize returned the wrong size");
             break;
         default:
             slot = Slice(mixed, false, placement);
-            require(slot.size_bytes() == ((mixed + 63) & ~size_t(63)), "chain claim returned the wrong size");
+            require(slot.size_bytes() == mixed, "chain claim returned the wrong size");
         }
         slot.data<uint8_t>()[0] = static_cast<uint8_t>(claim);
         Slice shared = slot;
@@ -171,6 +173,9 @@ void churn(const BuffetDescriptor* placement, size_t max_claim, size_t claims, s
  * @brief Checks backing bytes and allocator residency after repeated ownership churn.
  */
 void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t churn_budget, bool device_memory) {
+    const size_t slab_bytes = placement->default_size_method();
+    require(slab_bytes >= minimum_chain_bytes, placement->type_name_fn(), ": chain buffers must be at least 64 MiB");
+    const size_t chain_ceiling = functional::LANES * links_per_lane * slab_bytes;
     const size_t threads = std::max(1u, std::thread::hardware_concurrency());
     const size_t max_claim = std::min<size_t>(8ull << 20, live_budget / (threads * ring_length * 2));
     const size_t claims = churn_budget / ((rounds + 1) * threads * (max_claim / 2));  // A total leak stays inside the budget.
@@ -199,24 +204,30 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
     }
     const size_t churned = Memory::placement_allocations(*placement) - allocated_before;
     require(churned > 4 * slab_bytes, "churn did not cycle enough slabs to expose a leak");
-    if (!settle(*placement, usage_before)) {
-        LOG_ERROR_STREAM << placement->type_name_fn() << ": retained backing bytes changed from "
-            << usage_before << " to " << Memory::placement_usage(*placement);
+    if (!settle(*placement, chain_ceiling)) {
+        LOG_ERROR_STREAM << placement->type_name_fn() << ": backing usage " << Memory::placement_usage(*placement)
+            << " stayed above the " << chain_ceiling << " bytes its chains retain";
         require(false, "retired backing bytes leaked");
     }
+    const size_t usage_after = Memory::placement_usage(*placement);
+    /// The round-one baseline can predate full chain depth, so growth up to the ceiling is by design.
+    const long long chain_growth = static_cast<long long>(usage_after) - static_cast<long long>(usage_before);
     const std::optional<size_t> malloc_after = malloc_in_use();
     const size_t resident_after = settled_residency();
     const long long resident_growth = static_cast<long long>(resident_after)
         - static_cast<long long>(resident_before);
     LOG_INFO_STREAM << placement->type_name_fn() << ": churned " << (churned >> 20)
-        << " MiB, live " << (usage_before >> 20) << " MiB, residency change "
-        << (resident_growth >> 20) << " MiB";
+        << " MiB, live " << (usage_before >> 20) << " MiB, settled " << (usage_after >> 20)
+        << " MiB of " << (chain_ceiling >> 20) << " MiB, residency change " << (resident_growth >> 20) << " MiB";
     if (malloc_before && malloc_after) {
         const long long malloc_growth = static_cast<long long>(*malloc_after)
             - static_cast<long long>(*malloc_before);
+        /// Heap slabs come from malloc, so the chains' growth shows up in the heap; device slabs do not.
+        const long long heap_chain_growth = device_memory ? 0 : chain_growth;
         LOG_INFO_STREAM << placement->type_name_fn() << ": application-owned heap change "
-            << malloc_growth << " bytes";
-        require(malloc_growth < (1ll << 20), "the application heap kept memory the churn released");
+            << malloc_growth << " bytes, chain growth " << heap_chain_growth << " bytes";
+        require(malloc_growth < heap_chain_growth + (1ll << 20),
+            "the application heap kept memory the churn released");
     }
     if (device_memory) {
         const DeviceMemoryUsage device_after = GPU::memory_usage();
@@ -225,8 +236,8 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
                 - static_cast<long long>(device_after.available_bytes);
             LOG_INFO_STREAM << placement->type_name_fn() << ": device headroom change "
                 << -headroom_lost << " bytes";
-            require(headroom_lost < static_cast<long long>(2 * slab_bytes),
-                "device heap headroom shrank past the live chain and its parked spare");
+            require(headroom_lost < chain_growth + static_cast<long long>(2 * slab_bytes),
+                "device heap headroom shrank past what the chains retain");
         } else {
             LOG_INFO_STREAM << placement->type_name_fn() << ": device heap budget unavailable";
         }
@@ -235,8 +246,8 @@ void exercise(const BuffetDescriptor* placement, size_t live_budget, size_t chur
     static_cast<void>(device_memory);
     LOG_INFO_STREAM << "ASan process residency includes sanitizer retention and is diagnostic only";
 #else
-    require(!device_memory || resident_growth < static_cast<long long>(2 * slab_bytes),
-        "device memory residency grew past the live chain and its parked spare");
+    require(!device_memory || resident_growth < chain_growth + static_cast<long long>(2 * slab_bytes),
+        "device memory residency grew past what the chains retain");
 #endif
 }
 }
@@ -268,8 +279,8 @@ int main() {
 #endif
     const size_t live_budget = std::min<size_t>(1ull << 30, available_bytes / 8);
     const size_t churn_budget = std::min<size_t>(8ull << 30, available_bytes / 4);
+    const size_t slab_bytes = Slice::default_placement()->default_size_method();
     require(live_budget >= 4 * slab_bytes, "not enough available memory to churn safely");
-    static_cast<void>(Slice::default_placement());
     exercise(BuffetDescriptors::get(0), live_budget, churn_budget, false);
     if (GPU::exists()) {
         exercise(static_cast<const GPUDevice*>(GPU::device_handle())->placement, live_budget, churn_budget, true);

@@ -5,6 +5,7 @@
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
 #include <gpu/easyvulkan.hpp>
+#include <core/ba_descriptor.h>
 #include "functional_support.hpp"
 #include <algorithm>
 #include <array>
@@ -18,7 +19,7 @@ using namespace buffetalligator;
 using functional::require;
 namespace {
 /** --------------------------------------------------------------------------------------------------------- Identity Body
- * @brief Exposes Slice identity, granule bounds, and device address through the GLSL helpers.
+ * @brief Exposes Slice identity, size, and device address through the GLSL helpers.
  */
 constexpr std::string_view identity_body = R"glsl(
 void alligator_main(Slice stream) {
@@ -282,10 +283,10 @@ uint64_t check_identity(const Slice& stream, uint32_t rows) {
     const uint32_t* words = stream.data<uint32_t>();
     const uint64_t* values = stream.data<uint64_t>();
     require(words[1] == (words[0] ^ uint32_t(0x9e3779b9))
-        && words[2] == uint32_t(stream.gpu().address + (uint64_t(stream.gpu().offset) << 6)),
+        && words[2] == uint32_t(reinterpret_cast<const ba_slice_t*>(&stream)->address),
         "The shader changed its marker or Slice identity");
     require(words[3] == rows, "The shader saw the wrong live row count");
-    require(values[2] == stream.size_bytes(), "The shader did not widen length granules to bytes");
+    require(values[2] == stream.capacity(), "The shader did not widen the unit size to bytes");
     require(values[3] != 0, "The shader resolved a null device address");
     return values[3];
 }
@@ -304,15 +305,14 @@ void optimized_noop(const BuffetDescriptor* placement) {
  * @brief Checks rounded subviews and dedicated buffers bound together as rows of one dispatch.
  */
 void identity_and_placement(const BuffetDescriptor* placement) {
-    LOG_INFO_STREAM << "Checking identity, granules, and dedicated addresses across one dispatch";
+    LOG_INFO_STREAM << "Checking identity, sizes, and dedicated addresses across one dispatch";
     Shader shader(identity_body, "backend_identity", 1);
     Slice backing(512, placement);
     std::array<Slice, 4> streams{backing.slice(65, 1), backing.slice(63, 2),
         Slice(65, true, placement), Slice(placement->default_size_method() + 64, false, placement)};
     require(streams[0].size_bytes() == 64 && streams[1].size_bytes() == 128,
         "Outward subviews returned incorrect represented bounds");
-    Slice list = Alligator::claim(streams.size() * sizeof(Slice), false, placement,
-        SliceTypes::register_type<Slice>());
+    Slice list = Alligator::claim(streams.size() * sizeof(Slice), false, placement);
     for (size_t index = 0; index < streams.size(); ++index) {
         streams[index].get_as<uint32_t>() = uint32_t(100 + index);
         list.data<Slice>()[index] = streams[index];
@@ -320,9 +320,11 @@ void identity_and_placement(const BuffetDescriptor* placement) {
     shader(list, streams.size()).get();
     const uint64_t first = check_identity(streams[0], 4);
     const uint64_t second = check_identity(streams[1], 4);
-    require(first == second + 64, "Two views of one slab did not resolve to granule-aligned addresses");
+    require(first == second + 64, "Two views of one slab did not resolve to 64-byte aligned addresses");
     check_identity(streams[2], 4);
     check_identity(streams[3], 4);
+    /// The rows are copies the list's bytes hold, so they let go before the list does.
+    for (size_t index = 0; index < streams.size(); ++index) list.data<Slice>()[index].free();
 }
 /** --------------------------------------------------------------------------------------------------------- Embedded Ids
  * @brief A bound Slice holding two other Slices; the shader reads both as they are.
@@ -333,20 +335,21 @@ void embedded_ids(const BuffetDescriptor* placement) {
 void alligator_main(Slice invocation) {
     if (gl_LocalInvocationIndex != 0u) return;
     Slice source = slice_read(slice_address(invocation));
-    Slice destination = slice_read(slice_address(invocation) + 64ul);
+    Slice destination = slice_read(slice_address(invocation) + 32ul);
     slice_store_u32(destination, 0u, slice_load_u32(source, 0u) + 1u);
 }
 )glsl";
     Slice source(64, true, placement);
     Slice destination(64, true, placement);
     source.get_as<uint32_t>() = 53;
-    Slice invocation = Alligator::claim(2 * sizeof(Slice), false, placement,
-        SliceTypes::register_type<Slice>());
+    Slice invocation = Alligator::claim(2 * sizeof(Slice), false, placement);
     invocation.data<Slice>()[0] = source;
     invocation.data<Slice>()[1] = destination;
     Shader shader(body, "backend_embedded", 1);
     shader(invocation).get();
     require(destination.get_as<uint32_t>() == 54, "An embedded id did not resolve to its Slice");
+    invocation.data<Slice>()[0].free();
+    invocation.data<Slice>()[1].free();
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Context
  * @brief One thread's payload against the shared prepared Shader.
@@ -379,7 +382,7 @@ void concurrent_dispatch(const BuffetDescriptor* placement) {
     for (const auto& context : contexts) check_identity(context->stream, 1);
 }
 /** --------------------------------------------------------------------------------------------------------- Whole Buffer Size
- * @brief Resolves exact granule lengths of dedicated buffers and retained views beyond 64 MiB.
+ * @brief Resolves exact sizes of dedicated buffers and retained views beyond 64 MiB.
  */
 void whole_buffer_size(const BuffetDescriptor* placement) {
     LOG_INFO_STREAM << "Checking exact buffer and view lengths beyond 64 MiB";
@@ -388,7 +391,7 @@ void whole_buffer_size(const BuffetDescriptor* placement) {
     require(large.size_bytes() == view_bytes + 128, "A whole-buffer Slice lost its exact length");
     Slice view = large.slice(64, view_bytes);
     require(view.size_bytes() == view_bytes && view.data() == large.data() + 64,
-        "A large view rounded its granule length or changed its buffer offset");
+        "A large view rounded its size or changed its buffer offset");
     Shader shader(identity_body, "backend_whole_buffer", 1);
     shader(large).get();
     const uint64_t base = check_identity(large, 1);

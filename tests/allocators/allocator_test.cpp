@@ -34,8 +34,7 @@ void host_memory() {
         std::memset(allocation.raw(), 0x35, allocation.size_bytes());
         LOG_INFO_STREAM << "Placement usage before " << before << ", after " << Memory::placement_usage(*placement)
                         << ", owned allocation " << allocation.size_bytes();
-        /// A dedicated buffer carries the record granule in front of its payload.
-        require(Memory::placement_usage(*placement) == before + allocation.size_bytes() + sizeof(SliceRecord),
+        require(Memory::placement_usage(*placement) == before + allocation.size_bytes(),
             "tracker omitted the owned host allocation");
         require(allocation.data<unsigned char>()[12345] == 0x35,
             "tracking changed owned memory");
@@ -61,14 +60,13 @@ void mmap_placement() {
         struct stat status{};
         require(fstat(descriptor, &status) == 0, "scratch descriptor is invalid");
         require(status.st_nlink == 0, "scratch file remains linked");
-        require(status.st_size == 16384 + off_t(sizeof(SliceRecord)),
-            "scratch size differs from the novel slab and its record");
+        require(status.st_size == 16384, "scratch size differs from the novel slab");
         require((fcntl(descriptor, F_GETFD) & FD_CLOEXEC) != 0, "scratch descriptor leaks across exec");
         require(parent.data<unsigned char>()[0] == 0 &&
                 parent.data<unsigned char>()[16383] == 0, "fresh mapping is not zero initialized");
         retained = parent.slice(123, 37);
         offset = MmapBuffet::file_offset(retained);
-        require(offset == 64 + sizeof(SliceRecord) && retained.size_bytes() == 128,
+        require(offset == 64 && retained.size_bytes() == 128,
             "subslice file offset is wrong");
         std::memset(retained.raw(), 0x6d, retained.size_bytes());
         MmapBuffet::flush(retained);

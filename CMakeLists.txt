@@ -34,6 +34,7 @@ if(NOT TARGET logging::logging)
 endif()
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
+find_package(absl CONFIG REQUIRED HINTS "${BUFFETALLIGATOR_DEPS_DIR}/abseil")
 if(NOT APPLE)
     find_package(OpenMP QUIET COMPONENTS CXX)
     if(NOT OpenMP_CXX_FOUND)
@@ -61,9 +62,10 @@ add_library(alligator STATIC
     src/gpu/shader.cpp
     src/gpu/shader_source.cpp
     src/memory/slice.cpp
-    src/memory/slicetypes.cpp
+    src/memory/slicetype.cpp
     src/memory/alligator.cpp
     src/memory/registry.cpp
+    src/core/host_memory.cpp
     src/memory/chainbuffet.cpp
     src/kitchen/kitchen.cpp
     src/kitchen/order.cpp
@@ -94,7 +96,7 @@ target_compile_features(alligator PUBLIC cxx_std_20)
 target_compile_definitions(alligator PUBLIC
     BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING=$<BOOL:${BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING}>)
 target_link_libraries(alligator PUBLIC logging::logging Threads::Threads OpenSSL::SSL OpenSSL::Crypto
-    PRIVATE alligator::uv alligator::sodium alligator::fabric)
+    absl::flat_hash_map PRIVATE alligator::uv alligator::sodium alligator::fabric)
 if(APPLE)
     target_compile_options(alligator PUBLIC -fblocks)
 else()
@@ -143,6 +145,15 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/concurrentqueue/include/moodycamel"
         "${BUFFETALLIGATOR_DEPS_DIR}/readerwriterqueue/include/moodycamel"
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# Abseil ships inside the package, headers, archives and its own relocatable config, for downstream consumers.
+install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/abseil/include/absl" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/abseil/lib/" DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        FILES_MATCHING PATTERN "libabsl_*.a" PATTERN "cmake" EXCLUDE PATTERN "pkgconfig" EXCLUDE)
+install(DIRECTORY "${BUFFETALLIGATOR_DEPS_DIR}/abseil/lib/cmake/absl" DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake)
+if(EXISTS "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/abseil/LICENSE")
+    install(FILES "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/abseil/LICENSE"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/alligator/abseil)
+endif()
 if(BUFFETALLIGATOR_OWNS_LOGGING_TARGET)
     set(BUFFETALLIGATOR_INSTALLED_LOGGING_TARGETS "../logging/loggingTargets.cmake")
 else()

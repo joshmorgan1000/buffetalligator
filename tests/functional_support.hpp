@@ -4,32 +4,39 @@
  * @brief Runs isolated public API cases with checks that remain active in release builds.
  */
 #include <logging.hpp>
+#include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <initializer_list>
 #include <string_view>
 
 namespace functional {
+/// @brief The lanes of chains each placement claims from.
+inline constexpr size_t LANES = 4;
+/// @brief The slab size a test placement chains; a lane slab is never smaller than this.
+inline constexpr size_t SLAB_BYTES = 256ull << 20;
 /** --------------------------------------------------------------------------------------------------------- Require
  * @brief Stops immediately when a functional contract fails, including inside worker threads.
  */
-inline void require(bool condition, const char* message) {
+template<typename... Args>
+inline void require(bool condition, Args... message) {
     if (!condition) {
-        LOG_ERROR_STREAM << "FAILED: " << message;
+        LOG_ERROR_STREAM << "FAILED: ";
+        ((LOG_ERROR_STREAM << message), ...);
         std::abort();
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Require Throws
  * @brief Checks that invalid input is rejected by an exception.
  */
-template<typename Function>
-void require_throws(Function&& function, const char* message) {
+template<typename Function, typename... Args>
+void require_throws(Function&& function, Args... message) {
     try {
         function();
     } catch (const std::exception&) {
         return;
     }
-    require(false, message);
+    require(false, "Exception not thrown: ", message...);
 }
 /** --------------------------------------------------------------------------------------------------------- Case
  * @brief Associates a CTest case name with its public API exercise.

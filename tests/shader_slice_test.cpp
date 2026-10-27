@@ -6,6 +6,7 @@
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
 #include <gpu/easyvulkan.hpp>
+#include <core/ba_descriptor.h>
 #include "functional_support.hpp"
 #include <array>
 #include <cstdint>
@@ -41,11 +42,11 @@ void alligator_main(Slice stream) {
 static void check_identity(const Slice& stream, uint32_t count, uint32_t index, uint32_t workgroups) {
     const uint32_t* words = stream.data<uint32_t>();
     const uint64_t* values = stream.data<uint64_t>();
-    require(words[0] == uint32_t(stream.gpu().address + (uint64_t(stream.gpu().offset) << 6)),
+    require(words[0] == uint32_t(reinterpret_cast<const ba_slice_t*>(&stream)->address),
         "The shader resolved a different Slice than the one dispatched");
     require(words[1] == count && words[2] == index, "The dispatch published the wrong row count or row");
     require(words[3] == workgroups, "The dispatch did not use the shader's configured workgroups");
-    require(values[3] == stream.size_bytes(), "The shader did not widen granules to bytes");
+    require(values[3] == stream.capacity(), "The shader did not widen the unit size to bytes");
 }
 /** --------------------------------------------------------------------------------------------------------- Shader Identity
  * @brief Dispatches one Slice and checks every published field, then again with a new workgroup count.
@@ -68,8 +69,7 @@ static void list_dispatch() {
     Slice storage(256, VulkanContext::buffer_placement());
     std::array<Slice, 4> streams{storage.slice(0, 64), storage.slice(64, 64), storage.slice(128, 64),
         storage.slice(192, 64)};
-    Slice list = Alligator::claim(streams.size() * sizeof(Slice), false, VulkanContext::buffer_placement(),
-        SliceTypes::register_type<Slice>());
+    Slice list = Alligator::claim(streams.size() * sizeof(Slice), false, VulkanContext::buffer_placement());
     for (size_t index = 0; index < streams.size(); ++index) list.data<Slice>()[index] = streams[index];
     shader(list, streams.size()).get();
     const uint64_t base = streams[0].data<uint64_t>()[2];
@@ -78,6 +78,8 @@ static void list_dispatch() {
         require(streams[index].data<uint64_t>()[2] == base + 64 * index,
             "A view resolved to the wrong offset inside its slab");
     }
+    /// The rows are copies the list's bytes hold, so they let go before the list does.
+    for (size_t index = 0; index < streams.size(); ++index) list.data<Slice>()[index].free();
 }
 /** --------------------------------------------------------------------------------------------------------- Ring Wrap
  * @brief Submits far more dispatches than the shader has slots before waiting on any of them.
@@ -114,14 +116,15 @@ static void callbacks() {
     require(result.get() == shared, "get() did not return the shared context");
     auto second = std::make_shared<SharedArrival>();
     std::array<Slice, 2> streams{payload.slice(), Slice(64, VulkanContext::buffer_placement())};
-    Slice list = Alligator::claim(2 * sizeof(Slice), false, VulkanContext::buffer_placement(),
-        SliceTypes::register_type<Slice>());
+    Slice list = Alligator::claim(2 * sizeof(Slice), false, VulkanContext::buffer_placement());
     list.data<Slice>()[0] = streams[0];
     list.data<Slice>()[1] = streams[1];
     shader(list, streams.size(), &SharedArrival::arrive, second);
     second->done.wait();
     require(payload.get_as<uint32_t>() == 2 && streams[1].get_as<uint32_t>() == 1,
         "The list callback fired before every row retired");
+    list.data<Slice>()[0].free();
+    list.data<Slice>()[1].free();
 }
 /** --------------------------------------------------------------------------------------------------------- Submitter
  * @brief One thread's share of a prepared Shader: its own Slice incremented in a loop.

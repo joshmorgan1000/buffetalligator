@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Slab Churn Benchmark
  * @file slab_churn_benchmark.cpp
- * @brief Measures normal-operation claims that roll through 64 MiB slabs and checks that no buffer
+ * @brief Measures normal-operation claims that roll through 256 MiB slabs and checks that no buffer
  * outlives its Slices, with allocation tracking on or off.
  */
 #include "benchmark_support.hpp"
@@ -26,7 +26,8 @@ using buffetalligator::BuffetDescriptors;
 using buffetalligator::GPU;
 using buffetalligator::Memory;
 using buffetalligator::Slice;
-constexpr size_t SLAB_BYTES = size_t{64} * 1024 * 1024;
+constexpr size_t SLAB_BYTES = size_t{256} * 1024 * 1024;
+constexpr size_t LANES = 4;  ///< The lanes of chains each placement claims from.
 /// @brief Request sizes each worker cycles from its own phase, mostly small with rare large ones.
 constexpr std::array<size_t, 16> SIZES{
     64, 64, 128, 192, 256, 512, 1024, 64, 128, 2048, 4096, 256, 64, 16384, 512, 65536};
@@ -85,7 +86,7 @@ Configuration parse(int count, char** arguments) {
     return config;
 }
 /** --------------------------------------------------------------------------------------------------------- Counted Placement
- * @brief A 64 MiB heap placement that reports to the tracker and also counts its own buffers.
+ * @brief A 256 MiB heap placement that reports to the tracker and also counts its own buffers.
  */
 struct alignas(16) Counted {
     static inline std::atomic<int64_t> live_buffers{0};
@@ -310,7 +311,7 @@ void run(const Configuration& config, const BuffetDescriptor* placement, const c
         const LiveState state = snapshot(*placement);
         /// Each lane keeps up to three links and the placement one parked spare, and the lanes drift between
         /// samples, so the live set is bounded rather than fixed.
-        constexpr int64_t pinned_bound = 3 * buffetalligator::CHAIN_LANES + 1;
+        constexpr int64_t pinned_bound = 3 * LANES + 1;
         if (counted) {
             require(state.counted_buffers <= pinned_bound,
                 "The counted placement held buffers beyond its lanes' chains and the parked spare.");
@@ -342,7 +343,7 @@ void run(const Configuration& config, const BuffetDescriptor* placement, const c
     const double median = seconds[seconds.size() / 2];
     const double total_claims = double(claims * config.workers);
     LOG_INFO_STREAM << name << (Timed ? " latency" : " throughput") << " workers=" << config.workers
-        << " tracking=on"
+        << " tracking=" << (buffetalligator::BuffetDescriptors::allocation_tracking() ? "on" : "off")
         << ": median " << median * 1000 << " ms per " << config.gib << " GiB, "
         << total_claims / median / 1e6 << " M claims/s, " << double(config.gib << 30) / median / 1e9
         << " GB/s claimed, " << opened_total / config.repetitions << " slabs opened per sample";
@@ -355,8 +356,8 @@ void run(const Configuration& config, const BuffetDescriptor* placement, const c
             LOG_INFO_STREAM << name << " claims that ran a buffer allocation or free, ns: "
                 << describe(hooked_claims);
             LOG_INFO_STREAM << name << " releases that freed a buffer, ns: " << describe(hooked_releases);
-            LOG_INFO_STREAM << name << " 64 MiB allocations alone, ns: " << describe(Counted::allocations);
-            LOG_INFO_STREAM << name << " 64 MiB frees alone, ns: " << describe(Counted::frees);
+            LOG_INFO_STREAM << name << ' ' << (SLAB_BYTES >> 20) << " MiB allocations alone, ns: " << describe(Counted::allocations);
+            LOG_INFO_STREAM << name << ' ' << (SLAB_BYTES >> 20) << " MiB frees alone, ns: " << describe(Counted::frees);
         }
     }
     LOG_INFO_STREAM << name << " live after draining: counted buffers=" << settled->counted_buffers
@@ -371,13 +372,15 @@ void run(const Configuration& config, const BuffetDescriptor* placement, const c
 int main(int count, char** arguments) {
     try {
         const Configuration config = parse(count, arguments);
+        if (config.untracked) buffetalligator::BuffetDescriptors::set_allocation_tracking(false);
         const BuffetDescriptor* device = Slice::default_placement();
         Counted::delay = std::chrono::microseconds(config.factory_delay_us);
         LOG_INFO_STREAM << "Slab churn: workers=" << config.workers << ", " << config.gib
             << " GiB claimed per sample, "
             << (config.size ? std::to_string(config.size) + " B" : std::string("mixed 64 B-64 KiB"))
             << " claims, " << config.live << " live Slices per worker, slab="
-            << (SLAB_BYTES >> 20) << " MiB, tracking=on, device placement="
+            << (SLAB_BYTES >> 20) << " MiB, tracking="
+            << (buffetalligator::BuffetDescriptors::allocation_tracking() ? "on" : "off") << ", device placement="
             << device->type_name_fn();
         if (config.counted) {
             run<false>(config, Counted::descriptor(), "counted-heap");

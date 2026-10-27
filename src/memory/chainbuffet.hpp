@@ -12,67 +12,77 @@
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- ChainBuffet
  * @class ChainBuffet
- * @brief One slab cut into records by a bump cursor and counted by the records on it plus the chain's own hold,
- * linked to the link kept ahead of it; a dedicated link serves one record and is counted by that record alone.
+ * @brief An atomic linked-list of pre-allocated buffers for slices to claim from.
  */
 class ChainBuffet {
 private:
-    void* buffer_;  ///< The placement's buffet object behind the slab, null once the slab is gone.
-    const BuffetDescriptor* desc_;  ///< The placement.
-    void* host_;  ///< The slab's host address.
-    uint64_t device_;  ///< The slab's device address.
-    size_t size_;  ///< The slab's bytes.
-    bool novel_;  ///< A dedicated link, freed with its one record.
-    alignas(128) std::atomic<uint32_t> count_;  ///< Records on the link plus the chain's hold, CLOSED once let go.
-    alignas(128) std::atomic<size_t> bump_{0};  ///< Bytes cut so far.
-    std::atomic<ChainBuffet*> next_{nullptr};  ///< The link ahead, the pending sentinel while a thread makes it.
-    std::atomic<ChainBuffet*> prev_{nullptr};  ///< The link behind, let go of when this one fills.
-    /// @brief One retired slab per placement, zeroed and parked for the next link to take; shells never return.
-    static std::array<std::atomic<void*>, 128> spares_;
-    ChainBuffet(const BuffetDescriptor* desc, size_t size, bool novel, void* slab);
-    friend class Alligator; friend class Slice;
+    /// @brief Indicates whether the system is in the process of shutting down.
+    static std::atomic<bool>& shutting_down();
+    /// @brief The handle to the allocated buffer.
+    void* handle_;
+    /// @brief The raw host pointer for this buffer.
+    void* host_ptr_;
+    /// @brief The buffet descriptor associated with this buffer.
+    const BuffetDescriptor* desc_;
+    /// @brief stores copy/move/destructor semantics.
+    void* semantics_;
+    /// @brief Type metadata (type_ in the Slice)
+    uint32_t type_;
+    /// @brief Device address, if applicable
+    uint64_t device_;
+    /// @brief Total size of the buffer
+    uint32_t size_;
+    /// @brief The refcount for this buffer.
+    uint32_t count_{1};
+    /// @brief The bump pointer for the current offset to slice.
+    alignas(128) std::atomic<uint32_t> bump_ptr_{0};
+    /// @brief The link ahead, always populated 3 buffers ahead.
+    std::atomic<ChainBuffet*> next_{nullptr};
+    /// @brief One previous buffer is held, rotated out when the
+    /// chain advances before releasing.
+    std::atomic<ChainBuffet*> prev_{nullptr};
+    /// @brief Whether this buffer is a novel allocation, not part of the pre-allocated chain.
+    bool novel_{false};
+    /// @brief Pointer to the current reference in the chain.
+    std::atomic<ChainBuffet*>* ref_current_{nullptr};
+    /// @brief The number of buffers pre-allocated ahead of this one.
+    std::atomic<int> buffers_ahead_{0};
+    /// @brief Returns the next buffer in the chain, and makes sure at least 3 buffers
+    /// ahead are pre-allocated to keep up with high demand when necessary.
+    ChainBuffet* next(int allocate_next = false);
+    /// @brief Claims a slice of the given size from this buffer.
+    Slice claim(uint32_t size, bool novel_buffer = false);
+    /// @brief Moves the specified buffer to the front of the chain (recycles it).
+    void take_to_front(ChainBuffet* buf, int distance_from_current);
+    /** ------------------------------------------------------------------------------------------- ChainBuffet Constructor
+     * @brief Constructs a new ChainBuffet of the specified size and properties.
+     * @param desc The buffet descriptor associated with this buffer.
+     * @param size The total size of the buffer.
+     * @param semantics The copy/move/destructor semantics.
+     * @param type The type metadata for the buffer.
+     * @param ref_current Pointer to the current reference in the chain.
+     * @param alloc_ahead The number of buffers to pre-allocate ahead.
+     * @param novel Whether this buffer is a novel allocation.
+     */
+    ChainBuffet(
+        const BuffetDescriptor* desc,
+        size_t size,
+        void* semantics,
+        uint32_t type,
+        std::atomic<ChainBuffet*>* ref_current,
+        int alloc_ahead,
+        bool novel = false
+    );
+    friend class Alligator; friend class Slice; friend struct SliceStatics;
 public:
-    static constexpr uint32_t CLOSED = 0x80000000u;  ///< The chain has let go; the last count out frees the slab.
-    static constexpr uint32_t RETIRED = CLOSED | 0x40000000u;  ///< The slab is gone from this shell for good.
     ChainBuffet(const ChainBuffet&) = delete;
     ChainBuffet& operator=(const ChainBuffet&) = delete;
     ChainBuffet(ChainBuffet&&) = delete;
     ChainBuffet& operator=(ChainBuffet&&) = delete;
     ~ChainBuffet() = default;
-    /** ------------------------------------------------------------------------------------------- Open
-     * @brief The next link for a placement: a fresh shell around its parked spare slab when there
-     * is one, otherwise around a fresh slab; a chain link may bring the link ahead of it along.
-     * @param desc The placement.
-     * @param size The slab bytes.
-     * @param novel Whether the link is dedicated to one record.
-     * @param ahead Whether to make the link ahead as well.
-     * @return The link.
-     */
-    static ChainBuffet* open(const BuffetDescriptor* desc, size_t size, bool novel, bool ahead);
-    /** ------------------------------------------------------------------------------------------- Next
-     * @brief The link ahead, made by whichever thread finds the slot empty.
-     * @param allocate_next Whether the link ahead gets its own link ahead too.
-     * @return The link ahead.
-     */
-    ChainBuffet* next(bool allocate_next = false);
-    /** ------------------------------------------------------------------------------------------- Claim
-     * @brief Cuts a record and its payload from this link, or from the lane's next link once full.
-     * @param total The bytes to cut, the record granule included.
-     * @return The record, with its GPU record, host pointer and link filled in.
-     */
-    SliceRecord* claim(size_t total);
-    /** ------------------------------------------------------------------------------------------- Release
-     * @brief One count leaves the link; the last one out of a closed link retires its slab.
-     */
-    void release();
-    /** ------------------------------------------------------------------------------------------- Close
-     * @brief The chain lets go of its hold and closes the link to new claims.
-     */
-    void close();
-    /** ------------------------------------------------------------------------------------------- Retire
-     * @brief The last count is gone: a dedicated link frees itself, a chain link parks or frees its slab.
-     */
-    void retire();
+    static bool decrement_refcount(ChainBuffet* buf);
+    static bool is_novel(const ChainBuffet* buf);
+    bool is_novel() const;
 };
 /// @brief The sentinel a link slot holds while one thread makes the link for it.
 inline ChainBuffet* const PENDING_LINK = reinterpret_cast<ChainBuffet*>(-1);

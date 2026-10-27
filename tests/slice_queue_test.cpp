@@ -240,7 +240,7 @@ static void concurrent(size_t producers, size_t consumers, bool spans) {
  * @brief Runs the public queue contract.
  */
 int main() {
-    static_assert(sizeof(Slice) == 64);
+    static_assert(sizeof(Slice) == 32);
     static_assert(!std::is_copy_constructible_v<SliceQueue::Producer>);
     static_assert(!std::is_move_constructible_v<SliceQueue::Consumer>);
     undelivered();

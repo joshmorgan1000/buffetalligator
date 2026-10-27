@@ -611,7 +611,7 @@ static void ba_network_resolved(uv_getaddrinfo_t* request, int status,
  */
 static int ba_network_respond(ba_net_command* command) {
     ba_net_reply* reply = ba_network_reply;
-    if (!reply || reply->peer->closing || reply->replied || command->slice->record == BA_NULL_ID ||
+    if (!reply || reply->peer->closing || reply->replied || !(command->slice->type & BA_SLICE_VALID) ||
         command->callback || command->port != reply->peer->port ||
         command->protocol != reply->peer->protocol)
         return UV_EINVAL;

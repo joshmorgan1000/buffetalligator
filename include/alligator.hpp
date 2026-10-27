@@ -4,12 +4,12 @@
  * @brief Unified header for the BuffetAlligator.
  * (was supposed to be "buffer allocator" but voice-to-text got it wrong and it stuck)
  *                       _.---._
- *                  _.-'   o   `--..__
- *              _.-'                   `-._
- *          _.-'                  o     o  \
- *         /     /              .__________/
- *        /     /   `--.________/  /  /  /
- *       /     /        `-.____________.'
+ *                  _.-'   o   `--..__ 
+ *              _.-'                   `-._      ,-------------.
+ *          _.-'                  o     o  \    |   ITS A       |
+ *         /     /              .__________/    |    MEMORY     |
+ *        /     /   `--.________/  /  /  /    <.   SMORGASBORG! |
+ *       /     /        `-.____________.'        \_____________/
  *      /  ^  /              /
  *     /  ^  /      .-------'
  *    /  ^  /      /      __
@@ -26,6 +26,7 @@
  * Released under the Apache License 2.0.
  */
 #include <logging.hpp>
+#include <vulkan/vulkan.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -48,11 +49,13 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <typeinfo>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cassert>
 #ifdef _WIN32
 #define VK_USE_PLATFORM_WIN32_KHR
 #endif
@@ -61,19 +64,76 @@
 #include <moodycamel/blockingconcurrentqueue.h>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- AlligatorException
- * @class AlligatorException
- * @brief Exception class for Alligator-related errors.
- */
+/** --------------------------------------------------------------------------------------------------------- Exception Classes */
+EXCEPTION_CLASS(AlligatorType)
+#define ALLIGATOR_TYPE_THROW(msg) throw AlligatorTypeException(msg)
+EXCEPTION_CLASS(AlligatorVulkan)
+#define ALLIGATOR_VULKAN_THROW(msg) throw AlligatorVulkanException(msg)
+EXCEPTION_CLASS(AlligatorHeap)
+#define ALLIGATOR_HEAP_THROW(msg) throw AlligatorHeapException(msg)
 EXCEPTION_CLASS(Alligator)
 #define ALLIGATOR_THROW(msg) throw AlligatorException(msg)
 /** ------------------------------------------------------------------------------------- Forward Declarations */
 class Alligator; class Slice; class Memory;
 class ChainBuffet; class SliceQueue; class SliceChannel;
 struct SliceRecord; class PrioritySlice; class HeapSlice;
-struct GPUBuf; class AlignedHeapBuffer;
-class VulkanBuffer; struct BuffetDescriptor; struct SliceTypeRecord;
-class IBuffet;
+class AlignedHeapBuffer; class VulkanBuffer;
+struct BuffetDescriptor; struct SliceTypeRecord; class IBuffet;
+class SliceMap; class PotentialSlice; class SliceQueue;
+template<typename T> class SliceT;
+template<typename T> class SliceMapT;
+template<typename T> class PotentialSliceT;
+template<typename T> class SliceQueueT;
+/// @brief Helper template that always evaluates to false, used for static assertions in templates.
+template<typename> struct always_false : std::false_type {};
+/** --------------------------------------------------------------------------------------------------------- Arguments Holder
+ * @struct ArgumentsHolder
+ * @brief Holds a collection of arguments for stuff.
+ */
+struct ArgumentsHolder {
+    /// @brief Stores the arguments.
+    std::vector<void*> args;
+    /// @brief Stores the deleter functions for the arguments.
+    std::vector<void(*)(void*)> deleters;
+    /// @brief Function to convert the arguments to a tuple.
+    void* (*to_tuple)(std::vector<void*>&&);
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs an ArgumentsHolder with the given arguments.
+     * @tparam Args The types of the arguments.
+     * @param a The arguments to store.
+     */
+    template<typename... Args>
+    ArgumentsHolder(Args... a) {
+        args.reserve(sizeof...(Args));
+        (args.push_back(new std::remove_reference_t<Args>(std::move(a))), ...);
+        deleters.reserve(sizeof...(Args));
+        (deleters.push_back([](void* ptr) {
+            if (ptr) delete static_cast<std::remove_reference_t<Args>*>(ptr);
+        }), ...);
+        to_tuple = [](std::vector<void*>&& args) -> void* {
+            std::tuple<std::remove_reference_t<Args>...>* tuple_ptr =
+                new std::tuple<std::remove_reference_t<Args>...>(
+                    std::move(*static_cast<std::remove_reference_t<Args>*>(args[0]))...
+                );
+            return static_cast<void*>(tuple_ptr);
+        };
+    }
+    /** ------------------------------------------------------------------------------------------- No Copy/Move */
+    ArgumentsHolder(const ArgumentsHolder&) = delete;
+    ArgumentsHolder& operator=(const ArgumentsHolder&) = delete;
+    ArgumentsHolder(ArgumentsHolder&&) = delete;
+    ArgumentsHolder& operator=(ArgumentsHolder&&) = delete;
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Destroys the ArgumentsHolder and calls the deleter functions for all
+     * stored arguments.
+     */
+    ~ArgumentsHolder() { for (size_t i = 0; i < args.size(); ++i) deleters[i](args[i]); }
+    /** ------------------------------------------------------------------------------------------- Drain to Tuple
+     * @brief Converts the stored arguments to a tuple and returns it as a void pointer.
+     * @return A void pointer to the tuple containing the stored arguments.
+     */
+    void* drain_to_tuple() { return to_tuple(std::move(args)); }
+};
 /** --------------------------------------------------------------------------------------------------------- IsABuffetType
  * @brief Concept to check if a type T satisfies the requirements of a Buffet.
  */
@@ -118,6 +178,10 @@ struct BuffetDescriptor {
     using DeviceAddressMethod = uint64_t (*)(void*);
     DeviceAddressMethod device_address;
     void* current_chain = nullptr;  ///< The placement's current chain link, advanced as links fill.
+    const void* semantics = nullptr;  ///< The table Slices claimed here carry, null for the chain's own.
+    uint32_t type = 0;  ///< The type word Slices claimed here carry, zero for the table's own.
+    size_t index = 0;  ///< The placement's index in the registry.
+    const BuffetDescriptor* base = nullptr;  ///< The placement whose memory this is: itself, or a type's base.
 };
 /** --------------------------------------------------------------------------------------------------------- IBuffet
  * @class IBuffet
@@ -160,9 +224,7 @@ public:
     IBuffetProxy(const IBuffetProxy&) = delete;
     IBuffetProxy& operator=(const IBuffetProxy&) = delete;
     IBuffetProxy(IBuffetProxy&& other) noexcept : buffer_(std::exchange(other.buffer_, nullptr)) {}
-    IBuffetProxy& operator=(IBuffetProxy&& other) noexcept {
-        std::swap(buffer_, other.buffer_); return *this;
-    }
+    IBuffetProxy& operator=(IBuffetProxy&& other) noexcept { std::swap(buffer_, other.buffer_); return *this; }
     ~IBuffetProxy() { delete buffer_; }
     operator bool() const { return buffer_ != nullptr; }
     bool operator==(std::nullptr_t) const { return buffer_ == nullptr; }
@@ -175,9 +237,7 @@ public:
     static size_t default_size() { return T().default_size(); }
     static size_t* type_idx() { static size_t idx = 0; return &idx; }
     static const char* type_name() { return T().get_type_name(); }
-    static uint64_t device_address(void* ptr) {
-        return static_cast<IBuffetProxy*>(ptr)->buffer_->device_address();
-    }
+    static uint64_t device_address(void* ptr) { return static_cast<IBuffetProxy*>(ptr)->buffer_->device_address(); }
     size_t size() const { return buffer_->size(); }
     void* raw() { return buffer_->host_ptr(); }
     const void* raw() const { return buffer_->host_ptr(); }
@@ -223,15 +283,27 @@ private:
             .device_address = &T::device_address,
         });
         *list_[index]->type_idx_getter() = index;
+        list_[index]->index = index;
+        list_[index]->base = list_[index];
         if (index == 0) default_descriptor().store(list_[0], std::memory_order_release);
         return list_[index];
     }
+    /** --------------------------------------------------------------------------------------------------------- add_typed
+     * @brief Registers a placement for a type: the base placement's hooks, claiming Slices that carry the
+     * type's table and type word.
+     * @param base The placement whose memory the type's claims come from.
+     * @param semantics The type's table.
+     * @param type The type word its claims carry.
+     * @return A pointer to the type's placement descriptor.
+     */
+    const BuffetDescriptor* add_typed(const BuffetDescriptor& base, const void* semantics, uint32_t type);
+    ~BuffetDescriptors() = default;
+    friend class Slice;
 public:
     BuffetDescriptors(const BuffetDescriptors&) = delete;
     BuffetDescriptors& operator=(const BuffetDescriptors&) = delete;
     BuffetDescriptors(BuffetDescriptors&&) = delete;
     BuffetDescriptors& operator=(BuffetDescriptors&&) = delete;
-    ~BuffetDescriptors() = default;
     /** --------------------------------------------------------------------------------------------------------- descriptor
      * @brief Returns the BuffetDescriptor for a given buffet type T. If the type has not yet been registered,
      * it will register the allocator type and then return the descriptor.
@@ -297,18 +369,49 @@ public:
         }
     }
 };
+/** --------------------------------------------------------------------------------------------------------- Host Memory Usage
+ * @struct HostMemoryUsage
+ * @brief Reports physical capacity, estimated available memory, and this process's resident bytes.
+ */
+struct HostMemoryUsage {
+    uint64_t physical_bytes;
+    uint64_t available_bytes;
+    uint64_t resident_bytes;
+};
+/** --------------------------------------------------------------------------------------------------------- Host Memory Usage Query
+ * @brief Queries the host for its physical bytes, its available bytes, and this process's resident bytes.
+ * @return The host memory usage.
+ */
+HostMemoryUsage host_memory_usage();
+/** --------------------------------------------------------------------------------------------------------- Available Host Bytes
+ * @brief Queries the host, in one call, for the bytes it can hand out without reclaiming.
+ * @return The available bytes.
+ */
+size_t available_host_bytes();
+/// @brief The smallest buffer a chain links; a buffer this large is checked against the host before it is touched.
+inline constexpr size_t SLAB_FLOOR_BYTES = 64ull << 20;
 /** --------------------------------------------------------------------------------------------------------- AlignedHeapBuffer
  * @class AlignedHeapBuffer
  * @brief A heap-allocated buffer with 64-byte alignment.
  */
 class alignas(16) AlignedHeapBuffer {
-private: void* buffer_ = nullptr; size_t size_ = 0;
+private:
+    void* buffer_ = nullptr;
+    size_t size_ = 0;
 public:
     operator bool() const { return buffer_ != nullptr; }
     bool operator==(std::nullptr_t) const { return buffer_ == nullptr; }
     bool operator!=(std::nullptr_t) const { return buffer_ != nullptr; }
     AlignedHeapBuffer(size_t size = 0) : size_(((size + 63) & ~63)) {
-        if (size_ == 0) return; buffer_ = aligned_alloc(64, size_); std::memset(buffer_, 0, size_);
+        if (size_ == 0) return;
+        if (size_ >= SLAB_FLOOR_BYTES) {
+            const size_t available = available_host_bytes();
+            if (available < size_) ALLIGATOR_THROW("AlignedHeapBuffer: " + std::to_string(size_)
+                + " bytes requested with " + std::to_string(available) + " available on the host");
+        }
+        buffer_ = aligned_alloc(64, size_);
+        if (buffer_ == nullptr) throw std::bad_alloc();
+        std::memset(buffer_, 0, size_);
     }
     AlignedHeapBuffer(const AlignedHeapBuffer&) = delete;
     AlignedHeapBuffer& operator=(const AlignedHeapBuffer&) = delete;
@@ -325,10 +428,8 @@ public:
     static size_t size_of_impl(void* ptr) { return static_cast<AlignedHeapBuffer*>(ptr)->size_; }
     static size_t size_of(void* ptr) { return size_of_impl(ptr); }
     static size_t (*size_of())(void*) { return size_of_impl; }
-    static void* factory(size_t size) {
-        return new AlignedHeapBuffer(size);
-    }
-    static size_t default_size() { return 64 * 1024 * 1024; }
+    static void* factory(size_t size) { return new AlignedHeapBuffer(size); }
+    static size_t default_size() { return 256 * 1024 * 1024; }
     static size_t* type_idx() { static size_t idx = 0; return &idx; }
     static uint64_t device_address(void* ptr) {
         return reinterpret_cast<uint64_t>(reinterpret_cast<AlignedHeapBuffer*>(ptr)->raw());
@@ -339,181 +440,115 @@ public:
 };
 static_assert(IsABuffetType<AlignedHeapBuffer>, "AlignedHeapBuffer must satisfy IsABuffetType");
 static_assert(sizeof(AlignedHeapBuffer) == 16, "AlignedHeapBuffer must be 16 bytes");
-/** --------------------------------------------------------------------------------------------------------- Slice Types
- * @brief The element type index a record carries, a lookup for lifecycle behaviors; zero is raw bytes.
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer
+ * @class VulkanBuffer
+ * @brief The Vulkan handles behind one slab: buffer, memory, mapping, and device address.
  */
-inline static constexpr size_t SLICE_TYPE_BITS = 6u;
-inline static constexpr size_t NUMBER_OF_SLICE_TYPES = 1u << SLICE_TYPE_BITS;
-inline static constexpr size_t SLICE_TYPES_MASK = NUMBER_OF_SLICE_TYPES - 1u;
-/** --------------------------------------------------------------------------------------------------------- Chain Lanes
- * @brief Each placement keeps this many chains and a thread claims from the lane its thread id picks, so a
- * link's bump and count are shared by few threads; a lane in use pins its current slab and the one ahead.
- */
-inline static constexpr size_t CHAIN_LANES = 4u;
-/** --------------------------------------------------------------------------------------------------------- SliceTypeRecord
- * @struct SliceTypeRecord
- * @brief The lifecycle hooks a typed record runs over its elements on the claim and on the last release.
- */
-struct SliceTypeRecord {
-    /// @brief The element type's lifecycle method signature over the payload's elements.
-    using LifecycleMethodSignature = void(*)(void* elements, size_t count);
-    /// @brief The element type's C++ type information.
-    const std::type_info* const type;
-    /// @brief The size of each element in the slice.
-    const size_t size_per_element;
-    /// @brief Method reference for construction behavior for a list of elements in a slice.
-    const LifecycleMethodSignature construct;
-    /// @brief Method reference for destruction behavior for a list of elements in a slice.
-    const LifecycleMethodSignature destroy;
-};
-/** --------------------------------------------------------------------------------------------------------- SliceTypes
- * @class SliceTypes
- * @brief The table of element types under the type byte each slot carries; index zero is raw bytes and
- * index 255 marks a ChainBuffet's own slot, the one holding its reference count.
- */
-class SliceTypes {
+class VulkanBuffer {
 private:
-    const SliceTypeRecord* records_[NUMBER_OF_SLICE_TYPES];
-    static std::atomic<uint32_t>& count() { static std::atomic<uint32_t> c{1}; return c; }
-    std::unordered_map<const std::type_info*, uint32_t> type_to_index_;
-    std::shared_mutex type_to_index_mutex_;
-    static void raw_bytes_construct(void* elements, size_t count);
-    static void raw_bytes_destroy(void* elements, size_t count);
-    using Sig = SliceTypeRecord::LifecycleMethodSignature;
-    template<typename T> static Sig typed_construct(void (*construct_single)(void*));
-    template<typename T> static Sig typed_destroy(void (*destroy_single)(void*));
-    template<typename T> static Sig typed_construct_multi(void (*construct_multi)(void*, size_t));
-    template<typename T> static Sig typed_destroy_multi(void (*destroy_multi)(void*, size_t));
-    static uint32_t register_type(const SliceTypeRecord* const record);
-    inline static constexpr SliceTypeRecord RAW_BYTES_RECORD{
-        &typeid(uint8_t), sizeof(uint8_t), raw_bytes_construct, raw_bytes_destroy};
-    static SliceTypes& inst(); SliceTypes() = default; friend class Alligator; friend class Slice;
+    vk::Buffer buffer_{};          ///< Vulkan buffer handle (the compute target).
+    vk::DeviceMemory memory_{};    ///< Backing memory allocation.
+    void* host_ = nullptr;         ///< Persistent CPU mapping.
+    uint64_t address_ = 0;         ///< Device address (the shader-side pointer).
+    size_t size_ = 0;              ///< Size in bytes.
+    /** ------------------------------------------------------------------------------------------- release
+     * @brief Unmaps and frees the Vulkan objects; shared by the destructor and move assignment.
+     */
+    void release();
+    friend class VulkanContext;
 public:
-    SliceTypes(const SliceTypes&) = delete; SliceTypes& operator=(const SliceTypes&) = delete;
-    SliceTypes(SliceTypes&&) = delete; SliceTypes& operator=(SliceTypes&&) = delete;
-    ~SliceTypes() = default;
-    static const SliceTypeRecord* get(const uint32_t& id);
-    static const SliceTypeRecord* get(const std::type_info* type);
-    static const SliceTypeRecord* get(const std::type_info& type);
-    template<typename T> static const SliceTypeRecord* get() { return get(&typeid(T)); }
-    /** ------------------------------------------------------------------------------------------- Register Slice Type
-     * @brief Registers a new slice type with optional customized construct and destruct
-     * functions.
-     * @tparam T The type to register.
-     * @param construct Pointer to the construct function for a single instance of T.
-     * @param destruct Pointer to the destruct function for a single instance of T.
-     * @return The type index the registered record occupies, the type byte a slot carries.
+    VulkanBuffer() = default;
+    /** ------------------------------------------------------------------------------------------- Allocating Constructor
+     * @brief The five-call Vulkan allocation: create, get requirements, allocate, bind, map, plus
+     * the device-address query and the zero-fill the slab contract requires.
+     * @param size_bytes Buffer size in bytes.
      */
-    template<typename T>
-    static uint32_t register_type(
-        void (*construct)(void*) = nullptr,
-        void (*destruct)(void*) = nullptr
-    ) {
-        const SliceTypeRecord* record = new SliceTypeRecord{
-            .type = &typeid(T),
-            .size_per_element = sizeof(T),
-            .construct = SliceTypes::typed_construct<T>(construct),
-            .destroy = SliceTypes::typed_destroy<T>(destruct)
-        };
-        return register_type(record);
-    }
-    /** ------------------------------------------------------------------------------------------- Register Slice Type (Multiple)
-     * @brief Registers a new slice type with optional customized construct and destruct functions
-     * for vectorized instances.
-     * @tparam T The type to register.
-     * @param construct_multiple Pointer to the construct function for multiple instances of T.
-     * @param destruct_multiple Pointer to the destruct function for multiple instances of T.
-     * @return The type index the registered record occupies, the type byte a slot carries.
+    VulkanBuffer(size_t size_bytes);
+    /** ------------------------------------------------------------------------------------------- Allocating Constructor (typed)
+     * @brief The same five-call allocation against an explicit memory type index.
+     * @param size_bytes Buffer size in bytes.
+     * @param memory_type_index The memory type to allocate from.
      */
-    template<typename T>
-    static uint32_t register_type(
-        void (*construct_multiple)(void*, size_t),
-        void (*destruct_multiple)(void*, size_t)
-    ) {
-        const SliceTypeRecord* record = new SliceTypeRecord{
-            .type = &typeid(T),
-            .size_per_element = sizeof(T),
-            .construct = SliceTypes::typed_construct_multi<T>(construct_multiple),
-            .destroy = SliceTypes::typed_destroy_multi<T>(destruct_multiple)
-        };
-        return register_type(record);
+    VulkanBuffer(size_t size_bytes, uint32_t memory_type_index);
+    /** ------------------------------------------------------------------------------------------- Move-only ownership */
+    VulkanBuffer(const VulkanBuffer&) = delete;
+    VulkanBuffer& operator=(const VulkanBuffer&) = delete;
+    VulkanBuffer(VulkanBuffer&& other) noexcept
+    : buffer_(std::exchange(other.buffer_, nullptr))
+    , memory_(std::exchange(other.memory_, nullptr))
+    , host_(std::exchange(other.host_, nullptr))
+    , address_(std::exchange(other.address_, 0))
+    , size_(std::exchange(other.size_, 0)) {}
+    VulkanBuffer& operator=(VulkanBuffer&& other) noexcept {
+        std::swap(buffer_, other.buffer_); std::swap(memory_, other.memory_);
+        std::swap(host_, other.host_); std::swap(address_, other.address_);
+        std::swap(size_, other.size_); return *this;
     }
-};
-/** --------------------------------------------------------------------------------------------------------- GPUBuf
- * @struct GPUBuf
- * @brief Stores a slice's slab base address, byte length, and slab-relative byte offset.
- */
-struct alignas(16) GPUBuf {
-    uint64_t address = 0;
-    uint32_t size = 0;
-    uint32_t offset = 0;
-    void set(uint64_t addr, uint32_t sz, uint32_t off) {
-        address = addr; size = sz; offset = off;
+    /** ------------------------------------------------------------------------------------------- Destructor
+     * @brief Unmap and destroy the Vulkan objects. Defined in vulkan.cpp.
+     */
+    ~VulkanBuffer() { release(); }
+    operator bool() const { return host_ != nullptr; }
+    bool operator==(std::nullptr_t) const { return host_ == nullptr; }
+    bool operator!=(std::nullptr_t) const { return host_ != nullptr; }
+    /** ------------------------------------------------------------------------------------------- Buffet Hooks
+     * @brief The static hooks BuffetDescriptors::descriptor_for binds for this type.
+     */
+    static void deleter_impl(void* ptr) { delete static_cast<VulkanBuffer*>(ptr); }
+    static void (*deleter())(void*) { return deleter_impl; }
+    static void* host_ptr(void* ptr) { return static_cast<VulkanBuffer*>(ptr)->host_; }
+    static size_t size_of_impl(void* ptr) { return static_cast<VulkanBuffer*>(ptr)->size_; }
+    static size_t size_of(void* ptr) { return size_of_impl(ptr); }
+    static size_t (*size_of())(void*) { return size_of_impl; }
+    static void* factory(size_t size) {
+        if (size > (uint64_t{UINT32_MAX} << 6))
+            ALLIGATOR_VULKAN_THROW("VulkanBuffer exceeds the 32-bit limit of 64-byte units");
+        return new VulkanBuffer((size + 63) & ~size_t{63});
     }
-    void clear() { address = 0xFFFFFFFFFFFFFFFFull; size = 0; offset = 0; }
+    static size_t default_size() { return 256 * 1024 * 1024; }
+    static size_t* type_idx() { static size_t idx = 1; return &idx; }
+    static const char* type_name() { return "VulkanBuffer"; }
+    static uint64_t device_address(void* ptr) {
+        return static_cast<VulkanBuffer*>(ptr)->address_;
+    }
+    /** ------------------------------------------------------------------------------------------- address
+     * @brief Retrieves the device address of the Vulkan buffer.
+     * @return The device address.
+     */
+    uint64_t address() const { return address_; }
+    /** ------------------------------------------------------------------------------------------- size
+     * @brief Retrieves the size of the Vulkan buffer.
+     * @return The size of the buffer in bytes.
+     */
+    size_t size() const { return size_; }
+    /** ------------------------------------------------------------------------------------------- host
+     * @brief Retrieves the host pointer of the Vulkan buffer.
+     * @return The host pointer.
+     */
+    void* host() const { return host_; }
+    /** ------------------------------------------------------------------------------------------- buffer
+     * @brief The Vulkan buffer handle, for indirect dispatch commands recorded against it.
+     * @return The buffer handle.
+     */
+    vk::Buffer buffer() const { return buffer_; }
+    void* raw() { return host_; }
+    const void* raw() const { return host_; }
 };
-static_assert(sizeof(GPUBuf) == 16 && offsetof(GPUBuf, size) == 8
-    && offsetof(GPUBuf, offset) == 12, "GPUBuf must match the first 16 bytes of the GLSL Slice.");
-/** --------------------------------------------------------------------------------------------------------- Slice Record
- * @struct SliceRecord
- * @brief The lifecycle granule in front of every claim's bytes: the whole claim's GPU record and host pointer,
- * the link counted once for the claim, the owner count every owner of the claim shares, and the element type.
+static_assert(IsABuffetType<VulkanBuffer>, "VulkanBuffer must satisfy IsABuffetType");
+/** --------------------------------------------------------------------------------------------------------- Create Slice Metadata
+ * @struct CreateSliceMetadata
+ * @brief Holds metadata required to create a slice backed by an external buffer type.
  */
-struct alignas(64) SliceRecord {
-    GPUBuf gpu;  ///< The whole claim's slab address, granule length and granule offset.
-    void* host;  ///< The whole claim's host address.
-    ChainBuffet* link;  ///< The link this claim holds one count on.
-    uint32_t owners;  ///< Owners of this claim; the last one out destroys the element and releases the link.
-    uint32_t type;  ///< The SliceTypes index, zero for raw bytes.
-    uint8_t reserved[24];  ///< Unused.
+struct CreateSliceMetadata {
+    /// @brief The GPU device address of the buffer (if applicable - must be GPU coherent).
+    uint64_t (*device_address_fn)(void*) = nullptr;
+    /// @brief The size of the buffer.
+    size_t size = 0;
+    /// @brief The handle to the external buffer.
+    void* buffer_handle;
+    /// @brief The type information of the external buffer.
+    const std::type_info* type_info;
 };
-static_assert(sizeof(SliceRecord) == 64 && offsetof(SliceRecord, host) == 16
-    && offsetof(SliceRecord, owners) == 32, "A SliceRecord is one granule with the GPU record first");
-/// @brief Set on a view's record pointer: a view keeps the bytes, so it counts on the link and not the owners.
-inline static constexpr uintptr_t SLICE_VIEW_FLAG = 1u;
-/** --------------------------------------------------------------------------------------------------------- Host Memory Usage
- * @struct HostMemoryUsage
- * @brief Reports physical capacity, estimated available memory, and this process's resident bytes.
- */
-struct HostMemoryUsage {
-    uint64_t physical_bytes;
-    uint64_t available_bytes;
-    uint64_t resident_bytes;
-};
-/** --------------------------------------------------------------------------------------------------------- Comprehension Enforcer
- * @brief Gates non-hot-path methods behind proof the caller read the code. A gated method calls
- * CHECK_read_this(name), which passes only while that gate is armed on the calling thread. Arming is
- * set_read_this(name, value) with a value equal to the arithmetic in the gate's SETUP_read_this line;
- * the comparison is numeric, so any expression evaluating to the gate's number works, but no plaintext
- * literal exists anywhere to copy — grep the SETUP line and read it to learn the number. A wrong value
- * leaves the gate disarmed. unset_read_this(name) closes the armed scope. Gates are per-thread and
- * per-name and stay armed until unset, so an arm must never outlive the scope it was opened for.
- * @param name The gate name shared by the SETUP, set, unset and CHECK call sites.
- * @param val The secret arithmetic for the gate; never write it as a plain literal.
- * @param err_msg The message thrown at callers that skip the reading.
- */
-#define SETUP_read_this(name, val, err_msg) struct name##_struct { \
-inline static constexpr const char* error_message = err_msg; \
-static bool& armed() { static thread_local bool armed_flag = false; return armed_flag; } \
-static void set(const int v) { armed() = (v == (val)); } \
-static void unset() { armed() = false; } \
-static void enforce() { if (!armed()) { ALLIGATOR_THROW(error_message); } } };
-/** --------------------------------------------------------------------------------------------------------- Check Requirement
- * @brief Throws unless the named gate is armed on this thread.
- * @param name The name of the gate to check.
- */
-#define CHECK_read_this(name) name##_struct::enforce()
-/** --------------------------------------------------------------------------------------------------------- Set Requirement
- * @brief Arms the named gate on this thread; a wrong value leaves the gate disarmed.
- * @param name The name of the gate to arm.
- * @param value Arithmetic that must evaluate to the gate's SETUP_read_this value.
- */
-#define set_read_this(name, value) name##_struct::set(value)
-/** --------------------------------------------------------------------------------------------------------- Unset Requirement
- * @brief Disarms the named gate, closing the armed scope.
- * @param name The name of the gate to unset.
- */
-#define unset_read_this(name) name##_struct::unset()
 /** --------------------------------------------------------------------------------------------------------- SliceType Concept
  * @brief Concept to check if a type conforms to the Slice interface. The full concept which includes the
  * conversion operator to other SliceType's is declared at the bottom of this file.
@@ -548,8 +583,8 @@ concept PrimitiveSliceType = (
 ) || std::is_same_v<T, Slice>;
 /** --------------------------------------------------------------------------------------------------------- Slice
  * @class Slice
- * @brief A slice of memory in the buffet alligator: 64 bytes by value, the GPU record a shader reads first,
- * the host pointer, the claim's lifecycle granule, and room for what the payload is.
+ * @brief A slice of memory in the buffet alligator: 32 bytes by value, the device address and size a shader
+ * reads first, then the parent it counts on, its type word and its count.
  * 
  * All operations in the buffet alligator are performed on slices of memory, represented by the `Slice`
  * class. A Slice is the record a shader reads, so a Slice or a list of them goes to the GPU as it is.
@@ -572,7 +607,7 @@ concept PrimitiveSliceType = (
  * is created as its own individual buffer that is not part of a larger slab. This is a slower operation
  * since it requires the buffer to be allocated and freed individually, so keep that in mind.
  */
-class alignas(64) Slice {
+class alignas(32) Slice {
 public:
     /** ------------------------------------------------------------------------------------------- Default Placement
      * @brief Returns the default placement for slices, which is determined by the system's
@@ -580,12 +615,18 @@ public:
      * @return The default `Placement` enum value for slices.
      */
     static const BuffetDescriptor* default_placement();
+    /** ------------------------------------------------------------------------------------------- Default Constructor
+     * @brief A null Slice: all zero bytes, a weak handle to nothing, so zeroed memory is null
+     * Slices.
+     */
+    Slice() noexcept = default;
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
      * @brief Claims a slice of pre-allocated memory in the buffet alligator's slab arena. The
      * slice is guaranteed to be zero-initialized.
      * @param size The size of the slice in bytes.
+     * @param placement The placement to claim from.
      */
-    Slice(size_t size = 0, const BuffetDescriptor* placement = default_placement());
+    Slice(size_t size, const BuffetDescriptor* placement = default_placement());
     /** ------------------------------------------------------------------------------------------- Constructor - Fresh Claim
      * @brief Constructs a slice of memory with the specified size. If not a novel buffer, then
      * it will be claimed from a pre-allocated slab in the buffet alligator's arena.
@@ -604,6 +645,7 @@ public:
      * @param novel_buffer If true, then the slice is allocated as a novel buffer instead of being
      * a claim of a pre-allocated slab. This is ideal for slices that are long-lived to help
      * reduce fragmentation in the arena. Default is false.
+     * @param placement Optional placement descriptor for the new slice.
      */
     Slice(
         const void* copy_from,
@@ -666,11 +708,6 @@ public:
      * @return A new `Slice` object that is a view of the original slice.
      */
     Slice slice(size_t offset = 0, size_t length = SIZE_MAX) const;
-    /** ------------------------------------------------------------------------------------------- Size in bytes
-     * @brief Returns the size of the slice in bytes.
-     * @return The size of the slice in bytes.
-     */
-    size_t size_bytes() const;
     /** ------------------------------------------------------------------------------------------- Size in elements
      * @brief Returns the size of the slice in elements of type T.
      * @tparam T The type of elements in the slice. Default is `uint8_t`.
@@ -709,7 +746,7 @@ public:
      * @brief Checks if the slice is null (i.e., has no underlying memory).
      * @return True if the slice is null, false otherwise.
      */
-    bool is_null() const;
+    bool is_null() const noexcept;
     /** ------------------------------------------------------------------------------------------- Check if slice is valid
      * @brief Checks if the slice is valid (i.e., has underlying memory).
      * @return True if the slice is valid, false otherwise.
@@ -763,11 +800,6 @@ public:
      * @param other The slice to adopt.
      */
     void adopt(Slice other);
-    /** ------------------------------------------------------------------------------------------- GPU Record
-     * @brief The record a shader reads: the slab's device address, the length and the offset in granules.
-     * @return The GPU record, all zero for a null Slice.
-     */
-    const GPUBuf& gpu() const;
     /** ------------------------------------------------------------------------------------------- Arrow Operator
      * @brief Provides access to the underlying data as a pointer of type T.
      * @tparam T The type to cast the raw pointer to.
@@ -796,14 +828,94 @@ public:
      */
     template<typename T>
     const T& operator*() const { return *static_cast<const T*>(raw()); }
+    //--------------------------------------------------------------------------------------------- Property Accessors
+    bool is_encrypted() const noexcept;
+    bool is_compressed() const noexcept;
+    bool is_text() const noexcept;
+    bool is_numeric() const noexcept;
+    bool is_unsigned() const noexcept;
+    bool is_floating_point() const noexcept;
+    size_t bitwidth() const noexcept;
+    size_t size_bits() const noexcept;
+    size_t size() const noexcept;
+    size_t capacity() const noexcept;
+    bool is_signed() const noexcept;
+    bool is_integral() const noexcept;
+    bool is_single_element() const noexcept;
+    bool is_singular() const noexcept;
+    bool is_list() const noexcept;
+    bool is_chunked() const noexcept;
+    bool is_json() const noexcept;
+    size_t alignment() const noexcept;
+    bool is_aligned() const noexcept;
+    bool is_unaligned() const noexcept;
+    bool is_page_aligned() const noexcept;
+    bool is_borrowed() const noexcept;
+    bool is_owned() const noexcept;
+    bool is_shared() const noexcept;
+    bool is_pooled() const noexcept;
+    bool is_file_mapped() const noexcept;
+    bool is_host_coherent() const noexcept;
+    bool is_device_local() const noexcept;
+    bool is_heap() const noexcept;
+    bool is_slice_of_slices() const noexcept;
+    bool is_slicemap() const noexcept;
+    bool is_atomic() const noexcept;
+    size_t size_bytes() const noexcept;
+    const std::type_info& parent_type() const noexcept;
+    /** ------------------------------------------------------------------------------------------- Semantics For
+     * @brief Registers T as a type a Slice can be made over: `new T(args...)` makes its object,
+     * the getters say where its bytes are and how many, and the last Slice over it deletes it.
+     * @tparam T The type for which to provide semantics.
+     * @tparam Args The types of the constructor arguments for T.
+     * @param host_pointer The host pointer getter for a T.
+     * @param size The byte size getter for a T.
+     * @param share Whether Slices over one T share it by reference counting.
+     * @return A void pointer to the semantics for type T.
+     */
+    template<typename T, typename... Args>
+    static void* semantics_for(
+        void* (*host_pointer)(void* object),
+        size_t (*size)(void* object),
+        bool share = true
+    ) {
+        return semantics_for(
+            &typeid(T),
+            reinterpret_cast<void*>(+[](ArgumentsHolder&& args) -> void* {
+                std::tuple<std::remove_reference_t<Args>...>* arguments =
+                    static_cast<std::tuple<std::remove_reference_t<Args>...>*>(args.drain_to_tuple());
+                T* object = std::apply(
+                    [](auto&&... a) { return new T(std::forward<decltype(a)>(a)...); },
+                    std::move(*arguments)
+                );
+                delete arguments;
+                return object;
+            }),
+            reinterpret_cast<void*>(size),
+            reinterpret_cast<void*>(host_pointer),
+            reinterpret_cast<void*>(+[](void* object) { delete static_cast<T*>(object); }),
+            share
+        );
+    }
 private:
-    GPUBuf gpu_;  ///< The record a shader reads: slab address, granule length, granule offset.
-    void* host_ = nullptr;  ///< The payload's host address.
-    SliceRecord* record_ = nullptr;  ///< The claim's lifecycle granule, view-flagged, touched on copy and release.
-    std::array<uint64_t, 4> info_{};  ///< Reserved for what the payload is.
-    friend class Alligator;
+    uint64_t address_ = 0;
+    uint32_t size_ = 0;
+    uint32_t num_elements_ = 0;
+    void* parent_ = nullptr;
+    uint32_t type_ = 0;
+    int32_t count_ = 1;
+    static const Slice* type_emulator(uint32_t, uint32_t);
+    static void* semantics_for(const void*, void*, void*, void*, void*, bool);
+    friend class Alligator; friend class PotentialSlice;
+    friend class SliceMap; friend class SliceQueue;
+    friend struct SliceStatics;
+    template<typename T> friend class SliceT;
+    template<typename T> friend class PotentialSliceT;
+    template<typename T> friend class SliceMapT;
+    template<typename T> friend class SliceQueueT;
 };
-static_assert(sizeof(Slice) == 64 && alignof(Slice) == 64, "A Slice is one granule with the GPU record first.");
+static_assert(sizeof(Slice) == 32, "A Slice must be 32 bytes in size.");
+static_assert(alignof(Slice) == 32, "A Slice is 32-byte aligned, with the device address first.");
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice
  * @class PotentialSlice
  * @brief A slice that gets filled lazily by the provided fulfillment method.
@@ -937,7 +1049,6 @@ public:
  * @tparam T The type of elements in the slice.
  */
 template <typename T>
-    requires (alignof(T) % 64 == 0)
 class SliceT {
 private:
     /// @brief The underlying Slice object that this SliceT wraps.
@@ -1152,7 +1263,6 @@ public:
  * @param other The SliceT object to copy from.
  */
 template <typename T>
-    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(const SliceT& other) : slice_(other.slice_) {}
 /** --------------------------------------------------------------------------------------------------------- Operator= Copy
  * @brief Copy assignment operator for SliceT.
@@ -1160,7 +1270,6 @@ SliceT<T>::SliceT(const SliceT& other) : slice_(other.slice_) {}
  * @return Reference to the current SliceT object.
  */
 template <typename T>
-    requires (alignof(T) % 64 == 0)
 SliceT<T>::SliceT(SliceT&& other) noexcept : slice_(std::move(other.slice_)) {}
 /** --------------------------------------------------------------------------------------------------------- Operator= Copy
  * @brief Copy assignment operator for SliceT.
@@ -1168,7 +1277,6 @@ SliceT<T>::SliceT(SliceT&& other) noexcept : slice_(std::move(other.slice_)) {}
  * @return Reference to the current SliceT object.
  */
 template <typename T>
-    requires (alignof(T) % 64 == 0)
 SliceT<T>& SliceT<T>::operator=(const SliceT& other) {
     if (this != &other) slice_ = other.slice_;
     return *this;
@@ -1179,7 +1287,6 @@ SliceT<T>& SliceT<T>::operator=(const SliceT& other) {
  * @return Reference to the current SliceT object.
  */
 template <typename T>
-    requires (alignof(T) % 64 == 0)
 SliceT<T>& SliceT<T>::operator=(SliceT&& other) noexcept {
     if (this != &other) slice_ = std::move(other.slice_);
     return *this;
@@ -1206,34 +1313,31 @@ private:
         ChainBuffet** expected = nullptr,
         ChainBuffet* desired = nullptr
     );
-    static thread_local size_t chain_lane;  ///< The lane this thread claims from, picked at its first claim.
-    void destroy(Slice& slice);
-    static void retain(const Slice& slice);
+    static void destroy(Slice& root);
     static void finalize();
     Alligator();
     ~Alligator();
     friend class Slice; friend class Memory;
     friend class ChainBuffet; friend class Kitchen;
-    friend class SliceTypes; friend struct KitchenInitializer;
+    friend struct KitchenInitializer;
 public:
     Alligator(const Alligator&) = delete;
     Alligator& operator=(const Alligator&) = delete;
     Alligator(Alligator&&) = delete;
     Alligator& operator=(Alligator&&) = delete;
     /** ------------------------------------------------------------------------------------------- Claim
-     * @brief The one way to get a Slice: whole 64-byte granules cut from the placement's current link,
-     * or a dedicated buffet for a novel or slab-sized request, in a fresh slot carrying the type.
-     * @param size The size in bytes, rounded up to 64-byte granules; zero claims nothing.
+     * @brief The one way to get a Slice: a 64-byte aligned cut from the placement's current link, or a
+     * dedicated buffet for a novel or slab-sized request.
+     * @param size The size in bytes, rounded up to 64 bytes; zero claims nothing.
      * @param novel Whether the Slice gets a dedicated buffet.
      * @param placement The placement to claim from.
      * @param type The SliceTypes record index the slot carries, zero for raw bytes.
      * @return The claimed Slice.
      */
     static Slice claim(
-        size_t size,
+        uint32_t size,
         bool novel = false,
-        const BuffetDescriptor* placement = Slice::default_placement(),
-        uint32_t type = 0
+        const BuffetDescriptor* placement = Slice::default_placement()
     );
     /** ------------------------------------------------------------------------------------------- Buffet Of
      * @brief The buffet object behind a Slice, the pointer its placement's static hooks take.
@@ -1246,53 +1350,28 @@ public:
      * @return Reference to the Alligator instance.
      */
     static Alligator& inst();
+    /** ------------------------------------------------------------------------------------------- For Type
+     * @brief Retrieves the placement descriptor for the given type index.
+     * @param type The type index.
+     * @return The placement descriptor for the type.
+     */
+    static const BuffetDescriptor* for_type(uint32_t type);
 };
-/** --------------------------------------------------------------------------------------------------------- Typed Lifecycle Hooks
- * @brief Each registered T keeps its single-element hooks in one static pair; the record's hooks walk a
- * slot's elements through them, or through T's own constructor and destructor when none were given.
- */
-template<typename T> struct SliceTypeHooks {
-    inline static void (*construct_single)(void*) = nullptr;
-    inline static void (*destroy_single)(void*) = nullptr;
-    inline static void (*construct_multi)(void*, size_t) = nullptr;
-    inline static void (*destroy_multi)(void*, size_t) = nullptr;
-    static void construct(void* payload, size_t count) {
-        T* elements = static_cast<T*>(payload);
-        if (construct_multi) construct_multi(elements, count);
-        else for (size_t index = 0; index < count; ++index) {
-            if (construct_single) construct_single(elements + index); else new (elements + index) T();
-        }
-    }
-    static void destroy(void* payload, size_t count) {
-        T* elements = static_cast<T*>(payload);
-        if (destroy_multi) destroy_multi(elements, count);
-        else for (size_t index = 0; index < count; ++index) {
-            if (destroy_single) destroy_single(elements + index); else elements[index].~T();
-        }
-    }
-};
-template<typename T> SliceTypes::Sig SliceTypes::typed_construct(void (*construct_single)(void*)) {
-    SliceTypeHooks<T>::construct_single = construct_single;
-    return &SliceTypeHooks<T>::construct;
-}
-template<typename T> SliceTypes::Sig SliceTypes::typed_destroy(void (*destroy_single)(void*)) {
-    SliceTypeHooks<T>::destroy_single = destroy_single;
-    return &SliceTypeHooks<T>::destroy;
-}
-template<typename T> SliceTypes::Sig SliceTypes::typed_construct_multi(void (*construct_multi)(void*, size_t)) {
-    SliceTypeHooks<T>::construct_multi = construct_multi;
-    return &SliceTypeHooks<T>::construct;
-}
-template<typename T> SliceTypes::Sig SliceTypes::typed_destroy_multi(void (*destroy_multi)(void*, size_t)) {
-    SliceTypeHooks<T>::destroy_multi = destroy_multi;
-    return &SliceTypeHooks<T>::destroy;
-}
-/** --------------------------------------------------------------------------------------------------------- Typed Claim
- * @brief One T claimed in a slot carrying T's registered type index.
+/** --------------------------------------------------------------------------------------------------------- Claim Typed
+ * @brief One T's worth of bytes from the default placement, in a claim whose table runs ~T ahead of the release.
+ * @param novel_buffer Whether the claim gets a dedicated buffet.
+ * @return The claim.
  */
 template <typename T>
-    requires (alignof(T) % 64 == 0)
 Slice SliceT<T>::claim_typed(bool novel_buffer) {
-    return Alligator::claim(sizeof(T), novel_buffer, Slice::default_placement(), SliceTypes::register_type<T>());
+    static_assert(alignof(T) <= 64, "A typed claim is SIMD aligned; a T aligned past 64 bytes is not supported yet");
+    /// T's table leads with the type word its claims carry.
+    static const uint32_t type = *static_cast<const uint32_t*>(Slice::semantics_for(
+        &typeid(T), nullptr, nullptr, nullptr,
+        reinterpret_cast<void*>(+[](void* payload) { static_cast<T*>(payload)->~T(); }), true
+    ));
+    /// A T with a destructor needs its buffer to itself, so the last handle on it is the one that runs ~T.
+    return Alligator::claim(sizeof(T), novel_buffer || !std::is_trivially_destructible_v<T>,
+        Alligator::for_type(type));
 }
 } // namespace buffetalligator

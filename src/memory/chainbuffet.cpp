@@ -5,6 +5,7 @@
  */
 #include <alligator.hpp>
 #include <memory/chainbuffet.hpp>
+#include <memory/slicetype.hpp>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -13,138 +14,217 @@
 #include <utility>
 
 namespace buffetalligator {
-std::array<std::atomic<void*>, 128> ChainBuffet::spares_{};
 /** --------------------------------------------------------------------------------------------------------- ChainBuffet Constructor
- * @brief Wraps the given slab, or allocates one, and caches its host and device addresses; a chain link starts
- * with the chain's own hold, a dedicated link with nothing until its record takes it.
+ * @brief Constructs a new ChainBuffet, and alloc_ahead buffets ahead if requested.
  * @param desc The placement.
  * @param size The slab bytes.
- * @param novel Whether the link is dedicated to one record.
- * @param slab A parked slab to wrap, or null to allocate one.
+ * @param semantics The slice semantics for this buffer.
+ * @param type The type word for the slices in this buffer.
+ * @param alloc_ahead The number of additional buffers to pre-allocate ahead.
  */
-ChainBuffet::ChainBuffet(const BuffetDescriptor* desc, size_t size, bool novel, void* slab)
-: buffer_(slab ? slab : desc->active_factory(size)), desc_(desc), host_(desc->host_ptr(buffer_)),
-  device_(desc->device_address(buffer_)), size_(desc->size_of(buffer_)), novel_(novel),
-  count_(novel ? 0u : 1u) {}
-/** --------------------------------------------------------------------------------------------------------- Open
- * @brief A fresh shell around the placement's parked spare slab, or around a fresh slab; shells are never
- * reused, so a stale pointer to a retired link stays harmless.
- * @param desc The placement.
- * @param size The slab bytes.
- * @param novel Whether the link is dedicated to one record.
- * @param ahead Whether to make the link ahead as well.
- * @return The link.
- */
-ChainBuffet* ChainBuffet::open(const BuffetDescriptor* desc, size_t size, bool novel, bool ahead) {
-    std::atomic<void*>& spare = spares_[*desc->type_idx_getter()];
-    void* slab = novel ? nullptr : spare.load(std::memory_order_acquire);
-    /// The pending sentinel is teardown's: the slot parks nothing any more and lends nothing either.
-    while (slab != nullptr && slab != PENDING_LINK
-        && !spare.compare_exchange_weak(slab, nullptr, std::memory_order_acq_rel, std::memory_order_acquire)) {}
-    if (slab == PENDING_LINK) slab = nullptr;
-    ChainBuffet* link = new ChainBuffet(desc, size, novel, slab);
-    if (ahead) (void)link->next(false);
-    return link;
+ChainBuffet::ChainBuffet(
+    const BuffetDescriptor* desc,
+    size_t size,
+    void* semantics,
+    uint32_t type,
+    std::atomic<ChainBuffet*>* ref_current,
+    int alloc_ahead,
+    bool novel
+) : handle_(desc->active_factory(size))
+, host_ptr_(desc->host_ptr(handle_))
+, desc_(desc)
+, semantics_(semantics)
+, type_(type)
+, device_(desc->device_address(handle_))
+, size_(desc->size_of(handle_))
+, novel_(novel)
+, ref_current_(ref_current) {
+    if (semantics_ == nullptr) [[unlikely]] {
+        ALLIGATOR_THROW("ChainBuffet: semantics cannot be null.");
+    }
+    if (size < 64 * 1024 * 1024 && novel == false) [[unlikely]] {
+        ALLIGATOR_THROW("ChainBuffet: only novel buffers can be smaller than 64 MiB.");
+    }
+    if (novel_ && alloc_ahead > 0) [[unlikely]] {
+        ALLIGATOR_THROW("ChainBuffet: novel buffers cannot pre-allocate ahead.");
+    }
+    if (alloc_ahead > 0) {
+        (void)next(alloc_ahead - 1);
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- Next ChainBuffet
  * @brief The link ahead, made by whichever thread finds the slot empty while the others wait on the sentinel.
  * @param allocate_next Whether the link ahead gets its own link ahead too.
  * @return The link ahead.
  */
-ChainBuffet* ChainBuffet::next(bool allocate_next) {
+ChainBuffet* ChainBuffet::next(int allocate_next) {
+    if (novel_ || size_ < 64 * 1024 * 1024) [[unlikely]] {
+        std::string error_msg = "ChainBuffet: only slabs can be chained. This is by design. Buffers that "
+            "are too small to meet the definition of slab are far too detrimental to performance.";
+        ALLIGATOR_THROW(error_msg);
+    }
     ChainBuffet* link = next_.load(std::memory_order_acquire);
-    while (link == nullptr || link == PENDING_LINK) {
-        if (!buffer_) [[unlikely]] {
-            /// A retired link makes no more links, so its slot is final: a thread that saw the slot pending
-            /// before the link retired reads the link made meanwhile, and an unset slot is a broken chain.
-            link = next_.load(std::memory_order_acquire);
-            if (link == nullptr || link == PENDING_LINK) {
-                ALLIGATOR_THROW("Alligator::claim: the chain has been broken, this should never happen");
-            }
-            break;
-        }
+    while (link == nullptr || link == reinterpret_cast<ChainBuffet*>(-1)) {
         ChainBuffet* expected = nullptr;
-        if (next_.compare_exchange_strong(expected, PENDING_LINK, std::memory_order_acq_rel)) {
-            link = open(desc_, size_, false, allocate_next);
+        if (next_.compare_exchange_strong(expected, reinterpret_cast<ChainBuffet*>(-1))) {
+            link = new ChainBuffet(desc_, size_, semantics_, type_, ref_current_, allocate_next - 1, false);
             next_.store(link, std::memory_order_release);
+            buffers_ahead_.fetch_add(1, std::memory_order_relaxed);
+            if (allocate_next) (void)link->next(allocate_next - 1);
             return link;
         }
         std::this_thread::yield();
         link = next_.load(std::memory_order_acquire);
     }
-    if (allocate_next) (void)link->next(false);
+    if (allocate_next > 0) (void)link->next(allocate_next - 1);
     return link;
 }
 /** --------------------------------------------------------------------------------------------------------- ChainBuffet Claim
- * @brief The count comes first and becomes the record's if the claim lands; a closed link is let go of for the
- * lane's current one, and a full link hands the lane to its successor, closes the link two back, and claims from
- * the successor.
- * @param total The bytes to cut, the record granule included.
- * @return The record.
+ * @brief Claims a slice of the given size from this buffer.
+ * @param size The number of bytes to claim from the buffer.
+ * @return The Slice.
  */
-SliceRecord* ChainBuffet::claim(size_t total) {
-    if (count_.fetch_add(1, std::memory_order_acq_rel) & CLOSED) [[unlikely]] {
-        release();
-        return Alligator::current_for(desc_)->claim(total);
+Slice ChainBuffet::claim(uint32_t size, bool novel_buffer) {
+    const types::SliceSemantics* table = static_cast<const types::SliceSemantics*>(semantics_);
+    if (size == 0) return Slice{};
+    const size_t alignment = SliceStatics::type_emulator(type_, 1)->alignment();
+    const size_t adjusted_size = (size + alignment - 1) & ~(alignment - 1);
+    if (adjusted_size >= size_ || novel_buffer) {
+        ChainBuffet* novel_buf = new ChainBuffet(desc_, size, semantics_, type_, ref_current_, 0, true);
+        novel_buf->bump_ptr_.store(adjusted_size, std::memory_order_release);
+        novel_buf->size_ = 0;
+        Slice result = table->sub_slice_fn(table->type, novel_buf, 0, size);
+        ChainBuffet::decrement_refcount(novel_buf);
+        return result;
     }
-    const size_t offset = bump_.fetch_add(total, std::memory_order_acq_rel);
-    if (offset + total > size_) {
-        /// The successor learns who came before it, whichever thread advances the lane; a lost advance means
-        /// another thread already moved current past this link, and the walk still goes link by link.
-        ChainBuffet* successor = next(true);
-        ChainBuffet* no_prev = nullptr;
-        successor->prev_.compare_exchange_strong(no_prev, this, std::memory_order_acq_rel);
+    const size_t offset = bump_ptr_.fetch_add(adjusted_size, std::memory_order_acq_rel);
+    if (offset + adjusted_size >= size_) {
+        buffers_ahead_.fetch_sub(1, std::memory_order_release);
+        if (novel_ || size_ < 64 * 1024 * 1024) [[unlikely]] {
+            std::string error_msg = "ChainBuffet: only slabs can be chained. This is by design. Buffers"
+                " that are too small to meet the definition of slab are too detrimental to performance.";
+            ALLIGATOR_THROW(error_msg);
+        }
+        ChainBuffet* next_one = next(1);
+        next_one->prev_.store(this, std::memory_order_release);
         ChainBuffet* expected = this;
-        Alligator::current_for(desc_, &expected, successor);
-        ChainBuffet* prev = prev_.exchange(nullptr, std::memory_order_acq_rel);
-        if (prev) prev->close();
-        release();
-        return successor->claim(total);
+        if (ref_current_ && ref_current_->compare_exchange_strong(expected, next_one, std::memory_order_acq_rel)) {
+            next_one = prev_.exchange(nullptr, std::memory_order_acq_rel);
+            if (next_one && (std::atomic_ref<uint32_t>(next_one->count_).fetch_sub(1, std::memory_order_acq_rel) == 1)) {
+                if (!shutting_down().load(std::memory_order_acquire)
+                    && buffers_ahead_.fetch_add(1, std::memory_order_acquire) < 2
+                    && desc_->default_size_method() <= next_one->size_
+                ) {
+                    std::memset(next_one->host_ptr_, 0, next_one->size_);
+                    next_one->bump_ptr_.store(0, std::memory_order_release);
+                    next_one->next_.store(nullptr, std::memory_order_release);
+                    next_one->prev_.store(nullptr, std::memory_order_release);
+                    std::atomic_ref<uint32_t>(next_one->count_).store(1, std::memory_order_release);
+                    take_to_front(next_one, 0);
+                } else {
+                    buffers_ahead_.fetch_sub(1, std::memory_order_release);
+                    delete next_one;
+                }
+            }
+        }
+        if (offset + adjusted_size == size_) {
+            return table->sub_slice_fn(table->type, this, offset, adjusted_size);
+        }
+        return next()->claim(size);
     }
-    SliceRecord* record = reinterpret_cast<SliceRecord*>(static_cast<uint8_t*>(host_) + offset);
-    record->gpu.set(device_, static_cast<uint32_t>((total - sizeof(SliceRecord)) >> 6),
-        static_cast<uint32_t>((offset >> 6) + 1));
-    record->host = reinterpret_cast<uint8_t*>(record) + sizeof(SliceRecord);
-    record->link = this;
-    return record;
+    return table->sub_slice_fn(table->type, this, offset, adjusted_size);
 }
-/** --------------------------------------------------------------------------------------------------------- ChainBuffet Release
- * @brief One count leaves the link; the last one out of a closed link retires its slab.
+/** --------------------------------------------------------------------------------------------------------- Take to Front
+ * @brief Moves the given buffer to the front of the chain.
+ * @param buf The buffer to move to the front.
+ * @param distance_from_current The distance of the buffer from the current position in the chain.
  */
-void ChainBuffet::release() {
-    if (count_.fetch_sub(1, std::memory_order_acq_rel) == CLOSED + 1u) retire();
-}
-/** --------------------------------------------------------------------------------------------------------- ChainBuffet Close
- * @brief The chain lets go of its own hold and closes the link to new claims; with no records left the slab
- * retires at once, otherwise the last record out retires it, and a link already closed is left alone.
- */
-void ChainBuffet::close() {
-    uint32_t old = count_.load(std::memory_order_acquire);
-    do {
-        if (old & CLOSED) return;
-    } while (!count_.compare_exchange_weak(old, old - 1u + CLOSED, std::memory_order_acq_rel,
-        std::memory_order_acquire));
-    if (old == 1u) retire();
-}
-/** --------------------------------------------------------------------------------------------------------- ChainBuffet Retire
- * @brief The slab's last count is gone: a dedicated link frees itself whole; a chain link zeroes what it handed
- * out and parks its slab as the placement's spare, or frees it when a spare is already parked, and its shell
- * stays retired for whoever still holds a pointer to it.
- */
-void ChainBuffet::retire() {
-    /// Two last counts can race here, so only the one that marks the link retired takes the slab.
-    uint32_t closed = CLOSED;
-    if (!count_.compare_exchange_strong(closed, RETIRED, std::memory_order_acq_rel)) return;
-    if (novel_) {
-        desc_->active_deleter(buffer_);
-        delete this;
+void ChainBuffet::take_to_front(ChainBuffet* buf, int distance_from_current) {
+    if (distance_from_current > 4) {
+        delete buf;
+        buffers_ahead_.fetch_sub(1, std::memory_order_release);
         return;
     }
-    std::memset(host_, 0, std::min(bump_.load(std::memory_order_relaxed), size_));
-    void* parked = nullptr;
-    void* slab = std::exchange(buffer_, nullptr);
-    if (!spares_[*desc_->type_idx_getter()].compare_exchange_strong(parked, slab, std::memory_order_acq_rel)) {
-        desc_->active_deleter(slab);
+    ChainBuffet* nextone = next_.load(std::memory_order_acquire);
+    while (nextone == reinterpret_cast<ChainBuffet*>(-1)) {
+        std::this_thread::yield();
+        nextone = next_.load(std::memory_order_acquire);
     }
+    if (nextone) {
+        nextone->take_to_front(buf, distance_from_current + 1);
+    } else {
+        ChainBuffet* expected = nullptr;
+        if (next_.compare_exchange_strong(expected, buf, std::memory_order_acq_rel)) {
+            buffers_ahead_.fetch_add(1, std::memory_order_release);
+        } else {
+            nextone->take_to_front(buf, distance_from_current + 1);
+        }
+    }
+}
+/** --------------------------------------------------------------------------------------------------------- Novel Backing
+ * @brief Whether the bytes live on a dedicated link or in a buffer of their own.
+ * @return True if the Slice's root owns its backing alone, false otherwise.
+ */
+bool Slice::is_novel() const noexcept {
+    return parent_ != nullptr && (!is_pooled() || static_cast<const ChainBuffet*>(parent_)->is_novel()
+        || static_cast<const ChainBuffet*>(parent_)->size_ < 64 * 1024 * 1024);
+}
+/** --------------------------------------------------------------------------------------------------------- Alligator::claim
+ * @brief Claims a Slice: a record and its payload cut from this thread's lane of the placement, or a
+ * dedicated link for a novel or slab-sized request.
+ * @param size The size of the Slice to claim.
+ * @param novel Whether the Slice should be allocated in a novel buffet.
+ * @param placement The placement descriptor for the Slice.
+ * @param type The type index for the Slice.
+ * @return The claimed Slice.
+ */
+Slice Alligator::claim(
+    uint32_t size,
+    bool novel,
+    const BuffetDescriptor* placement
+) {
+    if (size == 0) [[unlikely]] return Slice{};
+    return current_for(placement)->claim(static_cast<uint32_t>(size), novel);
+}
+/** --------------------------------------------------------------------------------------------------------- ChainBuffet::shutting_down
+ * @brief Returns a reference to the atomic flag indicating if the ChainBuffet system is shutting down.
+ * @return Reference to the atomic shutting down flag.
+ */
+std::atomic<bool>& ChainBuffet::shutting_down() {
+    static std::atomic<bool> shutting_down_flag{false};
+    return shutting_down_flag;
+}
+/** --------------------------------------------------------------------------------------------------------- ChainBuffet::decrement_refcount
+ * @brief Decrements the reference count of the given buffer and deletes it if the count reaches zero.
+ * @param buf The buffer whose reference count is to be decremented.
+ * @return True if the buffer could still have references, false if there are no more references and the
+ * buffer is either null or has otherwise been destroyed.
+ */
+bool ChainBuffet::decrement_refcount(ChainBuffet* buf) {
+    if (!buf) return false;
+    uint32_t old_count = std::atomic_ref<uint32_t>(buf->count_).fetch_sub(1, std::memory_order_acq_rel);
+    if (old_count == 1) {
+        if (buf->handle_ && buf->desc_ && buf->desc_->active_deleter) {
+            buf->desc_->active_deleter(buf->handle_);
+        }
+        delete buf;
+        return true;
+    }
+    return false;
+}
+/** --------------------------------------------------------------------------------------------------------- ChainBuffet::is_novel
+ * @brief Checks if this buffer is novel or too small to be considered a slab.
+ * @return True if the buffer is novel or too small, false otherwise.
+ */
+bool ChainBuffet::is_novel() const {
+    return novel_ || size_ < 64 * 1024 * 1024;
+}
+/** --------------------------------------------------------------------------------------------------------- ChainBuffet::is_novel
+ * @brief Checks if the given buffer is novel or too small to be considered a slab.
+ * @param buf The buffer to check.
+ * @return True if the buffer is novel or too small, false otherwise.
+ */
+bool ChainBuffet::is_novel(const ChainBuffet* buf) {
+    return buf && (buf->is_novel() || buf->size_ < 64 * 1024 * 1024);
 }
 } // namespace buffetalligator

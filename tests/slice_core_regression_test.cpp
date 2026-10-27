@@ -1,6 +1,6 @@
 /** --------------------------------------------------------------------------------------------------------- Slice Core Regression
  * @file slice_core_regression_test.cpp
- * @brief Exercises granule views, shared ownership, dedicated buffers, and concurrent rollover through
+ * @brief Exercises views, shared ownership, dedicated buffers, and concurrent rollover through
  * production Slices on counted placements.
  */
 #include <alligator.hpp>
@@ -25,7 +25,7 @@ std::atomic<size_t> allocation_count{0};
 std::atomic<size_t> fail_at{SIZE_MAX};
 std::array<std::atomic<size_t>, 32768> releases{};
 /** --------------------------------------------------------------------------------------------------------- Tracked Placement
- * @brief Real aligned storage under an independently counted allocation identity; one type per slab size.
+ * @brief Real aligned storage under an independently counted allocation identity; one type per test role.
  */
 template<int Tag, size_t Slab>
 struct alignas(16) Tracked {
@@ -66,15 +66,15 @@ struct alignas(16) Tracked {
         return Tag == 0 ? "SliceCoreSmall" : Tag == 1 ? "SliceCoreRollover" : "SliceCoreChurn";
     }
     static uint64_t device_address(void* pointer) {
-        return UINT64_C(0x10000000000) + static_cast<Tracked*>(pointer)->identity * UINT64_C(0x100000);
+        return UINT64_C(0x10000000000) + static_cast<Tracked*>(pointer)->identity * (2 * Slab);
     }
     size_t size() const { return memory.size(); }
     void* raw() { return memory.raw(); }
     const void* raw() const { return memory.raw(); }
 };
-using SmallPlacement = Tracked<0, 256>;
-using RolloverPlacement = Tracked<1, 256>;
-using ChurnPlacement = Tracked<2, 4096>;
+using SmallPlacement = Tracked<0, functional::SLAB_BYTES>;
+using RolloverPlacement = Tracked<1, functional::SLAB_BYTES>;
+using ChurnPlacement = Tracked<2, functional::SLAB_BYTES>;
 static_assert(IsABuffetType<SmallPlacement>, "Tracked must satisfy IsABuffetType");
 /** --------------------------------------------------------------------------------------------------------- Backing Of
  * @brief Returns the tracked allocation behind a live Slice.
@@ -88,8 +88,8 @@ Placement* backing_of(const Slice& slice) {
  */
 struct FinalRelease {
     ~FinalRelease() {
-        /// Every buffer releases at most once; each lane's current, prepared and previous links and each
-        /// placement's parked spare are freed by the Alligator's teardown phase, which runs after this check.
+        /// Every buffer releases at most once; each lane's previous, current and two prepared links are freed
+        /// by the Alligator's teardown phase, which runs after this check.
         const size_t allocations = allocation_count.load(std::memory_order_relaxed);
         size_t standing = 0;
         for (size_t identity = 0; identity < allocations; ++identity) {
@@ -97,13 +97,13 @@ struct FinalRelease {
             if (count > 1) std::_Exit(EXIT_FAILURE);
             standing += count == 0;
         }
-        if (standing > 3 * (3 * CHAIN_LANES + 1)) std::_Exit(EXIT_FAILURE);
+        if (standing > 3 * (4 * functional::LANES)) std::_Exit(EXIT_FAILURE);
     }
 };
-/** --------------------------------------------------------------------------------------------------------- Null And Granules
- * @brief Checks null ownership and the public granule lengths and adjacency of consecutive claims.
+/** --------------------------------------------------------------------------------------------------------- Null And Sizes
+ * @brief Checks null ownership, the 64-byte rounding of capacity, and the adjacency of consecutive claims.
  */
-void null_and_granules(const BuffetDescriptor* small) {
+void null_and_sizes(const BuffetDescriptor* small) {
     LOG_INFO_STREAM << "Checking null handles, moves, and 0/1/63/64/65-byte allocation requests";
     const size_t before = factory_calls.load(std::memory_order_relaxed);
     Slice empty;
@@ -118,13 +118,15 @@ void null_and_granules(const BuffetDescriptor* small) {
     std::array<Slice, requests.size()> claims;
     for (size_t index = 0; index < requests.size(); ++index) {
         claims[index] = Slice(requests[index], small);
-        require(claims[index].size_bytes() == ((requests[index] + 63) & ~size_t(63)),
-            "public length did not round up to whole granules");
+        require(claims[index].size_bytes() == requests[index],
+            "size_bytes is not the bytes requested. Requested ", requests[index], " bytes, got ",
+            claims[index].size_bytes(), " bytes");
+        require(claims[index].capacity() == ((requests[index] + 63) & ~size_t(63)),
+            "capacity did not round up to 64 bytes");
         require(claims[index].placement() == small, "claim reported another placement");
     }
-    /// A record granule precedes every payload, so consecutive granule claims sit two granules apart.
-    require(claims[1].data() == claims[0].data() + 2 * sizeof(SliceRecord),
-        "adjacent small reservations overlap or skip a granule");
+    /// Consecutive claims sit back to back, each rounded up to 64 bytes.
+    require(claims[1].data() == claims[0].data() + 64, "adjacent claims overlap or leave a gap");
     const void* identifier = claims[0].raw();
     Slice moved(std::move(claims[0]));
     require(!claims[0] && moved.raw() == identifier, "move construction lost its null source contract");
@@ -136,10 +138,10 @@ void null_and_granules(const BuffetDescriptor* small) {
     moved.free();
     require(!moved && moved.raw() == nullptr, "repeated free did not preserve the null state");
 }
-/** --------------------------------------------------------------------------------------------------------- Granule Limits
- * @brief Checks that requests past the 32-bit granule range are rejected before reaching any factory.
+/** --------------------------------------------------------------------------------------------------------- Size Limits
+ * @brief Checks that requests past the 32-bit size range are rejected before reaching any factory.
  */
-void granule_limits(const BuffetDescriptor* small) {
+void size_limits(const BuffetDescriptor* small) {
     LOG_INFO_STREAM << "Checking overflow rejection";
     Slice preserved(size_t(65), small);
     const void* identifier = preserved.raw();
@@ -153,7 +155,7 @@ void granule_limits(const BuffetDescriptor* small) {
         rejected = false;
         try { preserved.resize(bytes, true, false, small); }
         catch (const AlligatorException&) { rejected = true; }
-        require(rejected && preserved.raw() == identifier && preserved.size_bytes() == 128,
+        require(rejected && preserved.raw() == identifier && preserved.size_bytes() == 65,
             "oversized resize changed its live source");
     }
 }
@@ -165,7 +167,7 @@ void copies_and_views(const BuffetDescriptor* small) {
     Slice original(size_t(193), true, small);
     original.data<uint64_t>()[16] = 84;
     Slice copied(original);
-    require(copied.raw() == original.raw() && copied.size_bytes() == 256,
+    require(copied.raw() == original.raw() && copied.size_bytes() == 193,
         "copy did not share its source record");
     Slice view = original.slice(65, 65);
     Slice nested = view.slice(63, 2);
@@ -177,8 +179,8 @@ void copies_and_views(const BuffetDescriptor* small) {
         "nested outward rounding changed the parent's address domain");
     require(tail.raw() == original.data() + 64 && tail.size_bytes() == 192
         && last.raw() == original.data() + 192 && last.size_bytes() == 64,
-        "tail or final-byte view exceeded its parent granules");
-    require(!original.slice(0, 0) && !original.slice(256), "empty views retained a granule");
+        "tail or final-byte view exceeded its parent's bytes");
+    require(!original.slice(0, 0) && !original.slice(256), "empty views retained bytes");
     bool rejected = false;
     try { (void)original.slice(255, 2); }
     catch (const AlligatorException&) { rejected = true; }
@@ -193,15 +195,14 @@ void copies_and_views(const BuffetDescriptor* small) {
  */
 void dedicated_ownership(const BuffetDescriptor* small) {
     LOG_INFO_STREAM << "Checking dedicated buffer ownership and exact last-owner release";
-    constexpr std::array<size_t, 3> requests{17, 256, 320};
+    constexpr std::array<size_t, 3> requests{17, functional::SLAB_BYTES, functional::SLAB_BYTES + 64};
     for (size_t index = 0; index < requests.size(); ++index) {
         Slice original(requests[index], index == 0, small);
         SmallPlacement* backing = backing_of<SmallPlacement>(original);
         const size_t identity = backing->identity;
-        require(original.is_novel()
-            && original.raw() == static_cast<uint8_t*>(backing->memory.raw()) + sizeof(SliceRecord)
-            && original.size_bytes() + sizeof(SliceRecord) == backing->memory.size(),
-            "dedicated claim published the chain slab's allocation metadata");
+        require(original.is_novel() && original.raw() == backing->memory.raw()
+            && original.size_bytes() == requests[index],
+            "dedicated claim does not start its own buffer with the bytes requested");
         Slice retained(original);
         original.free();
         require(releases[identity].load(std::memory_order_relaxed) == 0,
@@ -213,10 +214,11 @@ void dedicated_ownership(const BuffetDescriptor* small) {
     }
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Rollover
- * @brief Forces synchronized claimers to retain every result across repeated small-slab retirement.
+ * @brief Forces synchronized claimers to retain every result across repeated slab retirement; each lane fills its
+ * slab twice, since a retired link is freed at the rollover after its own.
  */
 struct Rollover {
-    static constexpr size_t workers = 16, rounds = 256;
+    static constexpr size_t workers = 16, rounds = 160, claim = 1u << 20;
     const BuffetDescriptor* placement;
     std::barrier<> gate{workers};
     std::array<std::array<Slice, rounds>, workers> claims;
@@ -225,9 +227,9 @@ struct Rollover {
         for (size_t round = 0; round < rounds; ++round) {
             work->gate.arrive_and_wait();
             Slice& result = work->claims[worker][round];
-            result = Slice(size_t(64), work->placement);
+            result = Slice(claim, work->placement);
             result.get_as<uint64_t>() = (uint64_t(worker + 1) << 32) | round;
-            if (worker == 0 && round % 64 == 0)
+            if (worker == 0 && round % 20 == 0)
                 LOG_INFO_STREAM << "Checking concurrent Slice rollover round " << round;
         }
     }
@@ -263,19 +265,18 @@ void rollover_ownership(const BuffetDescriptor* placement) {
         released = 0;
         for (size_t identity = first_allocation; identity < last_allocation; ++identity)
             released += releases[identity].load(std::memory_order_relaxed);
-        if (last_allocation - first_allocation - released <= 3 * CHAIN_LANES + 1) break;
+        if (last_allocation - first_allocation - released <= 4 * functional::LANES) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    /// Each lane keeps the link behind its current one, the current one and the one ahead, and the placement
-    /// keeps one parked spare.
-    require(released > 0 && last_allocation - first_allocation - released <= 3 * CHAIN_LANES + 1,
-        "retired slabs remain pinned beyond the lanes' chains and the parked spare");
+    /// Each lane keeps the link behind its current one, the current one and the two ahead.
+    require(released > 0 && last_allocation - first_allocation - released <= 4 * functional::LANES,
+        "retired slabs remain pinned beyond the lanes' chains");
 }
 /** --------------------------------------------------------------------------------------------------------- Concurrent Churn
- * @brief Claims, checks, copies, and frees on small slabs so buffers retire and indices recycle.
+ * @brief Claims, checks, copies, and frees through whole slabs so buffers retire.
  */
 struct Churn {
-    static constexpr size_t workers = 16, rounds = 20000, held = 3;
+    static constexpr size_t workers = 16, rounds = 8000, held = 3, claim = 64u << 10;
     const BuffetDescriptor* placement;
     std::barrier<> gate{workers};
     std::atomic<bool> overlapped{false};
@@ -289,9 +290,9 @@ struct Churn {
             if (round >= held && slot.get_as<uint64_t>() != expected)
                 work->overlapped.store(true, std::memory_order_relaxed);
             Slice copy(slot);
-            slot = Slice(size_t(64), work->placement);
+            slot = Slice(claim, work->placement);
             slot.get_as<uint64_t>() = (uint64_t(worker + 1) << 32) | round;
-            if (worker == 0 && round % 5000 == 0)
+            if (worker == 0 && round % 2000 == 0)
                 LOG_INFO_STREAM << "Checking Slice churn round " << round;
         }
     }
@@ -308,14 +309,14 @@ void churn_ownership(const BuffetDescriptor* placement) {
             workers.emplace_back(&Churn::run, &work, worker);
         for (auto& worker : workers) worker.join();
         require(!work.overlapped.load(std::memory_order_relaxed),
-            "concurrent churn handed one granule to two live Slices");
+            "concurrent churn handed one claim to two live Slices");
     }
     const size_t last_allocation = allocation_count.load(std::memory_order_relaxed);
     size_t released = 0;
     for (size_t identity = first_allocation; identity < last_allocation; ++identity)
         released += releases[identity].load(std::memory_order_relaxed);
-    require(released > 0 && last_allocation - first_allocation - released <= 3 * CHAIN_LANES + 1,
-        "churned buffers remain pinned beyond the lanes' chains and the parked spare");
+    require(released > 0 && last_allocation - first_allocation - released <= 4 * functional::LANES,
+        "churned buffers remain pinned beyond the lanes' chains");
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
@@ -329,11 +330,11 @@ int main() {
     const BuffetDescriptor* small = BuffetDescriptors::descriptor<SmallPlacement>();
     const BuffetDescriptor* rollover = BuffetDescriptors::descriptor<RolloverPlacement>();
     const BuffetDescriptor* churn = BuffetDescriptors::descriptor<ChurnPlacement>();
-    null_and_granules(small);
-    granule_limits(small);
+    null_and_sizes(small);
+    size_limits(small);
     copies_and_views(small);
     dedicated_ownership(small);
     rollover_ownership(rollover);
     churn_ownership(churn);
-    LOG_INFO_STREAM << "Slice granule and allocator ownership regressions passed";
+    LOG_INFO_STREAM << "Slice size and allocator ownership regressions passed";
 }
