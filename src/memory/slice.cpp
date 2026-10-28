@@ -5,6 +5,7 @@
  */
 #include <alligator.hpp>
 #include <gpu/easyvulkan.hpp>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -59,6 +60,10 @@ IBuffet::~IBuffet() {
     if (id_ != 0xFFFFFFFFu && !fast_allocator().stopping) fast_allocator().addresses[id_] = 0;
 }
 Slice::Slice(size_t size, bool novel) { *this = IBuffet::claim(static_cast<uint32_t>(size), novel); }
+Slice::Slice(const void* data, size_t size, bool novel) {
+    *this = IBuffet::claim(static_cast<uint32_t>(size), novel);
+    if (size != 0) std::memcpy(raw(), data, size);
+}
 Slice::Slice(const Slice& other)
 : id_(other.id_ == 0xFFFFFFFFu ? 0xFFFFFFFFu : IBuffet::copy_rec(other.rec(), other.address())) {}
 Slice& Slice::operator=(const Slice& other) {
@@ -81,6 +86,23 @@ Slice::~Slice() { if (id_ != 0xFFFFFFFFu) rec().release(); }
 void Slice::free() {
     if (id_ != 0xFFFFFFFFu) rec().release();
     id_ = 0xFFFFFFFFu;
+}
+/** --------------------------------------------------------------------------------------------------------- Slice::resize
+ * @brief Resizes the slice to the new size.
+ * @param new_size The new size of the slice.
+ * @param preserve_data Whether to preserve the existing data.
+ * @param novel_buffer Whether to allocate a novel buffer.
+ */
+void Slice::resize(size_t new_size, bool preserve_data, bool novel_buffer) {
+    if (preserve_data && id_ != 0xFFFFFFFFu && new_size != 0 && new_size <= size_bytes()) {
+        rec().size_ = static_cast<uint32_t>(new_size);
+        return;
+    }
+    Slice fresh = IBuffet::claim(static_cast<uint32_t>(new_size), novel_buffer);
+    if (preserve_data && id_ != 0xFFFFFFFFu && new_size != 0) {
+        std::memcpy(fresh.raw(), raw(), std::min(size_bytes(), new_size));
+    }
+    *this = std::move(fresh);
 }
 void* Slice::raw() { return rec().raw_; }
 const void* Slice::raw() const { return rec().raw_; }

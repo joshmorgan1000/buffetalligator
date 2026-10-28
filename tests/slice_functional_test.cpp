@@ -170,6 +170,36 @@ static void weak_slices() {
     require_throws([&] { weak.slice(sizeof(input) + 1); }, "weak invalid offset accepted");
     require_throws([] { WeakSlice invalid(size_t(4), true); }, "weak allocation accepted");
 }
+/** --------------------------------------------------------------------------------------------------------- Resizes
+ * @brief Checks that a preserving shrink stays in place, growth keeps the bytes, a discarding resize does not
+ * copy, a null Slice resizes into a claim, a novel resize gets its own buffer, and zero frees.
+ */
+static void resizes() {
+    Slice grown(64);
+    grown.get_as<uint64_t>() = 0xA5A5u;
+    grown.resize(256);
+    require(grown.size_bytes() == 256 && grown.get_as<uint64_t>() == 0xA5A5u, "a preserving growth lost its bytes");
+    const void* after = grown.raw();
+    grown.resize(128);
+    require(grown.size_bytes() == 128 && grown.raw() == after, "a preserving shrink did not stay in place");
+    grown.resize(64, false);
+    require(grown.size_bytes() == 64, "a discarding resize has the wrong size");
+    Slice revived;
+    revived.resize(96);
+    require(revived.valid() && revived.size_bytes() == 96, "resize on a null slice did not allocate");
+    Slice novel(64);
+    novel.resize(4096, true, true);
+    require(novel.is_novel() && novel.size_bytes() == 4096, "a novel resize did not get its own buffer");
+    revived.resize(0);
+    require(revived.is_null(), "resize to zero did not free");
+    const std::array<uint32_t, 4> source{5, 6, 7, 8};
+    Slice copied(source.data(), sizeof(source));
+    require(copied.size() == sizeof(source) && copied.size<uint32_t>() == 4 && copied.data()[0] == 5
+        && copied.data<uint32_t>()[3] == 8 && copied.raw() != source.data(),
+        "a copy from a view did not copy the bytes into its own claim");
+    Slice novel_copy(source.data(), sizeof(source), true);
+    require(novel_copy.is_novel() && novel_copy.get_as<uint32_t>() == 5, "a novel copy from a view differs");
+}
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Dispatches independent typed and weak slice functional cases.
  */
@@ -177,6 +207,6 @@ int main(int count, char** arguments) {
     return functional::run(count, arguments, {
         {"typed_slices", typed_slices}, {"typed_lifecycle", typed_lifecycle},
         {"typed_views", typed_views},
-        {"weak_slices", weak_slices}
+        {"weak_slices", weak_slices}, {"resizes", resizes}
     });
 }

@@ -34,7 +34,7 @@ function(add_functional_cases component)
         set_tests_properties(buffetalligator_${case} PROPERTIES TIMEOUT 30 LABELS functional)
     endforeach()
 endfunction()
-add_functional_cases(slice typed_slices typed_lifecycle typed_views weak_slices)
+add_functional_cases(slice typed_slices typed_lifecycle typed_views weak_slices resizes)
 add_functional_cases(atomic native_atomics complex_atomics atomic_ownership atomic_exceptions
     concurrent_atomics atomic_wait_notify registry global_registry concurrent_registry registry_exceptions)
 add_functional_cases(map map_rows map_merge map_lifetime map_boundaries concurrent_map map_shared_ownership pipeline)

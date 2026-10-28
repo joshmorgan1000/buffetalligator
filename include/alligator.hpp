@@ -161,6 +161,13 @@ public:
      */
     Slice(size_t size, bool novel = false);
     /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Copies `size` bytes from a view into a fresh claim.
+     * @param data The bytes to copy from.
+     * @param size How many bytes.
+     * @param novel Whether the claim gets a dedicated buffer.
+     */
+    Slice(const void* data, size_t size, bool novel = false);
+    /** ------------------------------------------------------------------------------------------- Slice
      * @brief Copy constructor for a Slice.
      * @param other The slice to copy.
      */
@@ -201,13 +208,39 @@ public:
      * @tparam T The type to cast the data pointer to.
      * @return Pointer to the data of the specified type.
      */
-    template<typename T> T* data() { return static_cast<T*>(raw()); }
+    template<typename T = uint8_t>
+    T* data() { return static_cast<T*>(raw()); }
     /** ------------------------------------------------------------------------------------------- Slice
      * @brief Returns a const pointer to the data of the slice cast to the specified type.
      * @tparam T The type to cast the data pointer to.
      * @return Const pointer to the data of the specified type.
      */
-    template<typename T> const T* data() const { return static_cast<const T*>(raw()); }
+    template<typename T = uint8_t> const
+    T* data() const { return static_cast<const T*>(raw()); }
+
+    template<typename T = uint8_t>
+    T& operator*() { return *data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Returns a const reference to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Const reference to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    const T& operator*() const { return *data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Returns a pointer to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Pointer to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    T* operator->() { return data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Returns a const pointer to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Const pointer to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    const T* operator->() const { return data<T>(); }
     /** ------------------------------------------------------------------------------------------- Slice
      * @brief Returns the size of the slice in bytes.
      * @return Size of the slice in bytes.
@@ -218,7 +251,8 @@ public:
      * @tparam T The type to calculate the size for.
      * @return Size of the slice in terms of the specified type.
      */
-    template<typename T> size_t size() const { return size_bytes() / sizeof(T); }
+    template<typename T = uint8_t>
+    size_t size() const { return size_bytes() / sizeof(T); }
     /** ------------------------------------------------------------------------------------------- Slice
      * @brief Returns a sub-slice of the current slice.
      * @param offset The starting offset of the sub-slice.
@@ -260,19 +294,45 @@ public:
      * @brief Frees the underlying memory of the slice.
      */
     void free();
-    /// @brief Whether the handle names no claim.
+    /** ------------------------------------------------------------------------------------------- Resize
+     * @brief Resizes the claim: a preserving shrink stays in place, anything else is a fresh
+     * claim, with the old bytes copied over when preserved; a null Slice resizes into a plain
+     * claim.
+     * @param new_size The new size in bytes; zero frees.
+     * @param preserve_data Whether the existing bytes carry over.
+     * @param novel_buffer Whether a fresh claim gets a dedicated buffer.
+     */
+    void resize(size_t new_size, bool preserve_data = true, bool novel_buffer = false);
+    /** ------------------------------------------------------------------------------------------- Is Null
+     * @brief Checks if the slice is null (i.e., does not name a claim).
+     * @return True if the slice is null, false otherwise.
+     */
     bool is_null() const { return id_ == 0xFFFFFFFFu; }
-    /// @brief Whether the handle names a claim.
+    /** ------------------------------------------------------------------------------------------- Valid
+     * @brief Checks if the slice names a claim.
+     * @return True if the slice is valid, false otherwise.
+     */
     bool valid() const { return id_ != 0xFFFFFFFFu; }
+    /** ------------------------------------------------------------------------------------------- Operator Bool
+     * @brief Checks if the slice is valid in a boolean context.
+     * @return True if the slice is valid, false otherwise.
+     */
     operator bool() const { return id_ != 0xFFFFFFFFu; }
-    /// @brief Whether the claim has a buffer to itself.
+    /** ------------------------------------------------------------------------------------------- Is Novel
+     * @brief Whether the claim has a buffer to itself.
+     * @return True if the claim has a dedicated buffer, false otherwise.
+     */
     bool is_novel() const;
-    /// @brief The claim's bytes rounded up to its 64-byte units.
+    /** ------------------------------------------------------------------------------------------- Pool Index
+     * @brief Retrieves the pool index of the slice.
+     * @return The pool index.
+     */
+    uint32_t pool_index() const { return id_ & 0xFFFFFu; }
+    /** ------------------------------------------------------------------------------------------- Capacity
+     * @brief Retrieves the capacity of the slice in bytes, rounded up to 64-byte units.
+     * @return The capacity in bytes.
+     */
     size_t capacity() const { return (size_bytes() + 63) & ~size_t{63}; }
-    /// @brief The bytes as a T.
-    template<typename T> T& get_as() { return *static_cast<T*>(raw()); }
-    /// @brief The bytes as a const T.
-    template<typename T> const T& get_as() const { return *static_cast<const T*>(raw()); }
 };
 /** --------------------------------------------------------------------------------------------------------- SliceRec
  * @struct SliceRec
