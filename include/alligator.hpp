@@ -217,7 +217,25 @@ public:
      */
     template<typename T = uint8_t> const
     T* data() const { return static_cast<const T*>(raw()); }
-
+    /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Returns a reference to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Reference to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    T& get_as() { return *data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Returns a const reference to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Const reference to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    const T& get_as() const { return *data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Slice
+     * @brief Returns a reference to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Reference to the data of the specified type.
+     */
     template<typename T = uint8_t>
     T& operator*() { return *data<T>(); }
     /** ------------------------------------------------------------------------------------------- Slice
@@ -774,6 +792,48 @@ public:
      */
     template<typename T>
     const T* data() const { return static_cast<const T*>(raw()); }
+    /** ------------------------------------------------------------------------------------------- Slice as
+     * @brief Returns a reference to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Reference to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    T& get_as() { return *data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Slice as (const)
+     * @brief Returns a const reference to the data of the slice cast to the specified type.
+     * @tparam T The type to cast the data pointer to.
+     * @return Const reference to the data of the specified type.
+     */
+    template<typename T = uint8_t>
+    const T& get_as() const { return *data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Arrow Operator
+     * @brief Provides access to the underlying data pointer using the arrow operator.
+     * @tparam T The type of the pointer to return.
+     * @return A typed pointer to the underlying slice's data.
+     */
+    template<typename T = uint8_t>
+    T* operator->() { return data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Arrow Operator (const)
+     * @brief Provides access to the underlying data pointer using the arrow operator.
+     * @tparam T The type of the pointer to return.
+     * @return A typed pointer to the underlying slice's data.
+     */
+    template<typename T = uint8_t>
+    const T* operator->() const { return data<T>(); }
+    /** ------------------------------------------------------------------------------------------- Dereference Operator
+     * @brief Provides access to the underlying data using the dereference operator.
+     * @tparam T The type of the reference to return.
+     * @return A reference to the underlying data of the specified type.
+     */
+    template<typename T = uint8_t>
+    T& operator*() { return as<T>(); }
+    /** ------------------------------------------------------------------------------------------- Dereference Operator (const)
+     * @brief Provides access to the underlying data using the dereference operator.
+     * @tparam T The type of the reference to return.
+     * @return A const reference to the underlying data of the specified type.
+     */
+    template<typename T = uint8_t>
+    const T& operator*() const { return as<T>(); }
     /** ------------------------------------------------------------------------------------------- Check Fulfillment
      * @brief Checks if the slice has been fulfilled.
      * @return `true` if the slice has been fulfilled, `false` otherwise.
