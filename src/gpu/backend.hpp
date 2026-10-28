@@ -5,15 +5,12 @@
  */
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
-#include <gpu/easycuda.hpp>
-#include <gpu/easymetal.hpp>
 #include <gpu/easyvulkan.hpp>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Backend Name
@@ -25,36 +22,27 @@ constexpr std::string_view backend_name(GPUBackend backend) {
     constexpr std::string_view names[] = {"cpu", "vulkan", "metal", "cuda"};
     return names[static_cast<int>(backend)];
 }
-/** --------------------------------------------------------------------------------------------------------- Compile GLSL
- * @brief Compiles GLSL compute source into SPIR-V words.
- * @param source The complete GLSL source.
- * @param float16 Whether to define VULKAN_FLOAT16 for the kernel prelude.
- * @param name Diagnostic name for compile errors.
- * @return The SPIR-V words.
- */
-std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16, std::string_view name);
 /** --------------------------------------------------------------------------------------------------------- Public Shader Source
- * @brief Wraps a user body defining `void alligator_main(Slice)` with the Slice prelude and entry point.
+ * @brief Wraps a user body defining `void alligator_main(uint slice)` with the Slice id ABI and the entry point.
  * @param body The user's GLSL body.
- * @return The complete GLSL source.
+ * @return The GLSL after the EZ prelude.
  */
 std::string public_shader_source(std::string_view body);
 /** --------------------------------------------------------------------------------------------------------- GPU Device
- * @brief Holds the selected device's immutable placement and probed capacities.
+ * @brief Holds the selected device's probed capacities.
  */
 struct GPUDevice {
     GPUBackend kind;
-    const BuffetDescriptor* placement;
     bool unified;
     std::string name;
-    uint64_t placement_max_bytes = UINT64_MAX;      ///< Probed ceiling for one novel buffer in `placement`.
-    uint64_t placement_capacity_bytes = UINT64_MAX; ///< Probed total bytes `placement`'s memory domain holds.
+    uint64_t placement_max_bytes = UINT64_MAX;      ///< Probed ceiling for one novel buffer.
+    uint64_t placement_capacity_bytes = UINT64_MAX; ///< Probed total bytes the device's memory domain holds.
 };
 /** --------------------------------------------------------------------------------------------------------- GPU Selection
  * @brief Owns the immutable result of explicit selection or Vulkan-first capability probing.
  */
 struct GPUSelection {
-    GPUDevice device{GPUBackend::CPU, BuffetDescriptors::descriptor<AlignedHeapBuffer>(), false, {}};
+    GPUDevice device{GPUBackend::CPU, false, {}};
     GPUSelection();
 };
 /** --------------------------------------------------------------------------------------------------------- GPU Static
@@ -103,7 +91,7 @@ struct GPUStatic {
      */
     static DeviceMemoryUsage gpu_memory_usage() {
         const DeviceProperties& properties = VulkanContext::device_properties();
-        return {properties.device_local_memory_bytes, VulkanContext::device_free_bytes()};
+        return {properties.device_local_memory_bytes, VulkanContext::device_free_bytes(VulkanContext::instance())};
     }
     /** ------------------------------------------------------------------------------------------- GPU Capabilities
      * @brief The frozen Vulkan device's probed facts as plain data.
@@ -118,13 +106,12 @@ struct GPUStatic {
         capabilities.supports_int64 = properties.supports_int64;
         capabilities.supports_memory_budget = properties.supports_memory_budget;
         capabilities.supports_timeline_semaphore = properties.supports_timeline_semaphore;
-        capabilities.internally_synchronized_queues = VulkanContext::internally_synchronized_queues();
         capabilities.queue_count = VulkanContext::queue_count();
         capabilities.subgroup_size = properties.subgroup_size;
         capabilities.max_workgroup_invocations = properties.max_workgroup_invocations;
         capabilities.device_local_bytes = properties.device_local_memory_bytes;
         capabilities.host_visible_bytes = properties.host_visible_memory_bytes;
-        capabilities.device_local_headroom_bytes = VulkanContext::device_free_bytes();
+        capabilities.device_local_headroom_bytes = VulkanContext::device_free_bytes(VulkanContext::instance());
         capabilities.device_name = properties.device_name;
         return capabilities;
     }
@@ -153,7 +140,7 @@ struct GPUStatic {
         return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::device_properties().max_workgroup_count[2] : 1;
     }
     /** ------------------------------------------------------------------------------------------- GPU Placement Headroom
-     * @brief Reports the live headroom of the frozen device placement's backing heap.
+     * @brief Reports the live headroom of the frozen device's backing heap.
      */
     static uint64_t gpu_placement_headroom() {
         return gpu_device().kind == GPUBackend::Vulkan ? VulkanContext::buffer_heap_headroom() : UINT64_MAX;
@@ -176,10 +163,8 @@ inline GPUSelection::GPUSelection() {
     if (choice == "cuda") ALLIGATOR_GPU_THROW("This build has no qualified CUDA backend");
     if ((choice == "auto" || choice == "vulkan") && VulkanContext::device_present()) {
         const DeviceProperties& properties = VulkanContext::device_properties();
-        /// Slices default to device-visible memory from here on, so a shader can read any of them.
-        BuffetDescriptors::register_descriptor<VulkanBuffer>(true);
-        device = {GPUBackend::Vulkan, VulkanContext::buffer_placement(), VulkanContext::device_unified(),
-            VulkanKernel::device_name(), properties.max_allocation_bytes,
+        device = {GPUBackend::Vulkan, VulkanContext::device_unified(), properties.device_name,
+            properties.max_allocation_bytes,
             properties.unified_memory ? properties.host_visible_memory_bytes : properties.device_local_memory_bytes};
         LOG_INFO_STREAM << "GPU backend=vulkan; device=" << device.name
             << "; max single allocation=" << device.placement_max_bytes << " bytes"

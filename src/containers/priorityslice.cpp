@@ -205,14 +205,12 @@ inline void lower(std::atomic_ref<uint64_t> cache, uint64_t word) noexcept {
  * @param capacity The entry count the queue trims itself to.
  * @param compare The key order, or nullptr for the natural unsigned word order.
  * @param novel_buffer Whether the storage is its own buffer rather than a slab claim.
- * @param placement The placement the storage is claimed from.
  */
 PrioritySlice::PrioritySlice(
     size_t capacity,
     Compare compare,
-    bool novel_buffer,
-    const BuffetDescriptor* placement
-) : storage_(checked_bytes(capacity), novel_buffer, placement)
+    bool novel_buffer
+) : storage_(checked_bytes(capacity), novel_buffer)
 , header_(storage_.data<uint64_t>())
 , max_cache_(header_ + HEADER_WORDS)
 , min_cache_(max_cache_ + cache_words(capacity))
@@ -779,12 +777,12 @@ size_t PrioritySlice::size() const noexcept {
  * @brief Allocates the min-max heap's count header and packed positions.
  */
 HeapSlice::HeapSlice(
-    size_t capacity, Compare compare, bool novel_buffer, const BuffetDescriptor* placement
+    size_t capacity, Compare compare, bool novel_buffer
 ) : capacity_(capacity), compare_(compare) {
     if (capacity == 0 || capacity > (SIZE_MAX - HEADER_BYTES) / sizeof(uint64_t)) {
         ALLIGATOR_THROW("HeapSlice: capacity must fit at least one packed position");
     }
-    storage_ = Slice(HEADER_BYTES + capacity * sizeof(uint64_t), novel_buffer, placement);
+    storage_ = Slice(HEADER_BYTES + capacity * sizeof(uint64_t), novel_buffer);
     header_ = storage_.data<uint64_t>();
     words_ = header_ + HEADER_BYTES / sizeof(uint64_t);
     *header_ = 0;

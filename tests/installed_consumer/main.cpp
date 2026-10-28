@@ -40,9 +40,7 @@ void finish_task(std::shared_ptr<void> item, std::shared_ptr<void>) { *static_ca
  */
 int main() {
     LOG_INFO_STREAM << "Checking the relocated Alligator package";
-    const buffetalligator::BuffetDescriptor* placement =
-        buffetalligator::BuffetDescriptors::descriptor<buffetalligator::AlignedHeapBuffer>();
-    buffetalligator::Slice payload(size_t{128}, true, placement);
+    buffetalligator::Slice payload(size_t{128}, true);
     if (!payload.valid() || payload.size_bytes() != 128) {
         LOG_ERROR_STREAM << "The installed Slice has an incorrect byte length";
         return 1;

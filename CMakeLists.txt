@@ -17,7 +17,6 @@ else()
 endif()
 option(BUFFETALLIGATOR_BUILD_TESTS "Build the BuffetAlligator tests" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
 option(BUFFETALLIGATOR_BUILD_BENCHMARKS "Build Slice container benchmarks" ${BUFFETALLIGATOR_BUILD_TESTS_DEFAULT})
-option(BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS "Build allocator integration tests" ${BUFFETALLIGATOR_BUILD_TESTS})
 option(BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING "Track source locations of live backing allocations" OFF)
 set(BUFFETALLIGATOR_DEPS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/src" CACHE PATH "Dependency source directory")
 set(BUFFETALLIGATOR_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps" CACHE PATH "Built dependency directory")
@@ -62,11 +61,8 @@ add_library(alligator STATIC
     src/gpu/shader.cpp
     src/gpu/shader_source.cpp
     src/memory/slice.cpp
-    src/memory/slicetype.cpp
-    src/memory/alligator.cpp
     src/memory/registry.cpp
     src/core/host_memory.cpp
-    src/memory/chainbuffet.cpp
     src/kitchen/kitchen.cpp
     src/kitchen/order.cpp
     src/memory/mmap_allocator.cpp
@@ -76,7 +72,6 @@ add_library(alligator STATIC
     src/network/ba_wire.c
     src/network/ba_network.c
     src/network/ba_fabric.c
-    src/network/slice_channel.cpp
 )
 add_library(alligator::alligator ALIAS alligator)
 if(BUFFETALLIGATOR_HAS_FAT_LTO_OBJECTS)
@@ -116,14 +111,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 elseif(MSVC)
     target_compile_options(alligator PRIVATE /W4)
 endif()
-if(BUFFETALLIGATOR_BUILD_TESTS OR BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS)
-    enable_testing()
-endif()
 if(BUFFETALLIGATOR_BUILD_TESTS)
+    enable_testing()
     add_subdirectory(tests)
-endif()
-if(BUFFETALLIGATOR_BUILD_ALLOCATOR_TESTS)
-    add_subdirectory(tests/allocators)
 endif()
 if(BUFFETALLIGATOR_BUILD_BENCHMARKS)
     add_subdirectory(tests/benchmarks)

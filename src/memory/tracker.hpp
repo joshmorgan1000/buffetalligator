@@ -48,6 +48,7 @@ private:
     AtomicContainer* total_freed_;
     /// @brief Per-type allocation totals, indexed by BuffetDescriptor::type_idx.
     std::vector<PlacementDetails> placement_details_;
+    /// @brief Retired allocation counters for each buffet type, indexed by type character ('A' to 'Z').
     std::array<std::unique_ptr<AtomicContainer>, 26> retired_counters_;
 #if BUFFETALLIGATOR_ENABLE_CODELOCATION_TRACKING
     /// @brief Live backing allocations keyed by their stable placement handles.
@@ -134,8 +135,10 @@ public:
      * @param size The backing allocation size in bytes.
      * @param handle The buffet handle identifying the allocation.
      */
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
     static void record_code_location(
-        const BuffetDescriptor& placement,
+        const T& placement,
         size_t size,
         const void* handle
     ) {
@@ -190,7 +193,9 @@ public:
      * @param placement The placement that allocated the slab.
      * @param size The page-rounded slab size.
      */
-    static void record_allocation(const BuffetDescriptor& placement, size_t size) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static void record_allocation(const T& placement, size_t size) {
         instance().total_allocations_->fetch_add<uint64_t>(
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
@@ -205,7 +210,9 @@ public:
      * @param placement The placement that deallocated the slab.
      * @param size The page-rounded slab size.
      */
-    static void record_deallocation(const BuffetDescriptor& placement, size_t size) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static void record_deallocation(const T& placement, size_t size) {
         instance().total_freed_->fetch_add<uint64_t>(
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
@@ -234,7 +241,9 @@ public:
      * @param placement The placement to query.
      * @return Allocated bytes for the placement.
      */
-    static size_t placement_allocations(const BuffetDescriptor& placement) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static size_t placement_allocations(const T& placement) {
         return instance().placement_details_[*placement.type_idx_getter()].total_allocations_->load<uint64_t>(
             std::memory_order_acquire);
     }
@@ -243,7 +252,9 @@ public:
      * @param placement The placement to query.
      * @return Freed bytes for the placement.
      */
-    static size_t placement_freed(const BuffetDescriptor& placement) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static size_t placement_freed(const T& placement) {
         return instance().placement_details_[*placement.type_idx_getter()].total_freed_->load<uint64_t>(
             std::memory_order_acquire);
     }
@@ -252,7 +263,9 @@ public:
      * @param placement The placement to query.
      * @return Live bytes for the placement.
      */
-    static size_t placement_usage(const BuffetDescriptor& placement) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static size_t placement_usage(const T& placement) {
         return placement_allocations(placement) - placement_freed(placement);
     }
     /** ------------------------------------------------------------------------------------------- Placement Available
@@ -260,7 +273,9 @@ public:
      * @param placement The placement to query.
      * @return Reported available bytes for the placement.
      */
-    static size_t placement_available(const BuffetDescriptor& placement) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static size_t placement_available(const T& placement) {
         return instance().placement_details_[*placement.type_idx_getter()].total_available_->load<uint64_t>(
             std::memory_order_acquire);
     }
@@ -269,7 +284,9 @@ public:
      * @param placement The placement being reported on.
      * @param size The reported available bytes.
      */
-    static void set_placement_available(const BuffetDescriptor& placement, size_t size) {
+    template<typename T>
+        requires std::is_base_of_v<IBuffet, T>
+    static void set_placement_available(const T& placement, size_t size) {
         instance().placement_details_[*placement.type_idx_getter()].total_available_->store<uint64_t>(
             static_cast<uint64_t>(size), std::memory_order_release);
     }

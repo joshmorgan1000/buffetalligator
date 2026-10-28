@@ -1,7 +1,8 @@
 /** --------------------------------------------------------------------------------------------------------- GPU Statics
  * @file shader.cpp
- * @brief The public GPU surface over the frozen backend selection.
+ * @brief The public GPU surface over the frozen backend selection; one definition each, so consumers link.
  */
+#include <alligator.hpp>
 #include <alligator/easygpu.hpp>
 #include <gpu/backend.hpp>
 

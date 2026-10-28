@@ -18,7 +18,7 @@ add_library(alligator::shaderc STATIC IMPORTED GLOBAL)
 set_target_properties(alligator::shaderc PROPERTIES
     IMPORTED_LOCATION "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/build/libshaderc/libshaderc_combined.a"
     INTERFACE_INCLUDE_DIRECTORIES "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/libshaderc/include")
-target_sources(alligator PRIVATE src/vulkan/vulkan.cpp src/vulkan/vulkankernel.cpp)
+target_sources(alligator PRIVATE src/vulkan/vulkan.cpp)
 target_include_directories(alligator PRIVATE "${BUFFETALLIGATOR_DEPS_SOURCE_DIR}/shaderc/libshaderc/include")
 target_compile_definitions(alligator PUBLIC BUFFETALLIGATOR_HAS_VULKAN=1)
 target_link_libraries(alligator PUBLIC alligator::vulkan PRIVATE alligator::shaderc)

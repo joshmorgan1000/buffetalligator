@@ -13,20 +13,21 @@
 namespace buffetalligator {
 namespace {
 /** --------------------------------------------------------------------------------------------------------- Mmap Context
- * @brief The scratch directory and page size, fixed by register_type before the first allocation.
+ * @brief The scratch directory and page size, fixed by set_directory before the first mapping.
  */
 struct MmapContext {
     std::string directory;
     size_t page_size = 0;
-    const BuffetDescriptor* descriptor = nullptr;
 };
 MmapContext context;
 }
 /** --------------------------------------------------------------------------------------------------------- MmapBuffet Constructor
  * @brief Creates, reserves, unlinks, and maps one zero-filled scratch file without touching its pages.
  * @param size Buffer size in bytes, rounded up to 64.
+ * @param novel Whether the mapping is dedicated to one claim.
  */
-MmapBuffet::MmapBuffet(size_t size) : size_((size + 63) & ~size_t{63}) {
+MmapBuffet::MmapBuffet(size_t size, bool novel) : IBuffet((size + 63) & ~size_t{63}, novel) {
+    const size_t bytes = this->size();
     std::string pattern = context.directory + "/buffetalligator-XXXXXX";
     descriptor_ = mkstemp(pattern.data());
     if (descriptor_ < 0) {
@@ -46,53 +47,52 @@ MmapBuffet::MmapBuffet(size_t size) : size_((size + 63) & ~size_t{63}) {
     fstore_t reservation{};
     reservation.fst_flags = F_ALLOCATEALL;
     reservation.fst_posmode = F_PEOFPOSMODE;
-    reservation.fst_length = static_cast<off_t>(size_);
+    reservation.fst_length = static_cast<off_t>(bytes);
     if (fcntl(descriptor_, F_PREALLOCATE, &reservation) < 0) {
         const int error = errno;
         release();
         ALLIGATOR_THROW(std::string("Reserving scratch file storage: ") + std::strerror(error));
     }
 #else
-    const int reservation = posix_fallocate(descriptor_, 0, static_cast<off_t>(size_));
+    const int reservation = posix_fallocate(descriptor_, 0, static_cast<off_t>(bytes));
     if (reservation != 0) {
         release();
         ALLIGATOR_THROW(
             std::string("Reserving scratch file storage: ") + std::strerror(reservation));
     }
 #endif
-    if (ftruncate(descriptor_, static_cast<off_t>(size_)) != 0) {
+    if (ftruncate(descriptor_, static_cast<off_t>(bytes)) != 0) {
         const int error = errno;
         release();
         ALLIGATOR_THROW(std::string("Sizing scratch file: ") + std::strerror(error));
     }
-    void* mapping = mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, descriptor_, 0);
+    void* mapping = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, descriptor_, 0);
     if (mapping == MAP_FAILED) {
         const int error = errno;
         release();
         ALLIGATOR_THROW(std::string("Mapping scratch file: ") + std::strerror(error));
     }
-    mapping_ = mapping;
+    mapped_ = mapping;
+    address_ = reinterpret_cast<uint64_t>(mapping);
 }
 /** --------------------------------------------------------------------------------------------------------- MmapBuffet Release
  * @brief Unmaps and closes the scratch file; the unlinked file disappears with its last descriptor.
  */
 void MmapBuffet::release() {
-    if (mapping_ != nullptr && munmap(mapping_, size_) != 0) {
+    if (mapped_ != nullptr && munmap(mapped_, size()) != 0) {
         LOG_ERROR_STREAM << "Unmapping scratch file failed: " << errno;
     }
     if (descriptor_ >= 0 && close(descriptor_) != 0) {
         LOG_ERROR_STREAM << "Closing scratch file failed: " << errno;
     }
-    mapping_ = nullptr;
+    mapped_ = nullptr;
     descriptor_ = -1;
 }
-/** --------------------------------------------------------------------------------------------------------- Register Type
- * @brief Checks the scratch directory and registers the mmap descriptor once.
+/** --------------------------------------------------------------------------------------------------------- Set Directory
+ * @brief Checks the scratch directory once; every mapping after it lands there.
  * @param directory A directory on the filesystem that should back the scratch files.
- * @return The registered descriptor.
  */
-const BuffetDescriptor* MmapBuffet::register_type(const std::string& directory) {
-    if (context.descriptor) ALLIGATOR_THROW("The mmap buffet type is already registered");
+void MmapBuffet::set_directory(const std::string& directory) {
     struct stat status{};
     if (stat(directory.c_str(), &status) != 0) {
         ALLIGATOR_THROW("Opening scratch directory " + directory + ": " + std::strerror(errno));
@@ -102,8 +102,6 @@ const BuffetDescriptor* MmapBuffet::register_type(const std::string& directory) 
     if (page_size <= 0) ALLIGATOR_THROW("Reading the system page size failed");
     context.directory = directory;
     context.page_size = static_cast<size_t>(page_size);
-    context.descriptor = BuffetDescriptors::descriptor<MmapBuffet>();
-    return context.descriptor;
 }
 /** --------------------------------------------------------------------------------------------------------- Flush
  * @brief Synchronously writes a Slice's page-aligned mapped range back to its scratch file.
@@ -122,7 +120,7 @@ void MmapBuffet::flush(const Slice& slice) {
  * @return The descriptor, valid while the Slice lives.
  */
 int MmapBuffet::file_descriptor(const Slice& slice) {
-    return static_cast<const MmapBuffet*>(Alligator::buffet_of(slice))->descriptor_;
+    return static_cast<const MmapBuffet*>(slice.buffer().get())->descriptor_;
 }
 /** --------------------------------------------------------------------------------------------------------- File Offset
  * @brief A Slice's byte offset within its scratch file, including sub-slice offsets.
@@ -130,8 +128,8 @@ int MmapBuffet::file_descriptor(const Slice& slice) {
  * @return The byte offset.
  */
 uint64_t MmapBuffet::file_offset(const Slice& slice) {
-    const MmapBuffet* buffet = static_cast<const MmapBuffet*>(Alligator::buffet_of(slice));
+    const MmapBuffet* buffet = static_cast<const MmapBuffet*>(slice.buffer().get());
     return static_cast<uint64_t>(static_cast<const char*>(slice.raw())
-        - static_cast<const char*>(buffet->mapping_));
+        - static_cast<const char*>(buffet->mapped()));
 }
 } // namespace buffetalligator

@@ -1,46 +1,46 @@
 /** --------------------------------------------------------------------------------------------------------- Shader Source
  * @file shader_source.cpp
- * @brief Assembles the public Slice shader ABI and compiles GLSL to SPIR-V.
+ * @brief Assembles the public Slice shader ABI around a body and compiles GLSL to SPIR-V.
  */
+#include <alligator.hpp>
 #include <gpu/backend.hpp>
+#include <gpu/easyvulkan.hpp>
 #include <shaderc/shaderc.hpp>
+#include <string>
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Public GLSL Tail
- * @brief The push block carries one Slice; it is the row's Slice, or a list whose element Y is the row's
- * Slice.
+ * @brief The pushed address is a list of Slice ids, one per workgroup row; an id resolves through the table.
  */
 inline constexpr std::string_view PUBLIC_GLSL_TAIL = R"glsl(
-Slice vulkan_slice(uint index) {
-    if (vulkan_push.vulkan_slice_list == 0u) return vulkan_push.vulkan_slice;
-    return slice_read(slice_address(vulkan_push.vulkan_slice) + uint64_t(index) * 32ul);
-}
+uint64_t slice_address(uint id) { U64Array table = U64Array(uint64_t(EZ_TABLE)); return table.v[id]; }
+uint vulkan_slice(uint index) { U32Array list = U32Array(push.address); return list.v[index]; }
 uint vulkan_index() { return gl_WorkGroupID.y; }
 uint vulkan_count() { return gl_NumWorkGroups.y; }
-layout(local_size_x = 16, local_size_y = 4, local_size_z = 1) in;
 )glsl";
 /** --------------------------------------------------------------------------------------------------------- Public Shader Source
- * @brief Assembles the injected Slice ABI, fixed workgroup shape, user function, and entry point.
- * @param body The body of the shader defining `void alligator_main(Slice)`.
- * @return The complete GLSL source code as a string.
+ * @brief The prelude, the table's address baked in, the id helpers, the body and the entry point.
+ * @param body The body of the shader defining `void alligator_main(uint slice)` and its workgroup shape.
+ * @return The complete GLSL source.
  */
 std::string public_shader_source(std::string_view body) {
+    static_cast<void>(IBuffet::current());
     constexpr std::string_view entry = "\nvoid main() { alligator_main(vulkan_slice(vulkan_index())); }\n";
     std::string source;
-    source.reserve(13 + VULKAN_GLSL_KERNEL_CORE.size() + PUBLIC_GLSL_TAIL.size() + body.size() + entry.size());
-    source.append("#version 450\n");
-    source.append(VULKAN_GLSL_KERNEL_CORE);
+    source.reserve(64 + EZ_GLSL_PRELUDE.size() + PUBLIC_GLSL_TAIL.size() + body.size() + entry.size());
+    source.append(EZ_GLSL_PRELUDE);
+    source.append("#define EZ_TABLE ").append(std::to_string(IBuffet::device_table())).append("ul\n");
     source.append(PUBLIC_GLSL_TAIL);
     source.append(body);
     source.append(entry);
     return source;
 }
 /** --------------------------------------------------------------------------------------------------------- Compile GLSL
- * @brief Compiles GLSL source code into Vulkan SPIR-V binary format.
- * @param source GLSL source code as a string view.
+ * @brief Compiles GLSL source code into Vulkan SPIR-V.
+ * @param source GLSL source code.
  * @param float16 Whether to enable 16-bit floating point support.
  * @param name Diagnostic name for error reporting.
- * @return A vector of 32-bit words representing the compiled SPIR-V binary.
+ * @return The SPIR-V words.
  */
 std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16, std::string_view name) {
     shaderc::Compiler compiler;

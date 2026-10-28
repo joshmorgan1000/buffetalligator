@@ -9,8 +9,6 @@
 #include <alligator/mmapbuffet.hpp>
 #include <gpu/backend.hpp>
 #include <gpu/easyvulkan.hpp>
-#include <memory/chainbuffet.hpp>
-#include <memory/slicetype.hpp>
 #include <memory/tracker.hpp>
 #include <atomic>
 #include <cstring>

@@ -78,7 +78,8 @@ public:
         add_finalized(static_cast<int64_t>(id), std::move(slice), nullptr);
     }
     /** ------------------------------------------------------------------------------------------- Merge
-     * @brief Transfers a quiescent source into this map with source values replacing overlapping keys.
+     * @brief Transfers a quiescent source into this map with source values replacing overlapping
+     * keys.
      * @param other Source map, emptied for reuse.
      * @return This map.
      */
@@ -166,8 +167,10 @@ public:
         }
     }
     /** ------------------------------------------------------------------------------------------- For Each
-     * @brief Dispatches one hook-completed prefix concurrently and waits for every worker to finish.
-     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
+     * @brief Dispatches one hook-completed prefix concurrently and waits for every worker to
+     * finish.
+     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation
+     * order.
      * @param context Shared callback context whose concurrent accesses must be synchronized; the
      * workers hold it for the duration of the walk.
      * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking
@@ -181,10 +184,11 @@ public:
     ) const;
     /** ------------------------------------------------------------------------------------------- For Each (borrowed)
      * @brief The same walk over a caller-owned context that outlives it; no ownership is taken.
-     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation order.
+     * @param callback Receives protected callback-scoped Slice copies in unspecified invocation
+     * order.
      * @param context Caller-owned context handed to every callback without a control block.
-     * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of walking
-     * the rows on the calling thread.
+     * @param use_multithreading Dispatches one item per row over GCD or OpenMP instead of
+     * walking the rows on the calling thread.
      */
     void for_each(
         void (*callback)(int64_t id, Slice* slice, std::shared_ptr<void> context),
@@ -246,7 +250,8 @@ public:
         publish_context_ = context;
     }
     /** ------------------------------------------------------------------------------------------- GC
-     * @brief Reclaims this thread's retired objects and orphaned objects no reader still protects.
+     * @brief Reclaims this thread's retired objects and orphaned objects no reader still
+     * protects.
      */
     static void gc();
 protected:
@@ -260,7 +265,8 @@ protected:
 };
 /** ----------------------------------------------------------------------------------------------- SliceMapT
  * @class SliceMapT
- * @brief Typed SliceMap entries constructed in place and finalized after safe replacement or removal.
+ * @brief Typed SliceMap entries constructed in place and finalized after safe replacement or
+ * removal.
  * @tparam T The payload type rows carry.
  */
 template<typename T>
@@ -310,7 +316,8 @@ public:
     }
 private:
     /** ------------------------------------------------------------------------------------------- Finalize
-     * @brief Type-erased destructor for emplaced payloads; the row calls it before releasing its claim.
+     * @brief Type-erased destructor for emplaced payloads; the row calls it before releasing its
+     * claim.
      * @param object The payload bytes holding a constructed T.
      */
     static void finalize(void* object) {
@@ -389,13 +396,6 @@ public:
      * @brief Default destructor for WeakSlice.
      */
     ~WeakSlice() = default;
-    /** ----------------------------------------------------------------------------------------- Placement
-     * @brief Returns the placement of the memory block. Since this is a weak reference, we
-     * don't know the actual placement.
-     */
-    const BuffetDescriptor* placement() const {
-        return nullptr;
-    }
     /** ----------------------------------------------------------------------------------------- Raw
      * @brief Returns a raw pointer to the memory block.
      */
@@ -436,7 +436,7 @@ public:
         return slice();
     }
     /** ----------------------------------------------------------------------------------------- Slice
-     * @brief Creates a new Slice object representing a subrange of the memory block.
+     * @brief An owned copy of a subrange of the borrowed memory block.
      * @param offset The starting offset of the subrange.
      * @param size The size of the subrange in bytes.
      * @return A new Slice object containing the specified subrange.
@@ -448,7 +448,9 @@ public:
         if (size > span_.size() - offset) [[unlikely]] {
             size = span_.size() - offset;
         }
-        return Slice(span_.data() + offset, size);
+        Slice copy(size);
+        std::memcpy(copy.raw(), span_.data() + offset, size);
+        return copy;
     }
 };
 /** --------------------------------------------------------------------------------------------------------- SliceQueue
@@ -631,8 +633,7 @@ public:
     explicit PrioritySlice(
         size_t capacity,
         Compare compare = nullptr,
-        bool novel_buffer = false,
-        const BuffetDescriptor* placement = Slice::default_placement()
+        bool novel_buffer = false
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
      * @brief Reads capacity from CAPACITY_WORD and rebuilds caches over occupied and EMPTY words.
@@ -711,7 +712,7 @@ public:
      * @brief Another view of the header, block caches, and slot words, for kernels or transport.
      * @return A view sharing the storage.
      */
-    Slice storage() const { return storage_.slice(); }
+    Slice storage() const { return Slice(storage_); }
     /// @brief The slot words behind the header and block caches.
     const uint64_t* words() const noexcept { return words_; }
 private:
@@ -768,8 +769,7 @@ public:
     explicit HeapSlice(
         size_t capacity,
         Compare compare = nullptr,
-        bool novel_buffer = false,
-        const BuffetDescriptor* placement = Slice::default_placement()
+        bool novel_buffer = false
     );
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
      * @brief Adopts a heap with count in word zero and capacity in CAPACITY_WORD.
@@ -846,7 +846,7 @@ public:
      * @brief Another view of the header and heap positions, for kernels or transport.
      * @return A view sharing the storage.
      */
-    Slice storage() const { return storage_.slice(); }
+    Slice storage() const { return Slice(storage_); }
     /// @brief The heap positions behind the header.
     const uint64_t* words() const noexcept { return words_; }
 private:
@@ -940,9 +940,8 @@ public:
      */
     explicit PriorityT(
         size_t capacity,
-        bool novel_buffer = false,
-        const BuffetDescriptor* placement = Slice::default_placement()
-    ) : Queue(capacity, erased(), novel_buffer, placement) {}
+        bool novel_buffer = false
+    ) : Queue(capacity, erased(), novel_buffer) {}
     /** ------------------------------------------------------------------------------------------- Constructor - Adopt
      * @brief Views existing storage laid out as the container expects.
      * @param storage The Slice holding the container.
@@ -1300,7 +1299,7 @@ public:
      */
     Slice view(const Key& key) {
         const Slice* found = get(key);
-        return found == nullptr ? Slice() : found->slice();
+        return found == nullptr ? Slice() : Slice(*found);
     }
     /// @brief Whether a key is cached.
     bool exists(const Key& key) const { return map_.find(key) != map_.end(); }

@@ -7,6 +7,7 @@
 #include "functional_support.hpp"
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -55,8 +56,6 @@ static void typed_slices() {
     require(value.size_bytes() == sizeof(AlignedValue), "typed byte count is incorrect");
     require(reinterpret_cast<uintptr_t>(value.data()) % alignof(AlignedValue) == 0,
         "typed storage is not aligned");
-    require(value.root_slice().placement() == Slice::default_placement(),
-        "typed placement differs");
     value->value = 10;
     require(value.get_as().value == 10 && (*value).value == 10,
         "typed references read the wrong value");
@@ -67,14 +66,13 @@ static void typed_slices() {
     require(copy.is_null() && copy.size_bytes() == 0, "typed move retained its source");
     Slice subview = value.slice(0, sizeof(uint32_t));
     value.free();
-    require(moved->value == 10 && subview.get_as<uint32_t>() == 10 && subview.size_bytes() == 64,
+    require(moved->value == 10 && subview.get_as<uint32_t>() == 10 && subview.size_bytes() == sizeof(uint32_t),
         "typed shared ownership did not survive free");
     empty = moved;
     copy = std::move(empty);
     require(empty.is_null() && copy.raw() == moved.raw(), "typed assignment lost ownership");
     SliceT<AlignedValue> adopted{Slice(sizeof(AlignedValue))};
-    require(adopted.size() == 1 && adopted.root_slice().placement() == Slice::default_placement(),
-        "adopting a raw Slice did not keep its slot");
+    require(adopted.size() == 1, "adopting a raw Slice did not keep its slot");
 }
 /** --------------------------------------------------------------------------------------------------------- Counted Value
  * @brief Counts live constructions so typed slots can be checked for exactly-once destruction.
@@ -102,7 +100,7 @@ static void typed_lifecycle() {
             "a typed slot destroyed its element while a copy remained");
         shared.free();
         /// A view of the element's bytes holds the buffer, and the element with it, until it goes.
-        require(CountedValue::live.load() == 1 && view.size_bytes() == 64,
+        require(CountedValue::live.load() == 1 && view.size_bytes() == sizeof(uint64_t),
             "a view of a typed element let the element go, or lost its bytes");
         view.free();
         require(CountedValue::live.load() == 0, "the last handle on a typed element did not destroy it");
@@ -119,7 +117,8 @@ static void typed_lifecycle() {
  */
 static void typed_views() {
     constexpr std::string_view text = "abcdefghijklmnop";
-    SliceT<AlignedText> characters{Slice(text.data(), text.size())};
+    SliceT<AlignedText> characters(true);
+    std::memcpy(characters.raw(), text.data(), text.size());
     const auto& character_view = characters.get_as().characters;
     require(character_view.size() == 64 && characters.root_slice().capacity() == character_view.size()
         && std::string_view(character_view.data(), text.size()) == text,
@@ -131,7 +130,8 @@ static void typed_views() {
         && std::string_view(constant_character_view.data(), text.size()) == text,
         "const string view differs");
     const std::array<uint32_t, 4> input{2, 3, 5, 7};
-    SliceT<AlignedNumbers> numbers{Slice(input.data(), sizeof(input))};
+    SliceT<AlignedNumbers> numbers(true);
+    std::memcpy(numbers.raw(), input.data(), sizeof(input));
     auto& view = numbers.get_as().numbers;
     require(view.size() == 16 && numbers.root_slice().capacity() / sizeof(uint32_t) == view.size() && view[3] == 7,
         "array view does not cover the payload");
@@ -147,7 +147,7 @@ static void typed_views() {
 static void weak_slices() {
     std::array<uint32_t, 4> input{11, 22, 33, 44};
     WeakSlice weak(input.data(), sizeof(input));
-    require(weak && weak.placement() == nullptr, "weak slice has incorrect identity");
+    require(weak, "weak slice has incorrect identity");
     require(weak.size<uint32_t>() == input.size(), "weak element count differs");
     require(weak.data<uint32_t>() == input.data(), "weak data did not alias its input");
     (*weak.data<uint32_t>()) = 12;

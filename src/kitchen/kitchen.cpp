@@ -5,7 +5,6 @@
 #include <alligator/kitchen.hpp>
 #include <alligator.hpp>
 #include <alligator/atomics.hpp>
-#include <memory/tracker.hpp>
 #include <logging.hpp>
 #include <loggingutils.hpp>
 #include <chrono>
@@ -96,12 +95,9 @@ KitchenInitializer::KitchenInitializer() {
  */
 KitchenInitializer::~KitchenInitializer() {
     if (--kitchen_initializer_count != 0) return;
-    /// The lifetime phases: the Kitchen joins, the tracker detaches its counters, the registry clears, and the
-    /// Alligator's current links let go.
+    /// The lifetime phases: the Kitchen joins, then the registry clears.
     Kitchen::inst().~Kitchen();
-    Memory::detach();
     AtomicRegistry::global_clear();
-    Alligator::finalize();
 }
 /** --------------------------------------------------------------------------------------------------------- Instance
  * @brief Resolves the Kitchen retained by public initializers.

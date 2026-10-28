@@ -1,88 +1,53 @@
 #pragma once
 /** --------------------------------------------------------------------------------------------------------- EasyMmap
- * @file easymmap.hpp
- * @brief The mmap scratch-file buffet type: zero-filled MAP_SHARED mappings of unlinked files in a
- * caller-chosen directory, for disk- or RAM-filesystem-backed Slices.
+ * @file mmapbuffet.hpp
+ * @brief The mmap scratch-file buffer: zero-filled MAP_SHARED mappings of unlinked files in a caller-chosen
+ * directory, for disk- or RAM-filesystem-backed Slices.
  */
 #include <alligator.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <utility>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- MmapBuffer
- * @class MmapBuffer
- * @brief One scratch-file mapping in the registered directory; the mmap buffet type.
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet
+ * @class MmapBuffet
+ * @brief One scratch-file mapping in the chosen directory; a Slice is claimed over the whole of it.
  */
-class alignas(16) MmapBuffet {
+class MmapBuffet : public IBuffet {
 private:
-    void* mapping_ = nullptr;   ///< The MAP_SHARED mapping of the unlinked scratch file.
-    size_t size_ = 0;           ///< Size in bytes.
-    int descriptor_ = -1;       ///< The scratch file's descriptor, open for the mapping's lifetime.
+    int descriptor_ = -1;  ///< The scratch file's descriptor, open for the mapping's lifetime.
     /** ------------------------------------------------------------------------------------------- release
      * @brief Unmaps and closes the scratch file; defined in mmap_allocator.cpp.
      */
     void release();
 public:
-    MmapBuffet() = default;
     /** ------------------------------------------------------------------------------------------- Allocating Constructor
      * @brief Creates, reserves, unlinks, and maps one zero-filled scratch file.
      * @param size Buffer size in bytes, rounded up to 64.
+     * @param novel Whether the mapping is dedicated to one claim.
      */
-    explicit MmapBuffet(size_t size);
-    /** ------------------------------------------------------------------------------------------- Move-only ownership */
+    explicit MmapBuffet(size_t size, bool novel = true);
     MmapBuffet(const MmapBuffet&) = delete;
     MmapBuffet& operator=(const MmapBuffet&) = delete;
-    MmapBuffet(MmapBuffet&& other) noexcept
-    : mapping_(std::exchange(other.mapping_, nullptr)), size_(std::exchange(other.size_, 0))
-    , descriptor_(std::exchange(other.descriptor_, -1)) {}
-    MmapBuffet& operator=(MmapBuffet&& other) noexcept {
-        std::swap(mapping_, other.mapping_); std::swap(size_, other.size_);
-        std::swap(descriptor_, other.descriptor_); return *this;
-    }
+    MmapBuffet(MmapBuffet&&) = delete;
+    MmapBuffet& operator=(MmapBuffet&&) = delete;
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Releases the memory-mapped buffer by unmapping and closing the associated file.
+     * @brief Releases the mapping by unmapping and closing the scratch file.
      */
-    ~MmapBuffet() { release(); }
-    operator bool() const { return mapping_ != nullptr; }
-    bool operator==(std::nullptr_t) const { return mapping_ == nullptr; }
-    bool operator!=(std::nullptr_t) const { return mapping_ != nullptr; }
-    /** ------------------------------------------------------------------------------------------- Buffet Hooks
-     * @brief The static hooks BuffetDescriptors::descriptor_for binds for this type.
-     */
-    static void deleter_impl(void* ptr) { delete static_cast<MmapBuffet*>(ptr); }
-    static void (*deleter())(void*) { return deleter_impl; }
-    static void* host_ptr_impl(void* ptr) {
-        return static_cast<uint8_t*>(static_cast<MmapBuffet*>(ptr)->mapping_);
-    }
-    static void* host_ptr(void* ptr) { return host_ptr_impl(ptr); }
-    static void* (*host_ptr())(void*) { return host_ptr_impl; }
-    static size_t size_of_impl(void* ptr) { return static_cast<MmapBuffet*>(ptr)->size_; }
-    static size_t size_of(void* ptr) { return size_of_impl(ptr); }
-    static size_t (*size_of())(void*) { return size_of_impl; }
-    static void* factory(size_t size) { return new MmapBuffet(size); }
-    static size_t default_size() { return 256 * 1024 * 1024; }
-    static size_t* type_idx() { static size_t idx = 3; return &idx; }
-    static const char* type_name() { return "Memory Mapped File"; }
-    static uint64_t device_address(void*) { return 0; }
-    size_t size() const { return size_; }
-    /** ------------------------------------------------------------------------------------------- Raw Pointer Accessor
-     * @brief Returns a raw pointer to the memory-mapped buffer.
-     * @return A raw pointer to the memory-mapped buffer.
-     */
-    void* raw() { return mapping_; }
-    /** ------------------------------------------------------------------------------------------- Raw Pointer Accessor
-     * @brief Returns a raw pointer to the memory-mapped buffer.
-     * @return A raw pointer to the memory-mapped buffer.
-     */
-    const void* raw() const { return mapping_; }
-    /** ------------------------------------------------------------------------------------------- Register Type
-     * @brief Checks the scratch directory and registers the mmap buffet descriptor at type index 3.
+    ~MmapBuffet() override { release(); }
+    /** ------------------------------------------------------------------------------------------- Set Directory
+     * @brief Checks the scratch directory once; every mapping after it lands there.
      * @param directory A directory on the filesystem that should back the scratch files.
-     * @return The registered descriptor.
      */
-    static const BuffetDescriptor* register_type(const std::string& directory);
+    static void set_directory(const std::string& directory);
+    /** ------------------------------------------------------------------------------------------- Claim
+     * @brief A Slice over one whole new scratch-file mapping.
+     * @param size Bytes.
+     * @return The Slice; the mapping goes with its last handle.
+     */
+    static Slice claim(size_t size) { return IBuffet::embue_id(std::make_shared<MmapBuffet>(size)); }
     /** ------------------------------------------------------------------------------------------- Flush
      * @brief Synchronously writes a Slice's page-aligned mapped range back to its scratch file.
      * @param slice A Slice claimed from this type.
@@ -101,5 +66,4 @@ public:
      */
     static uint64_t file_offset(const Slice& slice);
 };
-static_assert(IsABuffetType<MmapBuffet>, "MmapBuffet must satisfy IsABuffetType");
 } // namespace buffetalligator

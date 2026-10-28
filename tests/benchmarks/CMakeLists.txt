@@ -9,13 +9,3 @@ foreach(source IN LISTS benchmark_sources)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endforeach()
-target_include_directories(buffetalligator_slicemapvsvecset
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
-target_include_directories(buffetalligator_slice_churn_benchmark
-    PRIVATE "${PROJECT_SOURCE_DIR}/src")
-if(BUFFETALLIGATOR_BUILD_TESTS)
-    add_test(NAME buffetalligator_map_comparison_contracts
-        COMMAND buffetalligator_slicemapvsvecset --case contracts)
-    set_tests_properties(buffetalligator_map_comparison_contracts PROPERTIES
-        LABELS "containers;contracts" TIMEOUT 120)
-endif()

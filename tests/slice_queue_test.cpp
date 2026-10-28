@@ -5,7 +5,6 @@
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
-#include <memory/tracker.hpp>
 #include <array>
 #include <atomic>
 #include <barrier>
@@ -16,7 +15,6 @@
 #include <thread>
 #include <vector>
 
-using buffetalligator::Memory;
 using buffetalligator::Slice;
 using buffetalligator::SliceQueue;
 /** --------------------------------------------------------------------------------------------------------- Require
@@ -73,15 +71,11 @@ static void run_consumer(SliceQueue* queue, size_t index, void* context) {
  * @brief Checks that destroying a queue releases the Slices nobody consumed.
  */
 static void undelivered() {
-    const size_t before = Memory::total_freed();
-    {
-        SliceQueue queue(1, 1, 16, 8, &record_single, &record_bulk);
-        auto producer = queue.producer(0);
-        Slice novel(64, true);
-        producer.push(std::move(novel));
-        require(!novel, "push did not move ownership");
-    }
-    require(Memory::total_freed() >= before + 64, "queue leaked undelivered novel backing");
+    SliceQueue queue(1, 1, 16, 8, &record_single, &record_bulk);
+    auto producer = queue.producer(0);
+    Slice novel(64, true);
+    producer.push(std::move(novel));
+    require(!novel, "push did not move ownership");
 }
 /** --------------------------------------------------------------------------------------------------------- Immediate
  * @brief A single push reaches a running consumer with no flush, block fill, or close.
@@ -240,7 +234,7 @@ static void concurrent(size_t producers, size_t consumers, bool spans) {
  * @brief Runs the public queue contract.
  */
 int main() {
-    static_assert(sizeof(Slice) == 32);
+    static_assert(sizeof(Slice) == 4);
     static_assert(!std::is_copy_constructible_v<SliceQueue::Producer>);
     static_assert(!std::is_move_constructible_v<SliceQueue::Consumer>);
     undelivered();

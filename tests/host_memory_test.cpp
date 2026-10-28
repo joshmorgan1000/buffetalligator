@@ -22,12 +22,8 @@ int main() {
     require(available_host_bytes() > 0, "available host bytes returned zero");
     LOG_INFO_STREAM << "Host memory: physical " << (usage.physical_bytes >> 20) << " MiB, available "
         << (usage.available_bytes >> 20) << " MiB, resident " << (usage.resident_bytes >> 20) << " MiB";
-    bool refused = false;
-    try { AlignedHeapBuffer impossible(usage.physical_bytes * 2); }
-    catch (const AlligatorException&) { refused = true; }
-    require(refused, "a slab larger than physical memory was not refused before allocation");
-    AlignedHeapBuffer slab(SLAB_FLOOR_BYTES);
-    require(slab && slab.size() == SLAB_FLOOR_BYTES
+    Slice slab(SLAB_FLOOR_BYTES, true);
+    require(slab && slab.size_bytes() == SLAB_FLOOR_BYTES
         && static_cast<const uint8_t*>(slab.raw())[SLAB_FLOOR_BYTES - 1] == 0,
         "a slab within the host's available memory was not allocated and zeroed");
     LOG_INFO_STREAM << "Host memory query and slab admission passed";

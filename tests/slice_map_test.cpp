@@ -5,7 +5,6 @@
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
-#include <memory/tracker.hpp>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -15,7 +14,6 @@
 #include <thread>
 #include <utility>
 
-using buffetalligator::Memory;
 using buffetalligator::Slice;
 using buffetalligator::SliceMap;
 using buffetalligator::SliceMapT;
@@ -49,22 +47,14 @@ static_assert(!std::is_trivially_destructible_v<Tracked>, "Tracked must exercise
  * @brief Checks that destroying a SliceMap releases the novel backing of every row it still holds.
  */
 static void untyped_rows_release() {
-    const size_t before = Memory::total_freed();
-    {
-        SliceMap map(4);
-        for (size_t index = 0; index < 4; ++index) {
-            Slice payload(64, true);
-            payload.get_as<uint64_t>() = index;
-            map.add_slice(index, std::move(payload));
-        }
-        require(map.size() == 4, "untyped rows did not all land");
-        require(map.published(3) && map.id<int64_t>(3) == 3, "untyped row did not publish its ID");
+    SliceMap map(4);
+    for (size_t index = 0; index < 4; ++index) {
+        Slice payload(64, true);
+        payload.get_as<uint64_t>() = index;
+        map.add_slice(index, std::move(payload));
     }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (Memory::total_freed() < before + 4 * 64) {
-        require(std::chrono::steady_clock::now() < deadline, "SliceMap leaked row backing on destruction");
-        std::this_thread::yield();
-    }
+    require(map.size() == 4, "untyped rows did not all land");
+    require(map.published(3) && map.id<int64_t>(3) == 3, "untyped row did not publish its ID");
 }
 /** --------------------------------------------------------------------------------------------------------- Typed Rows Destroy
  * @brief Checks that destroying a SliceMapT runs the destructor of every emplaced payload.

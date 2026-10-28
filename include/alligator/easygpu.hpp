@@ -5,14 +5,18 @@
  */
 #include <logging.hpp>
 #include <alligator.hpp>
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <coroutine>
 #include <memory>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace buffetalligator {
 EXCEPTION_CLASS(GPU)
@@ -120,13 +124,47 @@ public:
 };
 /** --------------------------------------------------------------------------------------------------------- Shader
  * @class Shader
- * @brief Represents both the source code and the compiled state of a GPU shader. Performs all
- * steps of preprocessing required so that the execution call has zero work to do.
+ * @brief A compute shader prepared once: compiled, its pipeline and SLOTS command slots built, a thread per slot
+ * waiting on the dispatch queue. A dispatch is one enqueue; the slot's thread records, submits, waits and
+ * completes the ShaderResult.
  */
 class Shader {
+public:
+    static constexpr uint32_t SLOTS = 2;  ///< Command slots and the threads that own them, double buffered.
 private:
-    struct Impl;
-    std::unique_ptr<Impl> state_;
+    /** ------------------------------------------------------------------------------------------- Dispatch
+     * @struct Dispatch
+     * @brief One queued dispatch: the list address, the group counts, its result and the one-id list a
+     * single-Slice dispatch reads.
+     */
+    struct Dispatch {
+        uint64_t address = 0;                          ///< The device address of the Slice id list.
+        uint32_t groups_x = 0;                         ///< Workgroups along X.
+        uint32_t groups_y = 1;                         ///< Workgroups along Y, one per list element.
+        std::shared_ptr<ShaderResult::State> result;   ///< Completed on the slot's thread; null stops the thread.
+        Slice single;                                  ///< The one-id list a single-Slice dispatch reads.
+        bool held = false;                             ///< Whether `single` holds a row id to release.
+    };
+    vk::PipelineLayout layout_{};
+    vk::Pipeline pipeline_{};
+    std::array<vk::CommandPool, SLOTS> pools_{};               ///< One pool per slot, recorded from by its thread.
+    std::array<vk::CommandBuffer, SLOTS> commands_{};
+    std::array<vk::Semaphore, SLOTS> timelines_{};             ///< One timeline per slot, signaled by its submits.
+    std::array<uint64_t, SLOTS> tickets_{};                    ///< Each slot's last signal value.
+    std::array<std::thread, SLOTS> threads_{};                 ///< One thread per slot, taking turns on the queue.
+    mutable moodycamel::BlockingConcurrentQueue<Dispatch> dispatches_;  ///< Dispatches waiting for a slot.
+    std::atomic<uint32_t> workgroups_{1};                      ///< Workgroups along X per dispatch.
+    uint32_t queue_ = 0;                                       ///< This shader's compute queue.
+    /// @brief Compiles the body under the Slice ABI and builds the pipeline, the slots and their threads.
+    void prepare(std::string_view glsl, std::string_view name, uint32_t workgroups);
+    /// @brief A slot's thread: the next dispatch recorded, submitted, waited and completed; a null result stops it.
+    void run(uint32_t slot);
+    /// @brief Records the slot for one dispatch: bind, the pushed address, the dispatch and the readback barrier.
+    void record(uint32_t slot, uint64_t address, uint32_t groups_x, uint32_t groups_y);
+    /// @brief Submits the slot as recorded, signaling its next ticket when it retires.
+    void submit(uint32_t slot);
+    /// @brief Blocks until the slot's last submit has retired.
+    void wait(uint32_t slot) const;
     friend struct GPU;
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
@@ -157,19 +195,21 @@ public:
      * @brief Retrieves the number of workgroups configured for this shader.
      * @return The number of workgroups.
      */
-    uint32_t workgroups() const;
+    uint32_t workgroups() const { return workgroups_.load(std::memory_order_relaxed); }
     /** ------------------------------------------------------------------------------------------- Set Workgroups
      * @brief Sets the number of workgroups for this shader.
      * @param count The number of workgroups to configure.
      */
-    void set_workgroups(uint32_t count);
-    /** ------------------------------------------------------------------------------------------- No Copy / Move OK */
+    void set_workgroups(uint32_t count) { workgroups_.store(count, std::memory_order_relaxed); }
+    /** ------------------------------------------------------------------------------------------- No Copy / No Move
+     * @brief The slot threads hold this shader's address.
+     */
     Shader(const Shader&) = delete;
     Shader& operator=(const Shader&) = delete;
-    Shader(Shader&&) noexcept;
-    Shader& operator=(Shader&&) noexcept;
+    Shader(Shader&&) = delete;
+    Shader& operator=(Shader&&) = delete;
     /** ------------------------------------------------------------------------------------------- Destructor
-     * @brief Cleans up the shader resources.
+     * @brief Stops each slot's thread after its last dispatch retires, then releases the slots and the pipeline.
      */
     ~Shader();
     /** ------------------------------------------------------------------------------------------- Operator()

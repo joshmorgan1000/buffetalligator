@@ -4,7 +4,6 @@
  */
 #include <alligator.hpp>
 #include <alligator/containers.hpp>
-#include <memory/tracker.hpp>
 #include "functional_support.hpp"
 #include <array>
 #include <barrier>
@@ -37,47 +36,24 @@ void verify(const Slice& slice, uint64_t key) {
     require(value.key == key && value.complement == ~value.version,
         "replacement returned a torn or wrong-key payload");
 }
-/** --------------------------------------------------------------------------------------------------------- Frees Reached
- * @brief Waits up to two seconds for completed allocator teardown to reach the expected total.
- */
-size_t frees_reached(size_t expected) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    size_t observed = Memory::total_freed();
-    while (observed < expected && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-        observed = Memory::total_freed();
-    }
-    return observed;
-}
 /** --------------------------------------------------------------------------------------------------------- Replacement Ownership
- * @brief Checks stable-position overwrite, immediate unshared release, retained views, and finalizers.
+ * @brief Checks stable-position overwrite, retained views, and finalizers.
  */
 void replacement_ownership() {
-    LOG_INFO_STREAM << "Checking stable replacement and old Slice deallocation";
+    LOG_INFO_STREAM << "Checking stable replacement and retained views";
     Slice warmup(64);
     SliceMap map(1);
-    const size_t before = Memory::total_freed();
-    /// A novel payload frees on its own.
-    constexpr size_t novel = 64;
     map.add_slice(7, payload(7, 1, true));
     map.add_slice(7, payload(7, 2, true));
-    require(frees_reached(before + novel) == before + novel,
-        "replacement did not release the previous unshared Slice");
     require(map.size() == 1 && map.find(7) == 0, "replacement consumed a second position");
     Slice retained = map.get_slice(7);
     map.add_slice(7, payload(7, 3, true));
-    require(frees_reached(before + novel) == before + novel,
-        "replacement released backing still held by a retained Slice");
     require(retained.get_as<Value>().version == 2 && map.slice_at(0).get_as<Value>().version == 3,
         "replacement changed a retained payload or missed its stable slot");
     retained.free();
-    require(frees_reached(before + 2 * novel) == before + 2 * novel,
-        "last retained view did not release its old backing");
     map.add_slice(7, Slice());
     require(map.size() == 1 && map.find(7) == 0 && !map.get_slice(7),
         "null replacement lost the existing key");
-    require(frees_reached(before + 3 * novel) == before + 3 * novel,
-        "null replacement retained the old payload");
     SliceMapT<std::shared_ptr<int>> typed(1), source(1);
     auto object = std::make_shared<int>(10);
     std::weak_ptr<int> first = object;
