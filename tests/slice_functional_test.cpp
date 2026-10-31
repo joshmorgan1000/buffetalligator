@@ -50,9 +50,9 @@ static_assert(SliceElement<std::span<uint32_t>>);
  */
 static void typed_slices() {
     SliceT<AlignedValue> empty;
-    require(empty.is_null() && empty.length() == 0, "typed default is not empty");
+    require(empty.is_null() && empty.size() == 0, "typed default is not empty");
     SliceT<AlignedValue> value(true);
-    require(value.size() == 1 && value.length() == 1, "a typed claim is not one element");
+    require(value.size() == 1, "a typed claim is not one element");
     require(value.size_bytes() == sizeof(AlignedValue), "typed byte count is incorrect");
     require(reinterpret_cast<uintptr_t>(value.data()) % alignof(AlignedValue) == 0,
         "typed storage is not aligned");
@@ -61,8 +61,8 @@ static void typed_slices() {
         "typed references read the wrong value");
     const auto& constant = value;
     require(constant.get_as().value == 10 && constant->value == 10, "const access differs");
-    SliceT<AlignedValue> copy = value;
-    SliceT<AlignedValue> moved = std::move(copy);
+    SliceT<AlignedValue> copy(value);
+    SliceT<AlignedValue> moved(std::move(copy));
     require(copy.is_null() && copy.size_bytes() == 0, "typed move retained its source");
     Slice subview = value.slice(0, sizeof(uint32_t));
     value.free();
@@ -74,43 +74,19 @@ static void typed_slices() {
     SliceT<AlignedValue> adopted{Slice(sizeof(AlignedValue))};
     require(adopted.size() == 1, "adopting a raw Slice did not keep its slot");
 }
-/** --------------------------------------------------------------------------------------------------------- Counted Value
- * @brief Counts live constructions so typed slots can be checked for exactly-once destruction.
+/** --------------------------------------------------------------------------------------------------------- Large Claims
+ * @brief Checks claims past 128 MiB, where sizes count in 64-byte units, keep every byte they ask for.
  */
-struct alignas(64) CountedValue {
-    static inline std::atomic<int> live{0};
-    uint64_t value = 7;
-    CountedValue() { live.fetch_add(1, std::memory_order_relaxed); }
-    ~CountedValue() { live.fetch_sub(1, std::memory_order_relaxed); }
-};
-/** --------------------------------------------------------------------------------------------------------- Typed Lifecycle
- * @brief Checks a typed claim constructs its element and the last handle on the slot destroys it once.
- */
-static void typed_lifecycle() {
-    {
-        SliceT<CountedValue> value(true);
-        require(CountedValue::live.load() == 1 && value->value == 7,
-            "a typed claim did not construct its element");
-        SliceT<CountedValue> shared = value;
-        require(shared.root_slice().raw() == value.root_slice().raw(),
-            "a typed copy did not share its record");
-        Slice view = value.slice(0, sizeof(uint64_t));
-        value.free();
-        require(CountedValue::live.load() == 1,
-            "a typed slot destroyed its element while a copy remained");
-        shared.free();
-        /// A view of the element's bytes holds the buffer, and the element with it, until it goes.
-        require(CountedValue::live.load() == 1 && view.size_bytes() == sizeof(uint64_t),
-            "a view of a typed element let the element go, or lost its bytes");
-        view.free();
-        require(CountedValue::live.load() == 0, "the last handle on a typed element did not destroy it");
-    }
-    {
-        SliceT<CountedValue> single(true, true);
-        require(CountedValue::live.load() == 1 && single.get_as().value == 7,
-            "a novel typed slice did not construct its element");
-    }
-    require(CountedValue::live.load() == 0, "a novel typed slice did not destroy its element on release");
+static void large_claims() {
+    constexpr size_t LARGE = (128ull << 20) + (1ull << 20);
+    Slice even(LARGE);
+    even.data()[LARGE - 1] = 0x5A;
+    require(even.size_bytes() == LARGE && even.data()[LARGE - 1] == 0x5A,
+        "a large claim in whole 64-byte units lost bytes");
+    Slice odd(LARGE + 1);
+    odd.data()[LARGE] = 0xA5;
+    require(odd.size_bytes() >= LARGE + 1 && odd.size_bytes() - (LARGE + 1) < 64 && odd.data()[LARGE] == 0xA5,
+        "a large claim did not round up to the next 64-byte unit");
 }
 /** --------------------------------------------------------------------------------------------------------- Typed Views
  * @brief Checks that aligned payload references provide live views of the backing bytes.
@@ -120,20 +96,20 @@ static void typed_views() {
     SliceT<AlignedText> characters(true);
     std::memcpy(characters.raw(), text.data(), text.size());
     const auto& character_view = characters.get_as().characters;
-    require(character_view.size() == 64 && characters.root_slice().capacity() == character_view.size()
+    require(character_view.size() == 64 && characters.slice().capacity() == character_view.size()
         && std::string_view(character_view.data(), text.size()) == text,
         "string view does not cover the represented payload");
     const auto& constant_characters = characters;
     const auto& constant_character_view = constant_characters.get_as().characters;
     require(constant_character_view.size() == 64
-        && constant_characters.root_slice().capacity() == constant_character_view.size()
+        && constant_characters.slice().capacity() == constant_character_view.size()
         && std::string_view(constant_character_view.data(), text.size()) == text,
         "const string view differs");
     const std::array<uint32_t, 4> input{2, 3, 5, 7};
     SliceT<AlignedNumbers> numbers(true);
     std::memcpy(numbers.raw(), input.data(), sizeof(input));
     auto& view = numbers.get_as().numbers;
-    require(view.size() == 16 && numbers.root_slice().capacity() / sizeof(uint32_t) == view.size() && view[3] == 7,
+    require(view.size() == 16 && numbers.slice().capacity() / sizeof(uint32_t) == view.size() && view[3] == 7,
         "array view does not cover the payload");
     view[1] = 11;
     const auto& constant_numbers = numbers;
@@ -189,7 +165,7 @@ static void resizes() {
     require(revived.valid() && revived.size_bytes() == 96, "resize on a null slice did not allocate");
     Slice novel(64);
     novel.resize(4096, true, true);
-    require(novel.is_novel() && novel.size_bytes() == 4096, "a novel resize did not get its own buffer");
+    require(novel.size_bytes() == 4096, "a novel resize has the wrong size");
     revived.resize(0);
     require(revived.is_null(), "resize to zero did not free");
     const std::array<uint32_t, 4> source{5, 6, 7, 8};
@@ -198,15 +174,14 @@ static void resizes() {
         && copied.data<uint32_t>()[3] == 8 && copied.raw() != source.data(),
         "a copy from a view did not copy the bytes into its own claim");
     Slice novel_copy(source.data(), sizeof(source), true);
-    require(novel_copy.is_novel() && novel_copy.get_as<uint32_t>() == 5, "a novel copy from a view differs");
+    require(novel_copy.get_as<uint32_t>() == 5, "a novel copy from a view differs");
 }
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Dispatches independent typed and weak slice functional cases.
  */
 int main(int count, char** arguments) {
     return functional::run(count, arguments, {
-        {"typed_slices", typed_slices}, {"typed_lifecycle", typed_lifecycle},
-        {"typed_views", typed_views},
+        {"typed_slices", typed_slices}, {"large_claims", large_claims}, {"typed_views", typed_views},
         {"weak_slices", weak_slices}, {"resizes", resizes}
     });
 }

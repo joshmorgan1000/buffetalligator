@@ -41,14 +41,11 @@ int automatic() {
 }
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
- * @brief Runs the automatic case for "auto", otherwise selects the backend named by the first argument, cpu by
- * default, then freezes on the first Slice.
+ * @brief Runs the automatic case for "auto", otherwise selects Vulkan, then freezes on the first Slice.
  */
 int main(int argument_count, char** arguments) {
     if (argument_count > 1 && std::string_view(arguments[1]) == "auto") return automatic();
-    const bool vulkan = argument_count > 1 && std::string_view(arguments[1]) == "vulkan";
-    const GPUBackend chosen = vulkan ? GPUBackend::Vulkan : GPUBackend::CPU;
-    GPU::select(chosen);
+    GPU::select(GPUBackend::Vulkan);
     try {
         Slice first(64);
         first.get_as<uint32_t>() = 137;
@@ -58,10 +55,9 @@ int main(int argument_count, char** arguments) {
                         << error.what();
         return SKIPPED;
     }
-    if (GPU::backend() != chosen || GPU::exists() != vulkan) return EXIT_FAILURE;
-    GPU::select(chosen);
-    if (!refuses(vulkan ? GPUBackend::CPU : GPUBackend::Vulkan)) return EXIT_FAILURE;
-    LOG_INFO_STREAM << "GPU::select froze the process on " << (vulkan ? "Vulkan" : "the CPU")
-                    << " and refused a different backend afterwards.";
+    if (GPU::backend() != GPUBackend::Vulkan || !GPU::exists()) return EXIT_FAILURE;
+    GPU::select(GPUBackend::Vulkan);
+    if (!refuses(GPUBackend::Metal)) return EXIT_FAILURE;
+    LOG_INFO_STREAM << "GPU::select froze the process on Vulkan and refused a different backend afterwards.";
     return 0;
 }

@@ -146,12 +146,11 @@ void claims() {
     }
     std::printf("Claiming one dedicated slice past the pool size...\n");
     Slice dedicated(size_t{POOL_BYTES} + 4096u, true);
-    if (dedicated.address() == 0u || dedicated.raw() == nullptr || dedicated.size_bytes() != size_t{POOL_BYTES} + 4096u
-        || !dedicated.is_novel()) {
+    if (dedicated.address() == 0u || dedicated.raw() == nullptr
+        || dedicated.size_bytes() != size_t{POOL_BYTES} + 4096u) {
         ++failures;
-        std::printf("  dedicated: address 0x%llx raw %p size %zu novel %d\n",
-            static_cast<unsigned long long>(dedicated.address()), dedicated.raw(), dedicated.size_bytes(),
-            int(dedicated.is_novel()));
+        std::printf("  dedicated: address 0x%llx raw %p size %zu\n",
+            static_cast<unsigned long long>(dedicated.address()), dedicated.raw(), dedicated.size_bytes());
     }
     dedicated.data<uint32_t>()[POOL_BYTES / sizeof(uint32_t)] = 0xC0FFEEu;
     if (dedicated.data<uint32_t>()[POOL_BYTES / sizeof(uint32_t)] != 0xC0FFEEu) ++failures;

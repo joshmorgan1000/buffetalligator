@@ -25,6 +25,8 @@ CLEAN_BUILD=false
 REBUILD_VENDORED=false
 RUN_TESTS=true
 DEPS_ONLY=false
+SANITIZER=""
+BUILD_DIR_GIVEN=false
 CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib)
 while (( $# > 0 )); do
     case "$1" in
@@ -56,6 +58,13 @@ while (( $# > 0 )); do
         --build-dir)
             [[ $# -ge 2 ]] || { printf '%s\n' "--build-dir needs a directory"; exit 1; }
             BUILD_ROOT="$2"
+            BUILD_DIR_GIVEN=true
+            shift 2
+            ;;
+        --sanitize)
+            # A checking build under a sanitizer, in its own directory and never installed.
+            [[ $# -ge 2 ]] || { printf '%s\n' "${RED}--sanitize needs thread or address${NC}"; exit 1; }
+            SANITIZER="$2"
             shift 2
             ;;
         --deps-dir)
@@ -88,12 +97,28 @@ while (( $# > 0 )); do
             printf '%s\n' "  --build-dir DIR      Specify the build directory."
             printf '%s\n' "  --deps-dir DIR       Specify the dependencies directory."
             printf '%s\n' "  --install-dir DIR    Specify the installation directory."
+            printf '%s\n' "  --sanitize KIND      Build and test under the thread or address sanitizer in build/sanitize-KIND,"
+            printf '%s\n' "                       separate from the release build and never installed."
             printf '%s\n' "  -DNAME=VALUE         Override a CMake cache setting (e.g. -DALLIGATOR_SLOT_BITS=20)."
             printf '%s\n' "  --help               Show this help message."
             exit 0
             ;;
     esac
 done
+if [[ -n "${SANITIZER}" ]]; then
+    if [[ "${SANITIZER}" != thread && "${SANITIZER}" != address ]]; then
+        printf '%s\n' "${RED}--sanitize takes thread or address, not ${SANITIZER}.${NC}" \
+            "Run ./run_build.sh --sanitize thread for data races, or --sanitize address for memory errors."
+        exit 1
+    fi
+    if [[ "${BUILD_DIR_GIVEN}" == true ]]; then
+        printf '%s\n' "${RED}--sanitize always builds in build/sanitize-${SANITIZER}, apart from the release build.${NC}" \
+            "Drop --build-dir and rerun ./run_build.sh --sanitize ${SANITIZER}."
+        exit 1
+    fi
+    BUILD_ROOT="${REPO_ROOT}/build/sanitize-${SANITIZER}"
+    CMAKE_ARGS+=(-DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUFFETALLIGATOR_SANITIZE="${SANITIZER}")
+fi
 [[ "${BUILD_ROOT}" = /* ]] || BUILD_ROOT="${PWD}/${BUILD_ROOT}"
 [[ "${DEPS_DIR}" = /* ]] || DEPS_DIR="${PWD}/${DEPS_DIR}"
 [[ "${INSTALL_DIR}" = /* ]] || INSTALL_DIR="${PWD}/${INSTALL_DIR}"
@@ -908,6 +933,15 @@ run_stage "Configuring BuffetAlligator" cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}
     -DBUFFETALLIGATOR_DEPS_SOURCE_DIR="${DEPS_SOURCE_DIR}" \
     -DBUFFETALLIGATOR_DEPS_DIR="${DEPS_DIR}" "${CMAKE_ARGS[@]}"
 run_stage "Building BuffetAlligator" cmake --build "${BUILD_DIR}" --parallel
+if [[ -n "${SANITIZER}" ]]; then
+    if [[ "${RUN_TESTS}" == true ]]; then
+        run_stage "Testing memory and network contracts under the ${SANITIZER} sanitizer" \
+            ctest --test-dir "${BUILD_DIR}" --output-on-failure
+    fi
+    printf '%s\n' "${GREEN}The ${SANITIZER} sanitizer checked every plate. Nothing went home with the release build.${NC}" \
+        "${DIM}Sanitized build: ${BUILD_DIR} (not installed)${NC}"
+    exit 0
+fi
 if [[ "${RUN_TESTS}" == true ]]; then
     run_stage "Testing memory and network contracts" ctest --test-dir "${BUILD_DIR}" --output-on-failure
 fi

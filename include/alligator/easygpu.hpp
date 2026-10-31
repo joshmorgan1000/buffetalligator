@@ -248,9 +248,8 @@ public:
  */
 struct GPU {
     /** ------------------------------------------------------------------------------------------- Select
-     * @brief Chooses the backend the process freezes on; call it before the first Slice or GPU
-     * operation, since a different choice after the freeze throws and a set ALLIGATOR_GPU_BACKEND
-     * other than auto overrides it.
+     * @brief Chooses the GPU backend the process freezes on; call it before the first Slice or GPU
+     * operation, since a different choice after the freeze throws.
      * @param backend The backend to freeze on.
      */
     static void select(GPUBackend backend);

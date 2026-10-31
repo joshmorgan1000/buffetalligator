@@ -117,11 +117,6 @@ Slice Slice::slice(size_t offset, size_t length) const {
  * @return Shared pointer to the buffer.
  */
 std::shared_ptr<IBuffet> Slice::buffer() const { return rec().buffer_; }
-/** --------------------------------------------------------------------------------------------------------- Slice::is_novel
- * @brief Checks if the slice is novel (i.e., newly allocated).
- * @return True if the slice is novel, false otherwise.
- */
-bool Slice::is_novel() const { return id_ != 0xFFFFFFFFu && rec().buffer_ && rec().buffer_->novel_; }
 /** --------------------------------------------------------------------------------------------------------- Slice::rec
  * @brief Returns the underlying SliceRec.
  * @return Reference to the SliceRec.
@@ -155,7 +150,5 @@ Slice::Slice(const SliceRec& rec)
  * @param id The ID of the slice.
  * @param flags Additional flags for the slice.
  */
-Slice::Slice(uint64_t, void*, uint32_t id, uint32_t) : id_(id) {
-    if (id_ != 0xFFFFFFFFu) rec().ref_counter().increment();
-}
+Slice::Slice(uint64_t, void*, uint32_t id, uint32_t) : id_(id) {}
 } // namespace buffetalligator

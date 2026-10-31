@@ -17,7 +17,9 @@ namespace buffetalligator {
  */
 class MmapBuffet : public IBuffet {
 private:
-    int descriptor_ = -1;  ///< The scratch file's descriptor, open for the mapping's lifetime.
+    uint64_t address_ = 0;
+    void* mapped_ = nullptr;
+    int descriptor_ = -1;
     /** ------------------------------------------------------------------------------------------- release
      * @brief Unmaps and closes the scratch file; defined in mmap_allocator.cpp.
      */

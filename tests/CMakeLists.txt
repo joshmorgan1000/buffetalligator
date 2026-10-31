@@ -15,18 +15,15 @@ set_tests_properties(buffetalligator_vulkan_fastpath_test PROPERTIES TIMEOUT 120
     SKIP_RETURN_CODE 77)
 set_tests_properties(buffetalligator_fastpath_leak_test PROPERTIES TIMEOUT 300 LABELS "allocators;functional")
 set_tests_properties(buffetalligator_gpu_select_test PROPERTIES TIMEOUT 30 LABELS "functional"
-    ENVIRONMENT "ALLIGATOR_GPU_BACKEND=auto")
+    SKIP_RETURN_CODE 77)
 foreach(case IN ITEMS vulkan auto)
     add_test(NAME buffetalligator_gpu_select_${case} COMMAND buffetalligator_gpu_select_test ${case})
     set_tests_properties(buffetalligator_gpu_select_${case} PROPERTIES TIMEOUT 30 LABELS "gpu;functional"
-        SKIP_RETURN_CODE 77 ENVIRONMENT "ALLIGATOR_GPU_BACKEND=auto")
+        SKIP_RETURN_CODE 77)
 endforeach()
 set_tests_properties(buffetalligator_kitchen_order_test buffetalligator_worker_pool_idle_test
     buffetalligator_kitchen_shutdown_test
-    PROPERTIES TIMEOUT 45 LABELS "kitchen;functional" ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
-set(BUFFETALLIGATOR_TEST_VULKAN_BACKEND vulkan CACHE STRING
-    "Backend selection for Vulkan regressions; cpu skips GPU work for CPU sanitizers")
-set_property(CACHE BUFFETALLIGATOR_TEST_VULKAN_BACKEND PROPERTY STRINGS vulkan cpu)
+    PROPERTIES TIMEOUT 45 LABELS "kitchen;functional")
 function(add_functional_cases component)
     set(target buffetalligator_${component}_functional_test)
     foreach(case IN LISTS ARGN)
@@ -34,7 +31,7 @@ function(add_functional_cases component)
         set_tests_properties(buffetalligator_${case} PROPERTIES TIMEOUT 30 LABELS functional)
     endforeach()
 endfunction()
-add_functional_cases(slice typed_slices typed_lifecycle typed_views weak_slices resizes)
+add_functional_cases(slice typed_slices large_claims typed_views weak_slices resizes)
 add_functional_cases(atomic native_atomics complex_atomics atomic_ownership atomic_exceptions
     concurrent_atomics atomic_wait_notify registry global_registry concurrent_registry registry_exceptions)
 add_functional_cases(map map_rows map_merge map_lifetime map_boundaries concurrent_map map_shared_ownership pipeline)

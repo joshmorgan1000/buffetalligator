@@ -22,7 +22,6 @@ SliceRec* SliceRec::sub_slice(size_t offset, size_t length) const {
     slice->raw_ = static_cast<uint8_t*>(const_cast<void*>(raw())) + offset;
     slice->size_ = length;
     slice->address() = address() + offset;
-    slice->ref_counter() = ref_counter();
     return slice;
 }
 /** --------------------------------------------------------------------------------------------------------- SliceRec Try Claim
@@ -34,15 +33,16 @@ bool SliceRec::try_claim() { return size_.try_claim(); }
  * @brief Releases the SliceRec, resetting its state.
  */
 void SliceRec::release() {
-    ref_counter() = GenRefCounter();
-    buffer_.reset();
-    raw_ = nullptr;
-    size_.release();
+    if (size_.size() > 0) {
+        buffer_.reset();
+        raw_ = nullptr;
+        size_.release();
+    }
 }
 /** --------------------------------------------------------------------------------------------------------- SliceRec Destructor
- * @brief Destroys the SliceRec at teardown, when the counters beside the pool are already gone.
+ * @brief Destroys the SliceRec, releasing its resources.
  */
-SliceRec::~SliceRec() {}
+SliceRec::~SliceRec() { release(); }
 /** --------------------------------------------------------------------------------------------------------- SliceRec Size
  * @brief Returns the size of the SliceRec.
  * @return The size of the SliceRec.
@@ -107,7 +107,6 @@ void SliceRec::set(const SliceRec& other) {
     buffer_ = other.buffer_;
     raw_ = other.raw_;
     size_ = other.size();
-    ref_counter() = other.ref_counter();
 }
 /** --------------------------------------------------------------------------------------------------------- SliceRec Address
  * @brief Returns the address of the SliceRec.
@@ -119,14 +118,4 @@ uint64_t& SliceRec::address() { return IBuffet::addresses()[id()]; }
  * @return The address.
  */
 const uint64_t& SliceRec::address() const { return IBuffet::addresses()[id()]; }
-/** --------------------------------------------------------------------------------------------------------- SliceRec Ref Counter
- * @brief Returns the reference counter of the SliceRec.
- * @return The reference counter.
- */
-GenRefCounter& SliceRec::ref_counter() { return IBuffet::ref_counters()[id()]; }
-/** --------------------------------------------------------------------------------------------------------- SliceRec Ref Counter (const)
- * @brief Returns the reference counter of the SliceRec.
- * @return The reference counter.
- */
-const GenRefCounter& SliceRec::ref_counter() const { return IBuffet::ref_counters()[id()]; }
 } // namespace buffetalligator

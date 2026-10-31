@@ -4,6 +4,7 @@
  */
 #include <alligator.hpp>
 #include <gpu/easyvulkan.hpp>
+#include <gpu/backend.hpp>
 #include <cstring>
 #include <cstdint>
 
@@ -31,12 +32,12 @@ size_t IBuffet::threadid() {
  * @brief Retrieves the mapped pointer of the buffer.
  * @return The mapped pointer.
  */
-void* IBuffet::mapped() const { return mapped_; }
+void* IBuffet::mapped() const { return const_cast<void*>(host_ptr()); }
 /** --------------------------------------------------------------------------------------------------------- Address
  * @brief Retrieves the device address of the buffer.
  * @return The device address.
  */
-uint64_t IBuffet::address() const { return address_; }
+uint64_t IBuffet::address() const { return device_address(); }
 /** --------------------------------------------------------------------------------------------------------- Claim
  * @brief Claims a slice of the buffer.
  * @param size The size of the slice.
@@ -49,7 +50,6 @@ Slice IBuffet::claim(uint32_t size, bool novel) {
     Allocator& alloc = allocator();
     if (novel || size > 64u * 1024u * 1024u) {
         std::shared_ptr<IBuffet> dedicated = default_factory()();
-        dedicated->novel_ = true;
         dedicated->set_size(size);
         dedicated->allocate();
         SliceRec* rec = IBuffet::next_available();
@@ -57,9 +57,7 @@ Slice IBuffet::claim(uint32_t size, bool novel) {
         rec->buffer_ = std::move(dedicated);
         rec->raw_ = rec->buffer_->host_ptr();
         alloc.addresses[rec->id()] = rec->buffer_->address();
-        Slice result(rec->buffer_->address_, rec->buffer_->mapped_, rec->id(), size);
-        rec->ref_counter().decrement();
-        return result;
+        return Slice(rec->buffer_->address(), rec->raw_, rec->id(), size);
     }
     const uint32_t units = (size + 63u) >> 6;
     const uint32_t start = current->bump_.fetch_add(units, std::memory_order_relaxed);
@@ -105,10 +103,9 @@ Slice IBuffet::claim(uint32_t size, bool novel) {
     }
     const uint32_t offset = start << 6;
     const uint32_t idx = alloc.next_available(current, offset, size);
-    if (current->id_ == 0xFFFFFFFFu) current->id_ = idx;
-    alloc.pool[idx].raw_ = static_cast<char*>(current->mapped_) + offset;
-    alloc.addresses[idx] = current->address_ + offset;
-    return Slice(current->address_ + offset, alloc.pool[idx].raw_, idx, size);
+    alloc.pool[idx].raw_ = static_cast<char*>(current->host_ptr()) + offset;
+    alloc.addresses[idx] = current->device_address() + offset;
+    return Slice(alloc.addresses[idx], alloc.pool[idx].raw_, idx, size);
 }
 /** --------------------------------------------------------------------------------------------------------- Next Available
  * @brief Retrieves the next available slice record.
@@ -132,7 +129,7 @@ void IBuffet::allocate() {
  * @brief Retrieves the device address of the buffer.
  * @return The device address.
  */
-uint64_t IBuffet::device_address() const { return address_; }
+uint64_t IBuffet::device_address() const { return 0; }
 /** --------------------------------------------------------------------------------------------------------- Pool
  * @brief Retrieves the pool of slice records.
  * @return Pointer to the pool.
@@ -143,11 +140,6 @@ void* IBuffet::pool() { return &allocator().pool; }
  * @return The device address table.
  */
 uint64_t IBuffet::device_table() { return allocator().address_table; }
-/** --------------------------------------------------------------------------------------------------------- Live
- * @brief Retrieves the number of live buffers.
- * @return The number of live buffers.
- */
-uint32_t IBuffet::live() { return live_.load(std::memory_order_acquire); }
 /** --------------------------------------------------------------------------------------------------------- Addresses
  * @brief Retrieves the array of addresses for the buffer slices.
  * @return Pointer to the array of addresses.
@@ -159,11 +151,6 @@ uint64_t* IBuffet::addresses() { return allocator().addresses; }
  * @return Reference to the address of the buffer slice.
  */
 uint64_t& IBuffet::addr(uint32_t index) { return allocator().addresses[index]; }
-/** --------------------------------------------------------------------------------------------------------- Ref Counters
- * @brief Retrieves the array of reference counters for the buffer slices.
- * @return Pointer to the array of reference counters.
- */
-GenRefCounter* IBuffet::ref_counters() { return allocator().ref_counters.data(); }
 /** --------------------------------------------------------------------------------------------------------- Default Factory
  * @brief Retrieves the default buffer factory function.
  * @return Reference to the default buffer factory function.
@@ -230,19 +217,18 @@ void IBuffet::ensure_table() {
     std::call_once(built, &IBuffet::build_table);
 }
 /** --------------------------------------------------------------------------------------------------------- Build Table
- * @brief Starts the backend, whose factory registration builds the address table.
+ * @brief Freezes the backend selection, whose Vulkan setup registers the default factory and builds the table.
  */
-void IBuffet::build_table() { ez_vulkan_touch(); }
+void IBuffet::build_table() { static_cast<void>(GPUStatic::gpu_selection()); }
 /** --------------------------------------------------------------------------------------------------------- Recycle
- * @brief Recycles a buffer back into the allocator.
+ * @brief Cleans a spent chain buffer back into fresh when fresh is empty, and deletes it otherwise.
  * @param buffer Pointer to the buffer to recycle.
  */
 void IBuffet::recycle(IBuffet* buffer) {
     Allocator& alloc = allocator();
-    if (!alloc.stopping && alloc.fresh.size_approx() < 6) {
-        std::memset(buffer->mapped_, 0, buffer->size_);
+    if (!alloc.stopping && alloc.fresh.size_approx() == 0 && buffer->size() == 64u * 1024u * 1024u) {
+        std::memset(buffer->host_ptr(), 0, buffer->size());
         buffer->bump_.store(0, std::memory_order_relaxed);
-        buffer->id_ = 0xFFFFFFFFu;
         alloc.fresh.enqueue(std::shared_ptr<IBuffet>(buffer, &recycle));
     } else delete buffer;
 }
@@ -279,9 +265,9 @@ Slice IBuffet::embue_id(std::shared_ptr<IBuffet> buffer) {
     ensure_table();
     Allocator& alloc = allocator();
     const uint32_t idx = alloc.next_available(buffer, 0, buffer->size());
-    alloc.pool[idx].raw_ = buffer->mapped_;
-    alloc.addresses[idx] = buffer->address_;
-    return Slice(buffer->address_, buffer->mapped_, idx, buffer->size());
+    alloc.pool[idx].raw_ = buffer->host_ptr();
+    alloc.addresses[idx] = buffer->device_address();
+    return Slice(alloc.addresses[idx], alloc.pool[idx].raw_, idx, buffer->size());
 }
 /** --------------------------------------------------------------------------------------------------------- AlignedHeapBuffer
  * @brief Implementation of the AlignedHeapBuffer class, providing aligned memory allocation and management.
@@ -291,15 +277,15 @@ AlignedHeapBuffer::~AlignedHeapBuffer() { free(); }
  * @brief Allocates aligned memory for the buffer if it hasn't been allocated yet.
  */
 void AlignedHeapBuffer::allocate() {
-    if (mapped_) return;
-    mapped_ = std::aligned_alloc(64, size_.capacity());
-    std::memset(mapped_, 0, size_);
+    if (host_ptr_) return;
+    host_ptr_ = std::aligned_alloc(64, size_.capacity());
+    std::memset(host_ptr_, 0, size_);
 }
 /** --------------------------------------------------------------------------------------------------------- Free
  * @brief Frees the allocated memory for the buffer if it has been allocated.
  */
 void AlignedHeapBuffer::free() {
-    if (mapped_) { std::free(mapped_); mapped_ = nullptr; }
+    if (host_ptr_) { std::free(host_ptr_); host_ptr_ = nullptr; }
 }
 /** --------------------------------------------------------------------------------------------------------- Size
  * @brief Retrieves the size of the buffer.
@@ -315,10 +301,10 @@ void AlignedHeapBuffer::set_size(size_t size) { size_ = size; }
  * @brief Retrieves the host pointer to the buffer's memory.
  * @return Pointer to the buffer's memory.
  */
-void* AlignedHeapBuffer::host_ptr() { return mapped_; }
+void* AlignedHeapBuffer::host_ptr() { return host_ptr_; }
 /** --------------------------------------------------------------------------------------------------------- Host Pointer (Const)
  * @brief Retrieves the host pointer to the buffer's memory (const version).
  * @return Const pointer to the buffer's memory.
  */
-const void* AlignedHeapBuffer::host_ptr() const { return mapped_; }
+const void* AlignedHeapBuffer::host_ptr() const { return host_ptr_; }
 } // namespace buffetalligator

@@ -19,7 +19,6 @@ namespace {
 inline static constexpr size_t MAX_SINGLE_UNITS = (1ull << 27) - 1;
 inline static constexpr size_t MAX_VECTOR_UNITS = (1ull << 33) - 1;
 inline static constexpr size_t MAX_MATRIX_UNITS = (1ull << 35) - 1;
-inline static constexpr size_t MAX_PAGE_UNITS   = (1ull << 39) - 1;
 static constexpr size_t UNIT_SIZES[4] = { 1, 64, 256, 4096 };
 } // anonymous namespace
 /** --------------------------------------------------------------------------------------------------------- Destructor

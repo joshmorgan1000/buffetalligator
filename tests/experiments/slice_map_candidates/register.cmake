@@ -52,8 +52,7 @@ function(register_slice_map_candidates)
             target_link_libraries(${target} PRIVATE alligator::alligator)
             if(NOT check STREQUAL backend_shader_test)
                 add_test(NAME ${target} COMMAND ${target})
-                set_tests_properties(${target} PROPERTIES TIMEOUT 120
-                    ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu" LABELS "candidate;cpu")
+                set_tests_properties(${target} PROPERTIES TIMEOUT 120 LABELS "candidate")
             endif()
         endforeach()
         file(READ "${PROJECT_SOURCE_DIR}/tests/slice_map_growth_test.cpp" growth_source)
@@ -66,8 +65,7 @@ function(register_slice_map_candidates)
         target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/tests")
         target_link_libraries(${target} PRIVATE alligator::alligator)
         add_test(NAME ${target} COMMAND ${target})
-        set_tests_properties(${target} PROPERTIES TIMEOUT 120
-            ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu" LABELS "candidate;cpu")
+        set_tests_properties(${target} PROPERTIES TIMEOUT 120 LABELS "candidate")
         foreach(backend IN ITEMS vulkan metal)
             if(backend STREQUAL metal AND NOT BUFFETALLIGATOR_METAL_ENABLED)
                 continue()
@@ -80,7 +78,7 @@ function(register_slice_map_candidates)
                 set(test "check_${candidate}_${backend}_${mode}")
                 add_test(NAME ${test} COMMAND check_${candidate}_backend_shader_test ${mode})
                 set_tests_properties(${test} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
-                    ENVIRONMENT "ALLIGATOR_GPU_BACKEND=${backend};MTL_DEBUG_LAYER=1;MTL_SHADER_VALIDATION=1"
+                    ENVIRONMENT "MTL_DEBUG_LAYER=1;MTL_SHADER_VALIDATION=1"
                     LABELS "candidate;gpu")
             endforeach()
         endforeach()

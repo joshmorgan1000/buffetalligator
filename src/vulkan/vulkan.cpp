@@ -19,6 +19,56 @@ namespace buffetalligator {
  * @brief Freezes the context: probes the device and hands the buffer statics to VulkanBuffer, once.
  */
 void ez_vulkan_touch() { static_cast<void>(VulkanContext::instance()); }
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer::allocate
+ * @brief Creates the buffer and memory at the buffer's capacity in the probed memory type, then maps it and
+ * reads its device address.
+ */
+void VulkanBuffer::allocate() {
+    VulkanStatics& vulkan = statics();
+    buffer_ = vulkan.device.createBuffer(
+        vk::BufferCreateInfo({}, size_.capacity(), vulkan.usage, vk::SharingMode::eExclusive));
+    const vk::MemoryRequirements requirements = vulkan.device.getBufferMemoryRequirements(buffer_);
+    const vk::MemoryAllocateFlagsInfo flags(vk::MemoryAllocateFlagBits::eDeviceAddress);
+    memory_ = vulkan.device.allocateMemory(
+        vk::MemoryAllocateInfo(requirements.size, vulkan.memory_type_index, &flags));
+    vulkan.device.bindBufferMemory(buffer_, memory_, 0);
+    host_ptr_ = vulkan.device.mapMemory(memory_, 0, VK_WHOLE_SIZE);
+    device_address_ = vulkan.device.getBufferAddress(vk::BufferDeviceAddressInfo(buffer_));
+}
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer::free
+ * @brief Destroys the buffer and frees its memory, which unmaps it, unless it was never allocated or the
+ * device is already gone.
+ */
+void VulkanBuffer::free() {
+    if (memory_ == nullptr || statics().stopped) return;
+    const vk::Device device = statics().device;
+    device.destroyBuffer(buffer_);
+    device.freeMemory(memory_);
+    buffer_ = nullptr;
+    memory_ = nullptr;
+    host_ptr_ = nullptr;
+    device_address_ = 0;
+}
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer::host_ptr
+ * @brief The mapped host view of the buffer.
+ * @return The mapped pointer.
+ */
+void* VulkanBuffer::host_ptr() { return host_ptr_; }
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer::host_ptr
+ * @brief The mapped host view of the buffer.
+ * @return The mapped pointer.
+ */
+const void* VulkanBuffer::host_ptr() const { return host_ptr_; }
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer::device_address
+ * @brief The buffer's device address, read when it was allocated.
+ * @return The device address.
+ */
+uint64_t VulkanBuffer::device_address() const { return device_address_; }
+/** --------------------------------------------------------------------------------------------------------- VulkanBuffer::set_size
+ * @brief Sets the size the next allocate creates.
+ * @param size The size in bytes.
+ */
+void VulkanBuffer::set_size(size_t size) { size_ = size; }
 /// @brief Compiles GLSL compute source into SPIR-V words; defined in shader_source.cpp.
 std::vector<uint32_t> shader_compile_glsl(std::string_view source, const DeviceProperties& properties, std::string_view name);
 /// @brief Makes the shader's writes available to the host, recorded after the dispatch.

@@ -230,10 +230,10 @@ and measured result after timing.
 ./run_build.sh --build-dir build/perf -DCMAKE_BUILD_TYPE=Release \
     -DBUFFETALLIGATOR_BUILD_BENCHMARKS=ON
 mkdir -p build/perf/results
-ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_allocator_benchmark \
+./build/perf/tests/benchmarks/buffetalligator_allocator_benchmark \
     --warmup 2 --repetitions 15 --csv build/perf/results/allocator.csv
 # An explicit worker count replaces the default topology sweep.
-ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_allocator_benchmark \
+./build/perf/tests/benchmarks/buffetalligator_allocator_benchmark \
     --workers 4 --items 4096 --latency-samples 128 \
     --csv build/perf/results/allocator-four-workers.csv
 ```
@@ -295,14 +295,10 @@ the public `Shader`, `ShaderResult`, callback, and awaiter contracts and obtains
 the selected placement from the private runtime descriptor.
 
 ```sh
-ALLIGATOR_GPU_BACKEND=vulkan ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
+./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
     --source translated --warmup 2 --repetitions 15 --csv build/perf/results/vulkan-translated.csv
-ALLIGATOR_GPU_BACKEND=metal ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
-    --source translated --warmup 2 --repetitions 15 --csv build/perf/results/metal-translated.csv
-ALLIGATOR_GPU_BACKEND=metal ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
-    --source native --warmup 2 --repetitions 15 --csv build/perf/results/metal-native.csv
 # Sweep admission windows in separate processes with a fixed batch and team.
-ALLIGATOR_GPU_BACKEND=vulkan ./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
+./build/perf/tests/benchmarks/buffetalligator_gpu_dispatch_benchmark \
     --submitters 4 --depth 16 --batch 256 --items 128 \
     --csv build/perf/results/vulkan-depth-16.csv
 ```
@@ -349,7 +345,7 @@ now configurable, defaulting to two and 15 respectively; every measured sample
 is written before any sorting or aggregation.
 
 ```sh
-ALLIGATOR_GPU_BACKEND=cpu ./build/perf/tests/benchmarks/buffetalligator_priority_slice_benchmark \
+./build/perf/tests/benchmarks/buffetalligator_priority_slice_benchmark \
     --warmup 2 --repetitions 15 --csv build/perf/results/priority.csv
 ```
 

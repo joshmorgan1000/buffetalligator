@@ -13,7 +13,6 @@ using functional::require;
  * @brief Reads the host's memory, refuses an impossible slab, and allocates a possible one.
  */
 int main() {
-    require(setenv("ALLIGATOR_GPU_BACKEND", "cpu", 1) == 0, "CPU selection failed");
     const HostMemoryUsage usage = host_memory_usage();
     require(usage.physical_bytes > 0 && usage.available_bytes > 0 && usage.resident_bytes > 0,
         "host memory query returned zeros");

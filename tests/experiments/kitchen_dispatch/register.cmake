@@ -20,11 +20,10 @@ function(register_kitchen_dispatch_experiments)
             add_test(NAME dispatch_${executor}_${path} COMMAND kitchen_dispatch_io_isolation
                 --executor ${executor} --path ${path} --rounds 2
                 --csv "${CMAKE_BINARY_DIR}/smoke-${executor}-${path}.csv")
-            set_tests_properties(dispatch_${executor}_${path} PROPERTIES TIMEOUT 30
-                ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
+            set_tests_properties(dispatch_${executor}_${path} PROPERTIES TIMEOUT 30)
         endforeach()
         set_tests_properties(dispatch_${executor}_read dispatch_${executor}_burst
-            PROPERTIES TIMEOUT 30 ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
+            PROPERTIES TIMEOUT 30)
     endforeach()
     message(STATUS "Kitchen dispatch experiments enabled; production sources are unchanged")
 endfunction()

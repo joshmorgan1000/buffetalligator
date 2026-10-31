@@ -329,11 +329,6 @@ public:
      * @return True if the slice is valid, false otherwise.
      */
     operator bool() const { return id_ != 0xFFFFFFFFu; }
-    /** ------------------------------------------------------------------------------------------- Is Novel
-     * @brief Whether the claim has a buffer to itself.
-     * @return True if the claim has a dedicated buffer, false otherwise.
-     */
-    bool is_novel() const;
     /** ------------------------------------------------------------------------------------------- Pool Index
      * @brief Retrieves the pool index of the slice.
      * @return The pool index.
@@ -345,11 +340,8 @@ public:
      */
     size_t capacity() const { return (size_bytes() + 63) & ~size_t{63}; }
 private:
-    /// @brief The ID of the slice in the buffer's pool.
     uint32_t id_ = 0xFFFFFFFFu;
-    /// @brief Constructor used internally by the buffet.
     Slice(uint64_t,void*,uint32_t,uint32_t);
-    /// @brief Friend class declaration for IBuffet.
     friend class IBuffet;
 };
 /** --------------------------------------------------------------------------------------------------------- Packed Size
@@ -362,7 +354,8 @@ private:
     uint32_t size_ = 0;
     PackedSize& operator=(PackedSize&& other);
 public:
-    PackedSize(size_t size = 0);
+    PackedSize() = default;
+    PackedSize(size_t size);
     PackedSize& operator=(size_t size);
     PackedSize(const PackedSize&) = delete;
     PackedSize& operator=(const PackedSize&) = delete;
@@ -392,80 +385,6 @@ public:
     operator size_t() const;
     size_t unit() const;
     size_t offset() const;
-};
-/** --------------------------------------------------------------------------------------------------------- default_typed_deleter
- * @brief Default deleter function for a given type T. Deletes the context pointer if it is not null.
- * @tparam T The type of the object to delete.
- * @param context Pointer to the object to delete.
- */
-template<typename T>
-inline static void default_typed_deleter(void* context) {
-    if (context) delete static_cast<T*>(context);
-}
-/** --------------------------------------------------------------------------------------------------------- GenRefCounter
- * @class GenRefCounter
- * @brief A type of 32-bit atomic reference counter that is more efficient than standard atomic counters.
- * Normally when reference counting you would use a `std::shared_ptr`, or set up a `std::atomic<int>*`, or
- * something like that. These have a couple problems:
- * 1. If it is a single object under a lot of contention (such as a slab buffer with a lot of children) this
- *   can be VERY slow due to the fact that you have potentially thousands of threads all trying to hit the
- *   same atomic. For this problem, we create generational reference counters, so that a copy of a counter
- *   points to branch of atomics in a tree like structure rather than everyone all hitting the same atomic.
- * 2. A `std::shared_ptr` is (at least on this Mac) 24 bytes in size, which can add up quickly, and push
- *   things out of cache lines that would otherwise fit (since 24 is somewhat of an odd number when it comes
- *   to power-of-two alignment considerations).
- * So we question what a reference counter really is, and why we have them. The only purpose they serve is
- * to act as garbage collection, freeing up heap-allocated resources when the last reference is gone
- * automatically. I see that more as a counter with a low-priority event attached to it.
- */
-class GenRefCounter {
-private:
-    static std::array<OnZero, 0x4000>& on_zero_registry();
-    static std::atomic<uint16_t>& next_on_zero_index();
-    void add_on_zero(void (*callback)(void*));
-    struct GenThread;
-    static std::array<GenThread, 2>& gen_threads();
-    uint32_t id_ = 0xFFFFFFFFu;
-public:
-    GenRefCounter() = default;
-    /** ------------------------------------------------------------------------------------------- Constructor
-     * @brief Constructs a generational reference counter with an optional on-zero callback and
-     * context. A static method should be referenced so that it can be registered in the on-zero
-     * callback registry instead of having to store duplicate copies of the callback.
-     * @param on_zero Function pointer to the on-zero callback. This method is invoked when the
-     * reference count hits zero, passing the context pointer to the callback.
-     * @param context Pointer to the context to be passed to the on-zero callback. Note: the
-     * GenRefCounter does not take ownership of the context pointer; it is the caller's
-     * responsibility to manage its lifetime.
-     */
-    GenRefCounter(void (*on_zero)(void*), void* context);
-    /** ------------------------------------------------------------------------------------------- Typed Deleter Constructor
-     * @brief Constructs a generational reference counter with a typed deleter for the parent
-     * object, a typical or fairly standard use case for typed deleters.
-     * @tparam T The type of the parent object.
-     * @param parent Pointer to the parent object. The default typed deleter will be used to
-     * delete it when the reference count hits zero.
-     */
-    template<typename T>
-    GenRefCounter(T* parent)
-    : GenRefCounter(&default_typed_deleter<T>, parent) {}
-    /** ------------------------------------------------------------------------------------------- Disarm (unsafe)
-     * @brief Clears this counter without triggering the decrement callback. This must be
-     * paired with the `increment_unsafe` method to ensure proper reference counting. Not using
-     * this method properly will likely cause memory leaks and/or fragmentation.
-     */
-    void disarm_override();
-    /** ------------------------------------------------------------------------------------------- Accessors etc. */
-    GenRefCounter(const GenRefCounter& other);
-    GenRefCounter& operator=(const GenRefCounter& other);
-    GenRefCounter(GenRefCounter&& other) noexcept;
-    GenRefCounter& operator=(GenRefCounter&& other) noexcept;
-    ~GenRefCounter();
-    bool valid() const;
-    operator bool() const;
-    size_t num_references() const;
-    void increment();
-    void decrement();
 };
 /** --------------------------------------------------------------------------------------------------------- SliceRec
  * @struct SliceRec
@@ -508,8 +427,6 @@ public:
     void set(const SliceRec& other);
     uint64_t& address();
     const uint64_t& address() const;
-    GenRefCounter& ref_counter();
-    const GenRefCounter& ref_counter() const;
 private:
     void* raw_ = nullptr;
     std::shared_ptr<IBuffet> buffer_;
@@ -535,10 +452,8 @@ public:
     virtual void set_size(size_t size) = 0;
     virtual void free() {}
     static uint64_t device_table();
-    static uint32_t live();
     static uint64_t* addresses();
     static uint64_t& addr(uint32_t index);
-    static GenRefCounter* ref_counters();
     using DefaultBufferFactoryFn = std::shared_ptr<IBuffet> (*)();
     /** ------------------------------------------------------------------------------------------- Set Default Factory
      * @brief Registers the factory every chain buffer comes from and builds the address table with it.
@@ -584,12 +499,11 @@ public:
         std::atomic<size_t> tid{0};
         /// @brief Pool of slice records.
         std::array<SliceRec, 0x100000> pool;
-        /// @brief Array of reference counters for the buffer slices.
-        std::array<GenRefCounter, 0x100000> ref_counters;
         /// @brief Atomic counter for the next available index in the pool.
         std::atomic<size_t> next_idx{0};
-        /// @brief Flag indicating if the allocator is stopping.
+        /// @brief Set by shutdown, so recycle deletes buffers instead of returning them to fresh.
         bool stopping = false;
+        /// @brief The thread ID
         size_t t_id();
         uint32_t next_available(
             std::shared_ptr<IBuffet> buffer,
@@ -598,7 +512,7 @@ public:
         );
         SliceRec* next_available();
         Allocator() = default;
-        ~Allocator() { stopping = true; }
+        ~Allocator() = default;
         Allocator(const Allocator&) = delete;
         Allocator& operator=(const Allocator&) = delete;
         Allocator(Allocator&&) = delete;
@@ -606,28 +520,8 @@ public:
     };
     static Allocator& allocator();
 protected:
-    /// @brief ID of the slice, initialized to an invalid value.
-    uint32_t id_ = 0;
-    /// @brief The Vulkan buffer handle, null for a heap buffer.
-    void* buffer_ = nullptr;
-    /// @brief The Vulkan memory handle, null for a heap buffer.
-    void* memory_ = nullptr;
-    /// @brief Pointer to the mapped memory, if any.
-    void* mapped_ = nullptr;
-    /// @brief Device address of the memory.
-    uint64_t address_ = 0;
-    /// @brief Size of the buffer.
     PackedSize size_;
-    /// @brief Atomic bump pointer for allocation within the slice.
     std::atomic<uint32_t> bump_{0};
-    /// @brief Shared pointer to self, used for lifetime management.
-    std::shared_ptr<IBuffet> self_;
-    /// @brief Flag indicating if the buffer is novel.
-    bool novel_ = false;
-    /// @brief Runs over the payload before a dedicated buffer frees it; a typed claim's destructor.
-    void (*finalize_)(void*) = nullptr;
-    /// @brief Buffers alive right now, pools and dedicated alike, for leak checks.
-    inline static std::atomic<uint32_t> live_{0};
     static size_t threadid();
     static DefaultBufferFactoryFn& default_factory();
     static void ensure_table();
@@ -662,6 +556,9 @@ public:
     void set_size(size_t size) override;
     void* host_ptr() override;
     const void* host_ptr() const override;
+private:
+    /// @brief The aligned heap allocation, null until allocate.
+    void* host_ptr_ = nullptr;
 };
 inline static vk::DeviceAddress* addresses() { return IBuffet::addresses(); }
 inline static SliceRec* next_available() { return IBuffet::next_available(); }
@@ -877,7 +774,7 @@ public:
         Args&&... args
     ) {
         if (initialize) {
-            slice_.resize(count * sizeof(T), novel_buffer);
+            slice_.resize(count * sizeof(T), false, novel_buffer);
             for (size_t i = 0; i < count; ++i) {
                 new (static_cast<T*>(slice_.raw()) + i) T(std::forward<Args>(args)...);
             }
@@ -896,6 +793,20 @@ public:
     SliceT& operator=(SliceT&& other) noexcept;
     /** ------------------------------------------------------------------------------------------- Destructor */
     ~SliceT() { free(); }
+    /** ------------------------------------------------------------------------------------------- Initialize
+     * @brief Initializes the slice with the given number of elements and constructor arguments.
+     * @tparam Args The types of the constructor arguments for T.
+     * @param count The number of elements of type T to allocate.
+     * @param novel_buffer If true, allocates a novel buffer for the slice.
+     * @param args Arguments to forward to the constructor of T.
+     */
+    template<typename... Args>
+    void initialize(size_t count = 1, bool novel_buffer = false, Args&&... args) {
+        slice_.resize(count * sizeof(T), false, novel_buffer);
+        for (size_t i = 0; i < count; ++i) {
+            new (static_cast<T*>(slice_.raw()) + i) T(std::forward<Args>(args)...);
+        }
+    }
     /** ------------------------------------------------------------------------------------------- Size in elements
      * @brief Returns the size of the slice in elements of type T.
      * @return The size of the slice in elements of type T.
@@ -923,6 +834,7 @@ public:
     const void* raw() const { return slice_.raw(); }
     /** ------------------------------------------------------------------------------------------- Data access
      * @brief Returns a pointer to the underlying memory of the slice, cast to type U*.
+     * @tparam U The type to cast the underlying memory to.
      * @return A pointer to the underlying memory of the slice.
      */
     template<typename U = T>
@@ -931,6 +843,7 @@ public:
     }
     /** ------------------------------------------------------------------------------------------- Data access - const
      * @brief Returns a const pointer to the underlying memory of the slice, cast to type U*.
+     * @tparam U The type to cast the underlying memory to.
      * @return A const pointer to the underlying memory of the slice.
      */
     template<typename U = T>
@@ -1021,41 +934,13 @@ public:
     operator Slice() const {
         return slice_;
     }
-    /** ------------------------------------------------------------------------------------------- Length of the slice
-     * @brief Returns the length of the slice in terms of the number of elements of type T.
-     * @return The length of the slice.
-     */
-    size_t length() const {
-        if constexpr (std::is_same_v<T, std::string>) {
-            return slice_.size_bytes();
-        } else if constexpr (requires {
-            typename T::value_type;
-            requires std::is_same_v<std::vector<typename T::value_type>, T>;
-        }) {
-            return slice_.size_bytes() / sizeof(typename T::value_type);
-        }
-        return slice_.size_bytes() / sizeof(T);
-    }
     /** ------------------------------------------------------------------------------------------- Free the slice
      * @brief Frees the underlying memory of the slice.
      */
     void free(bool destroy = false) {
         if (destroy) {
-            if constexpr (std::is_same_v<T, std::string>) {
-                for (size_t i = 0; i < length(); ++i) {
-                    reinterpret_cast<T*>(slice_.raw())[i].~T();
-                }
-            } else if constexpr (requires {
-                typename T::value_type;
-                requires std::is_same_v<std::vector<typename T::value_type>, T>;
-            }) {
-                for (size_t i = 0; i < length(); ++i) {
-                    reinterpret_cast<T*>(slice_.raw())[i].~T();
-                }
-            } else {
-                for (size_t i = 0; i < length(); ++i) {
-                    reinterpret_cast<T*>(slice_.raw())[i].~T();
-                }
+            for (size_t i = 0; i < size(); ++i) {
+                reinterpret_cast<T*>(slice_.raw())[i].~T();
             }
         }
         slice_.free();

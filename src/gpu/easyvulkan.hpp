@@ -81,14 +81,14 @@ public:
         allocator.create_info = vk::BufferCreateInfo({}, 64u * 1024u * 1024u, usage, vk::SharingMode::eExclusive);
         allocator.alloc_info64mb = vk::MemoryAllocateInfo(64u * 1024u * 1024u, memory_type_index);
         static_cast<void>(IBuffet::allocator());
-        IBuffet::set_default_factory(&VulkanBuffer::chain_buffer);
+        IBuffet::set_default_factory(&VulkanBuffer::factory);
     }
     /** ------------------------------------------------------------------------------------------- Chain Buffer
-     * @brief The default factory: one unallocated 64 MiB chain buffer for the system to allocate.
+     * @brief The default factory: one unallocated 64 MiB chain buffer, recycled at its last reference.
      * @return The buffer.
      */
-    static std::shared_ptr<IBuffet> chain_buffer() {
-        return std::make_shared<VulkanBuffer>(64u * 1024u * 1024u);
+    static std::shared_ptr<IBuffet> factory() {
+        return std::shared_ptr<IBuffet>(new VulkanBuffer(64u * 1024u * 1024u), &IBuffet::recycle);
     }
     /// @brief Marks the device gone, so buffers destroyed after it free nothing.
     static void stop() { statics().stopped = true; }
@@ -102,14 +102,23 @@ public:
      * @brief The Vulkan buffer handle, for indirect dispatch commands recorded against it.
      * @return The buffer handle.
      */
-    vk::Buffer buffer() const { return vk::Buffer(static_cast<VkBuffer>(buffer_)); }
-    size_t size() const override { return IBuffet::size(); }
+    vk::Buffer buffer() const { return buffer_; }
+    size_t size() const override { return size_; }
     void allocate() override;
     void free() override;
     void* host_ptr() override;
     const void* host_ptr() const override;
     uint64_t device_address() const override;
     void set_size(size_t size) override;
+private:
+    /// @brief The Vulkan buffer handle associated with this VulkanBuffer.
+    vk::Buffer buffer_{};
+    /// @brief Vulkan device memory associated with this buffer.
+    vk::DeviceMemory memory_{};
+    /// @brief Host-accessible pointer to the buffer memory, if mapped.
+    void* host_ptr_ = nullptr;
+    /// @brief Device address of the buffer, if available.
+    uint64_t device_address_ = 0;
 };
 /** --------------------------------------------------------------------------------------------------------- VulkanContext
  * @class VulkanContext
@@ -146,9 +155,6 @@ private:
     }   
     VulkanContext() {
         try {
-            const char* requested = std::getenv("ALLIGATOR_GPU_BACKEND");
-            const std::string_view backend = requested == nullptr ? "auto" : requested;
-            if (backend == "cpu" || backend == "metal" || backend == "cuda") return;
         #ifdef __APPLE__
             ::setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
         #endif

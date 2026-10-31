@@ -37,8 +37,7 @@ function(register_flat_slice_map_experiment)
     target_link_libraries(slice_map_test PRIVATE alligator::alligator)
     foreach(check IN ITEMS flat_slice_map_test slice_map_test)
         add_test(NAME ${check} COMMAND ${check})
-        set_tests_properties(${check} PROPERTIES TIMEOUT 120
-            ENVIRONMENT "ALLIGATOR_GPU_BACKEND=cpu")
+        set_tests_properties(${check} PROPERTIES TIMEOUT 120)
     endforeach()
     file(GLOB_RECURSE sources CONFIGURE_DEPENDS
         "${PROJECT_SOURCE_DIR}/src/*.cpp" "${PROJECT_SOURCE_DIR}/src/*.hpp"

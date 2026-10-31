@@ -14,7 +14,7 @@
 
 namespace buffetalligator {
 /** --------------------------------------------------------------------------------------------------------- Backend Name
- * @brief The ALLIGATOR_GPU_BACKEND spelling of a backend.
+ * @brief The lowercase name of a backend.
  * @param backend The backend.
  * @return Its name.
  */
@@ -62,7 +62,7 @@ struct GPUStatic {
      */
     static GPUDevice& gpu_device() { return gpu_selection().device; }
     /** ------------------------------------------------------------------------------------------- Requested Backend
-     * @brief The backend GPU::select recorded, or -1 when the environment and the auto order decide.
+     * @brief The backend GPU::select recorded, or -1 when the auto order decides.
      */
     static std::atomic<int>& requested_backend() {
         static std::atomic<int>* backend = new std::atomic<int>(-1);
@@ -149,18 +149,15 @@ struct GPUStatic {
     }
 };
 /** --------------------------------------------------------------------------------------------------------- GPU Selection Constructor
- * @brief A set environment choice other than auto overrides GPU::select, which overrides the auto order.
+ * @brief GPU::select overrides the auto order, and only a GPU backend can be selected.
  */
 inline GPUSelection::GPUSelection() {
     GPUStatic::selection_started().store(true, std::memory_order_seq_cst);
-    const char* environment = std::getenv("ALLIGATOR_GPU_BACKEND");
     const int selected = GPUStatic::requested_backend().load(std::memory_order_seq_cst);
-    const std::string_view choice = environment != nullptr && std::string_view(environment) != "auto"
-        ? std::string_view(environment)
-        : selected >= 0 ? backend_name(static_cast<GPUBackend>(selected)) : std::string_view("auto");
-    if (choice == "cpu") return;
+    const std::string_view choice =
+        selected >= 0 ? backend_name(static_cast<GPUBackend>(selected)) : std::string_view("auto");
     if (choice != "auto" && choice != "metal" && choice != "vulkan" && choice != "cuda") {
-        ALLIGATOR_GPU_THROW("ALLIGATOR_GPU_BACKEND must be auto, cpu, metal, vulkan, or cuda");
+        ALLIGATOR_GPU_THROW("GPU::select must choose Vulkan, Metal, or CUDA");
     }
     if (choice == "cuda") ALLIGATOR_GPU_THROW("This build has no qualified CUDA backend");
     if ((choice == "auto" || choice == "vulkan") && VulkanContext::device_present()) {

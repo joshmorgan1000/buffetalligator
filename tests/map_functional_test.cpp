@@ -169,7 +169,6 @@ static void shared_ownership() {
             for (size_t round = 0; round < rounds; ++round) {
                 phase.arrive_and_wait();
                 Slice retained = map.get_slice(worker);
-                require(retained.is_novel(), "sharing a dedicated allocation changed its backing kind");
                 phase.arrive_and_wait();
                 phase.arrive_and_wait();
                 require(retained.get_as<uint64_t>() == round * workers + worker,
