@@ -53,6 +53,8 @@ struct GPUCapabilities {
     uint64_t host_visible_bytes = 0;             ///< Heap bytes reachable from the host.
     uint64_t device_local_headroom_bytes = 0;    ///< Live budget headroom at poll time.
     std::string device_name;                     ///< Vendor device name.
+    bool supports_int8 = false;                  ///< 8-bit integers and 8-bit buffer loads in shaders.
+    bool supports_int16 = false;                 ///< 16-bit integers and 16-bit buffer loads in shaders.
 };
 /** --------------------------------------------------------------------------------------------------------- Shader Source
  * @struct ShaderSource

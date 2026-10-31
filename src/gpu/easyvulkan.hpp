@@ -35,7 +35,9 @@ struct DeviceProperties {
     bool supports_buffer_device_address;       ///< Device-resolvable buffer addresses.
     bool supports_int64;                       ///< 64-bit integers in shaders.
     bool supports_int64_atomics;               ///< 64-bit buffer atomics.
-    bool supports_float16;                     ///< 16-bit float arithmetic in shaders.
+    bool supports_float16;                     ///< 16-bit float arithmetic and 16-bit buffer loads in shaders.
+    bool supports_int8;                        ///< 8-bit integer arithmetic and 8-bit buffer loads in shaders.
+    bool supports_int16;                       ///< 16-bit integer arithmetic and 16-bit buffer loads in shaders.
     bool supports_memory_budget;               ///< Live device-memory headroom queryable.
     bool supports_timeline_semaphore;          ///< Timeline semaphores available.
     bool unified_memory;                       ///< Host and device share physical memory.
@@ -44,7 +46,7 @@ struct DeviceProperties {
  * @class VulkanBuffer
  * @brief The Vulkan handles behind one slab: buffer, memory, mapping, and device address.
  */
-class VulkanBuffer : public IBuffet {
+class VulkanBuffer final : public IBuffet {
 public:
     struct VulkanStatics {
         vk::Device device;
@@ -78,20 +80,36 @@ public:
         allocator.memory_type_index = memory_type_index; allocator.usage = usage;
         allocator.create_info = vk::BufferCreateInfo({}, 64u * 1024u * 1024u, usage, vk::SharingMode::eExclusive);
         allocator.alloc_info64mb = vk::MemoryAllocateInfo(64u * 1024u * 1024u, memory_type_index);
-        static_cast<void>(IBuffet::fast_allocator());
+        static_cast<void>(IBuffet::allocator());
+        IBuffet::set_default_factory(&VulkanBuffer::chain_buffer);
+    }
+    /** ------------------------------------------------------------------------------------------- Chain Buffer
+     * @brief The default factory: one unallocated 64 MiB chain buffer for the system to allocate.
+     * @return The buffer.
+     */
+    static std::shared_ptr<IBuffet> chain_buffer() {
+        return std::make_shared<VulkanBuffer>(64u * 1024u * 1024u);
     }
     /// @brief Marks the device gone, so buffers destroyed after it free nothing.
     static void stop() { statics().stopped = true; }
-    VulkanBuffer(size_t size_bytes, bool novel = false) : IBuffet(size_bytes, novel) {}
+    VulkanBuffer(size_t size_bytes) : IBuffet(size_bytes) {}
     VulkanBuffer(const VulkanBuffer&) = delete;
     VulkanBuffer& operator=(const VulkanBuffer&) = delete;
     VulkanBuffer(VulkanBuffer&&) = delete;
     VulkanBuffer& operator=(VulkanBuffer&&) = delete;
+    ~VulkanBuffer() override { free(); }
     /** ------------------------------------------------------------------------------------------- buffer
      * @brief The Vulkan buffer handle, for indirect dispatch commands recorded against it.
      * @return The buffer handle.
      */
     vk::Buffer buffer() const { return vk::Buffer(static_cast<VkBuffer>(buffer_)); }
+    size_t size() const override { return IBuffet::size(); }
+    void allocate() override;
+    void free() override;
+    void* host_ptr() override;
+    const void* host_ptr() const override;
+    uint64_t device_address() const override;
+    void set_size(size_t size) override;
 };
 /** --------------------------------------------------------------------------------------------------------- VulkanContext
  * @class VulkanContext
@@ -205,10 +223,13 @@ private:
                 device_present_ = false;
                 return;
             }
+            /// The chain getFeatures2 fills is the chain createDevice gets, so every reported feature is enabled.
+            vk::PhysicalDeviceVulkan11Features supported11{};
             vk::PhysicalDeviceVulkan12Features supported12{};
             vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR supported_isq{};
             vk::PhysicalDeviceFeatures2 supported{};
-            supported.pNext = &supported12;
+            supported.pNext = &supported11;
+            supported11.pNext = &supported12;
             const auto extensions = physical_device_.enumerateDeviceExtensionProperties();
             for (const auto& extension : extensions) {
                 if (std::strcmp(extension.extensionName.data(),
@@ -216,6 +237,8 @@ private:
                     supported12.pNext = &supported_isq;
             }
             physical_device_.getFeatures2(&supported);
+            /// Bounds-checked buffer loads are the one reported feature that slows every shader.
+            supported.features.robustBufferAccess = VK_FALSE;
             if (!supported12.bufferDeviceAddress) {
                 device_present_ = false;
                 return;
@@ -241,16 +264,6 @@ private:
                     device_props_.supports_memory_budget = true;
                 }
             }
-            vk::PhysicalDeviceVulkan12Features enabled12{};
-            enabled12.bufferDeviceAddress = VK_TRUE;
-            enabled12.timelineSemaphore = VK_TRUE;
-            enabled12.shaderBufferInt64Atomics = supported12.shaderBufferInt64Atomics;
-            enabled12.shaderFloat16 = supported12.shaderFloat16;
-            vk::PhysicalDeviceInternallySynchronizedQueuesFeaturesKHR enabled_isq{};
-            enabled_isq.internallySynchronizedQueues = VK_TRUE;
-            vk::PhysicalDeviceFeatures2 enabled{};
-            enabled.features.shaderInt64 = supported.features.shaderInt64;
-            enabled.pNext = &enabled12;
             uint32_t total_queues = 0;
             uint32_t maximum_family_queues = 0;
             for (const uint32_t family : compute_families_) {
@@ -271,7 +284,7 @@ private:
             device_info.pQueueCreateInfos = queue_infos.data();
             device_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
             device_info.ppEnabledExtensionNames = device_extensions.data();
-            device_info.pNext = &enabled;
+            device_info.pNext = &supported;
             device_ = physical_device_.createDevice(device_info);
             compute_queues_.reserve(total_queues);
             queue_family_slots_.reserve(total_queues);
@@ -316,7 +329,12 @@ private:
             device_props_.supports_buffer_device_address = true;
             device_props_.supports_int64 = supported.features.shaderInt64 == VK_TRUE;
             device_props_.supports_int64_atomics = supported12.shaderBufferInt64Atomics == VK_TRUE;
-            device_props_.supports_float16 = supported12.shaderFloat16 == VK_TRUE;
+            device_props_.supports_float16 = supported12.shaderFloat16 == VK_TRUE
+                && supported11.storageBuffer16BitAccess == VK_TRUE;
+            device_props_.supports_int8 = supported12.shaderInt8 == VK_TRUE
+                && supported12.storageBuffer8BitAccess == VK_TRUE;
+            device_props_.supports_int16 = supported.features.shaderInt16 == VK_TRUE
+                && supported11.storageBuffer16BitAccess == VK_TRUE;
             device_props_.supports_timeline_semaphore = true;
             uint64_t device_local_bytes = 0;
             for (uint32_t i = 0; i < memory_properties_.memoryHeapCount; ++i) {
@@ -489,6 +507,15 @@ inline constexpr std::string_view EZ_GLSL_PRELUDE = R"glsl(#version 450
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
 #ifdef VULKAN_FLOAT16
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_16bit_storage : require
+#endif
+#ifdef VULKAN_INT8
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_8bit_storage : require
+#endif
+#ifdef VULKAN_INT16
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_16bit_storage : require
 #endif
 layout(push_constant) uniform EZPush { uint64_t address; } push;
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };
@@ -499,5 +526,18 @@ layout(buffer_reference, std430, buffer_reference_align = 8) buffer I64Array { i
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer F32x4Array { vec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Array { uvec4 v[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer I32x4Array { ivec4 v[]; };
+#ifdef VULKAN_FLOAT16
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer F16Array { float16_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer F16x4Array { f16vec4 v[]; };
+#endif
+#ifdef VULKAN_INT8
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer U8Array { uint8_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer I8Array { int8_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer I8x4Array { i8vec4 v[]; };
+#endif
+#ifdef VULKAN_INT16
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer U16Array { uint16_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer I16Array { int16_t v[]; };
+#endif
 )glsl";
 } // namespace buffetalligator

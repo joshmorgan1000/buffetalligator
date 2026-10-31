@@ -13,7 +13,7 @@ namespace buffetalligator {
  * @brief The pushed address is a list of Slice ids, one per workgroup row; an id resolves through the table.
  */
 inline constexpr std::string_view PUBLIC_GLSL_TAIL = R"glsl(
-uint64_t slice_address(uint id) { U64Array table = U64Array(uint64_t(EZ_TABLE)); return table.v[id]; }
+uint64_t slice_address(uint id) { U64Array table = U64Array(uint64_t(EZ_TABLE)); return table.v[id & 0xFFFFFu]; }
 uint vulkan_slice(uint index) { U32Array list = U32Array(push.address); return list.v[index]; }
 uint vulkan_index() { return gl_WorkGroupID.y; }
 uint vulkan_count() { return gl_NumWorkGroups.y; }
@@ -38,16 +38,19 @@ std::string public_shader_source(std::string_view body) {
 /** --------------------------------------------------------------------------------------------------------- Compile GLSL
  * @brief Compiles GLSL source code into Vulkan SPIR-V.
  * @param source GLSL source code.
- * @param float16 Whether to enable 16-bit floating point support.
+ * @param properties The device's probed facts: the 16-bit float, 8-bit and 16-bit integer views are declared only
+ * where the device reports them.
  * @param name Diagnostic name for error reporting.
  * @return The SPIR-V words.
  */
-std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16, std::string_view name) {
+std::vector<uint32_t> shader_compile_glsl(std::string_view source, const DeviceProperties& properties, std::string_view name) {
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_2);
-    if (float16) options.AddMacroDefinition("VULKAN_FLOAT16", "1");
+    if (properties.supports_float16) options.AddMacroDefinition("VULKAN_FLOAT16", "1");
+    if (properties.supports_int8) options.AddMacroDefinition("VULKAN_INT8", "1");
+    if (properties.supports_int16) options.AddMacroDefinition("VULKAN_INT16", "1");
     const std::string diagnostic_name(name);
     const shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
         source.data(), source.size(), shaderc_compute_shader, diagnostic_name.c_str(), options);

@@ -60,7 +60,10 @@ endif()
 add_library(alligator STATIC
     src/gpu/shader.cpp
     src/gpu/shader_source.cpp
+    src/memory/alligator.cpp
+    src/memory/buffet.cpp
     src/memory/slice.cpp
+    src/memory/slicerec.cpp
     src/memory/registry.cpp
     src/core/host_memory.cpp
     src/kitchen/kitchen.cpp
@@ -69,6 +72,7 @@ add_library(alligator STATIC
     src/containers/slicequeue.cpp
     src/containers/slicemap.cpp
     src/containers/priorityslice.cpp
+    src/containers/potentialslice.cpp
     src/network/ba_wire.c
     src/network/ba_network.c
     src/network/ba_fabric.c

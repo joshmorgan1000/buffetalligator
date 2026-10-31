@@ -9,6 +9,7 @@
  */
 #include <alligator.hpp>
 #include <alligator/easygpu.hpp>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -50,6 +51,21 @@ void alligator_main(uint slice) {
     U32Array source = U32Array(params.source);
     U32Array sink = U32Array(params.sink);
     sink.v[index] = source.v[index] * 3u + 1u;
+}
+)glsl";
+/** --------------------------------------------------------------------------------------------------------- Halves Body
+ * @brief One lane per half: sink[i] = 2 * source[i] + 1 in float16, through the prelude's F16Array.
+ */
+constexpr std::string_view HALVES_BODY = R"glsl(
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer Params { uint64_t source; uint64_t sink; uint count; };
+void alligator_main(uint slice) {
+    Params params = Params(slice_address(slice));
+    const uint index = gl_GlobalInvocationID.x;
+    if (index >= params.count) return;
+    F16Array source = F16Array(params.source);
+    F16Array sink = F16Array(params.sink);
+    sink.v[index] = source.v[index] * float16_t(2.0) + float16_t(1.0);
 }
 )glsl";
 uint64_t failures = 0;  ///< Checks that failed, over the whole run.
@@ -290,6 +306,34 @@ void concurrent(buffetalligator::Shader& shader) {
         }
     }
 }
+/** --------------------------------------------------------------------------------------------------------- Halves
+ * @brief float16 loads, arithmetic and stores through the prelude's F16Array, when the device reports them.
+ */
+void halves() {
+    if (!buffetalligator::GPU::capabilities().supports_float16) {
+        std::printf("Skipping float16: the device does not report it\n");
+        return;
+    }
+    std::printf("Dispatching one row of %u halves through F16Array...\n", ROW_WORDS);
+    Slice source(size_t{ROW_WORDS} * sizeof(_Float16));
+    Slice sink(size_t{ROW_WORDS} * sizeof(_Float16));
+    Slice params(sizeof(Params));
+    _Float16* in = source.data<_Float16>();
+    for (uint32_t index = 0; index < ROW_WORDS; ++index) in[index] = static_cast<_Float16>((index & 1023u) * 0.5f);
+    record(params, source, sink, ROW_WORDS);
+    buffetalligator::Shader shader(HALVES_BODY, "fastpath_halves", (ROW_WORDS + 63u) / 64u);
+    shader(params).get();
+    const uint16_t* out = sink.data<uint16_t>();
+    uint64_t wrong = 0;
+    for (uint32_t index = 0; index < ROW_WORDS; ++index) {
+        const _Float16 expected = static_cast<_Float16>(static_cast<float>(in[index]) * 2.0f + 1.0f);
+        wrong += out[index] != std::bit_cast<uint16_t>(expected);
+    }
+    if (wrong != 0) {
+        failures += wrong;
+        std::printf("  halves: %llu of %u wrong\n", static_cast<unsigned long long>(wrong), ROW_WORDS);
+    }
+}
 } // namespace
 /** --------------------------------------------------------------------------------------------------------- Main
  * @brief Claims, then every dispatch shape, then the verdict.
@@ -314,6 +358,7 @@ int main() {
     views(*shader);
     concurrent(*shader);
     shader.reset();
+    halves();
     std::printf("Failures: %llu\n", static_cast<unsigned long long>(failures));
     std::printf("%s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;

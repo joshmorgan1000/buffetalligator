@@ -104,6 +104,8 @@ struct GPUStatic {
         capabilities.unified = properties.unified_memory;
         capabilities.supports_float16 = properties.supports_float16;
         capabilities.supports_int64 = properties.supports_int64;
+        capabilities.supports_int8 = properties.supports_int8;
+        capabilities.supports_int16 = properties.supports_int16;
         capabilities.supports_memory_budget = properties.supports_memory_budget;
         capabilities.supports_timeline_semaphore = properties.supports_timeline_semaphore;
         capabilities.queue_count = VulkanContext::queue_count();

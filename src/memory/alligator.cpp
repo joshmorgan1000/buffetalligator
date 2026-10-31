@@ -15,190 +15,183 @@
 #include <thread>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- Registry Seed
- * @brief The registry opens with the heap at index zero, so a lookup by index is valid before any Slice exists;
- * the Alligator's construction registers the rest and lets the GPU probe move the default.
+namespace {
+inline static constexpr size_t MAX_SINGLE_UNITS = (1ull << 27) - 1;
+inline static constexpr size_t MAX_VECTOR_UNITS = (1ull << 33) - 1;
+inline static constexpr size_t MAX_MATRIX_UNITS = (1ull << 35) - 1;
+inline static constexpr size_t MAX_PAGE_UNITS   = (1ull << 39) - 1;
+static constexpr size_t UNIT_SIZES[4] = { 1, 64, 256, 4096 };
+} // anonymous namespace
+/** --------------------------------------------------------------------------------------------------------- Destructor
+ * @brief Destructor for PackedSize, releases the claim if held.
  */
-BuffetDescriptors::BuffetDescriptors() {
-    add<AlignedHeapBuffer>();
+PackedSize::~PackedSize() { release(); }
+/** --------------------------------------------------------------------------------------------------------- Unit
+ * @brief Retrieves the unit size of the packed size.
+ * @return The unit size in bytes.
+ */
+size_t PackedSize::unit() const { return (size_ & 1) == 1 ? UNIT_SIZES[(size_ >> 1) & 0x3] : 0; }
+/** --------------------------------------------------------------------------------------------------------- Size
+ * @brief Retrieves the size of the packed size.
+ * @return The size in bytes.
+ */
+size_t PackedSize::size() const { return (size_ & 1) == 1 ? ((size_ >> 3) & 0x7FFFFFF) * unit() : 0; }
+/** --------------------------------------------------------------------------------------------------------- Capacity
+ * @brief Retrieves the capacity of the packed size.
+ * @return The capacity in bytes.
+ */
+size_t PackedSize::capacity() const {
+    if (!(size_ & 1)) return 0;  // Buffer is not allocated.
+    if (unit() == 1) return (size() + 63) & ~size_t{63};
+    if (unit() == 64) return (size() + 255) & ~size_t{255};
+    if (unit() == 256) return (size() + 4095) & ~size_t{4095};
+    return (size() + 65535) & ~size_t{65535};
 }
-/** --------------------------------------------------------------------------------------------------------- BuffetDescriptors record_allocation
- * @brief Forwards one completed buffet allocation to the memory tracker.
- * @param type The buffet type index.
- * @param bytes The allocation size in bytes.
- * @param buffet The new buffet handle.
+/** --------------------------------------------------------------------------------------------------------- Try Claim
+ * @brief Attempts to claim the packed size for exclusive use.
+ * @return True if the claim was successful, false otherwise.
  */
-void BuffetDescriptors::record_allocation(size_t type, size_t bytes, const void* buffet) {
-    const BuffetDescriptor& placement = *BuffetDescriptors::get(type);
-    Memory::record_allocation(placement, bytes);
-    Memory::record_code_location(placement, bytes, buffet);
-}
-/** --------------------------------------------------------------------------------------------------------- BuffetDescriptors record_deallocation
- * @brief Forwards one buffet release to the memory tracker.
- * @param type The buffet type index.
- * @param bytes The allocation size in bytes.
- * @param buffet The buffet handle being released.
+bool PackedSize::try_claim() { return std::atomic_ref<uint32_t>(size_).fetch_or(1) == 0; }
+/** --------------------------------------------------------------------------------------------------------- Release
+ * @brief Releases the claim, making it available for others.
  */
-void BuffetDescriptors::record_deallocation(size_t type, size_t bytes, const void* buffet) {
-    Memory::record_deallocation(*BuffetDescriptors::get(type), bytes);
-    Memory::forget_code_location(buffet);
-}
-/** --------------------------------------------------------------------------------------------------------- Current ChainBuffet for Placement
- * @brief The current link of this thread's lane of the placement's chains, made on the first touch; with an
- * expected link it is a compare-and-swap of the lane's current link instead.
- * @param desc The placement.
- * @param expected The link the lane is expected to be on, or null to read.
- * @param desired The link to move the lane to.
- * @return The current link, or the desired link when the swap landed and null when it did not.
+void PackedSize::release() { std::atomic_ref<uint32_t>(size_).store(0, std::memory_order_release); }
+/** --------------------------------------------------------------------------------------------------------- Constructor
+ * @brief Constructs a PackedSize with the specified size.
+ * @param size The size in bytes.
  */
-/// @brief The lanes' current links, four per placement, grown as placements register; the sentinel while growing.
-static std::atomic<void*> heads;
-/// @brief The placements the lanes cover.
-static std::atomic<size_t> num_heads{0};
-ChainBuffet* Alligator::current_for(const BuffetDescriptor* desc, ChainBuffet** expected, ChainBuffet* desired) {
-    static std::atomic<size_t> lane_counter{0};
-    static thread_local size_t lane = lane_counter.fetch_add(1, std::memory_order_relaxed) % 4;
-    const size_t current_size = num_heads.load(std::memory_order_acquire);
-    if (current_size <= desc->index) {
-        /// A probe or swap of lanes that have no links yet finds nothing; only a claim grows the heads.
-        if (expected != nullptr || desired != nullptr) return nullptr;
-        void* desired = reinterpret_cast<void*>(-1ll);
-        void* expected = heads.load(std::memory_order_acquire);
-        if (expected != desired && heads.compare_exchange_strong(expected, desired, std::memory_order_acq_rel)) {
-            /// The new lanes start empty; each makes its link on its first claim.
-            std::atomic<ChainBuffet*>* lane_heads = new std::atomic<ChainBuffet*>[(desc->index + 1) * 4]();
-            std::memcpy(lane_heads, expected, current_size * 4 * sizeof(std::atomic<ChainBuffet*>));
-            num_heads.store(desc->index + 1, std::memory_order_release);
-            heads.store(reinterpret_cast<void*>(lane_heads), std::memory_order_release);
-        }
-    }
-    while (heads.load(std::memory_order_acquire) == reinterpret_cast<void*>(-1ll)) {
-        std::this_thread::yield();
-    }
-    if (desired == nullptr && expected == nullptr) {
-        std::atomic<ChainBuffet*>& current =
-            reinterpret_cast<std::atomic<ChainBuffet*>*>(heads.load(std::memory_order_acquire))[desc->index * 4 + lane];
-        ChainBuffet* link = current.load(std::memory_order_acquire);
-        while (link == nullptr || link == PENDING_LINK) {
-            ChainBuffet* none = nullptr;
-            if (current.compare_exchange_strong(none, PENDING_LINK, std::memory_order_acq_rel)) {
-                /// A lane's first link carries the placement's own table when it has one, otherwise the chain's.
-                const types::SliceSemantics* table = desc->semantics != nullptr
-                    ? static_cast<const types::SliceSemantics*>(desc->semantics)
-                    : &SliceStatics::semantics_of(typeid(ChainBuffet));
-                std::atomic<ChainBuffet*>* lane_heads =
-                    reinterpret_cast<std::atomic<ChainBuffet*>*>(heads.load(std::memory_order_acquire));
-                link = new ChainBuffet(
-                    desc,
-                    desc->default_size_method(),
-                    const_cast<types::SliceSemantics*>(table),
-                    desc->type != 0 ? desc->type : table->type,
-                    lane_heads + desc->index * 4 + lane,
-                    1,
-                    false
-                );
-                current.store(link, std::memory_order_release);
-                return link;
+PackedSize::PackedSize(size_t size) {
+    if (size & ~MAX_SINGLE_UNITS) {
+        if (size & ~MAX_VECTOR_UNITS) {
+            if (size & ~MAX_MATRIX_UNITS) {
+                size_ = (((size + 4095) & ~4095) >> 9) | 7u;
+                return;
             }
-            std::this_thread::yield();
-            link = current.load(std::memory_order_acquire);
+            size_ = (((size + 255) & ~255) >> 5) | 5u;
+            return;
         }
-        return link;
+        size_ = (((size + 63) & ~63) >> 3) | 3u;
+        return;
     }
-    reinterpret_cast<std::atomic<ChainBuffet*>*>(
-        heads.load(std::memory_order_acquire)
-    )[desc->index * 4 + lane].compare_exchange_strong(
-        *expected,
-        desired,
-        std::memory_order_acq_rel
-    );
-    return *expected;
+    size_ = (size << 3) | 1u;
 }
-/** --------------------------------------------------------------------------------------------------------- Buffet Of
- * @brief The buffet object behind a Slice's bytes: the link's buffer as the placement's hooks see it.
- * @param slice The Slice.
- * @return The buffet object.
+/** --------------------------------------------------------------------------------------------------------- Assignment Operator
+ * @brief Assigns a new size to the PackedSize.
+ * @param size The new size in bytes.
+ * @return Reference to the PackedSize.
  */
-void* Alligator::buffet_of(const Slice& slice) {
-    return slice.is_pooled() ? static_cast<ChainBuffet*>(slice.parent_)->handle_
-                             : static_cast<Slice*>(slice.parent_)->parent_;
+PackedSize& PackedSize::operator=(size_t size) {
+    *this = PackedSize(size);
+    return *this;
 }
-/** --------------------------------------------------------------------------------------------------------- Instance
- * @brief The process Alligator, built on first use and never destroyed before static owners retire.
- * @return The Alligator.
+/** --------------------------------------------------------------------------------------------------------- Assignment Operator
+ * @brief Assigns the value of another PackedSize to this one.
+ * @param other The other PackedSize.
+ * @return Reference to this PackedSize.
  */
-Alligator& Alligator::inst() {
-    static Alligator* alligator = new Alligator;
-    return *alligator;
+PackedSize& PackedSize::operator=(PackedSize&& other) {
+    std::swap(size_, other.size_);
+    return *this;
 }
-/** --------------------------------------------------------------------------------------------------------- Destroy
- * @brief A chain root's last handle is gone: the root's count leaves its link.
- * @param root The root.
+/** --------------------------------------------------------------------------------------------------------- Conversion Operator
+ * @brief Converts the PackedSize to a size_t.
+ * @return The size in bytes.
  */
-void Alligator::destroy(Slice& root) {
-    SliceStatics::CHAIN_BUFFER_SEMANTICS.destructor_fn(root);
-}
-/** --------------------------------------------------------------------------------------------------------- Alligator Constructor
- * @brief Registers every buffet type and lets the GPU probe make its placement the default.
+PackedSize::operator size_t() const { return size(); }
+/** --------------------------------------------------------------------------------------------------------- Constructor
+ * @brief Constructs a PackedOffset with the specified offset.
+ * @param offset The offset in bytes.
  */
-Alligator::Alligator() {
-    BuffetDescriptors::descriptor<AlignedHeapBuffer>();
-    GPUStatic::gpu_selection();
-    BuffetDescriptors::descriptor<VulkanBuffer>();
-    BuffetDescriptors::descriptor<MmapBuffet>();
-    LOG_INFO_STREAM << "Buffet Alligator initialized";
-}
-/** --------------------------------------------------------------------------------------------------------- Finalize
- * @brief The teardown's allocator phase, after the Kitchen has stopped: every lane of every placement lets go
- * of its current link, the one ahead of it and the one behind it, so a drained chain frees its slabs.
- */
-void Alligator::finalize() {
-    void* grown = heads.load(std::memory_order_acquire);
-    if (grown == nullptr || grown == reinterpret_cast<void*>(-1ll)) return;
-    std::atomic<ChainBuffet*>* lanes = static_cast<std::atomic<ChainBuffet*>*>(grown);
-    const size_t slots = num_heads.load(std::memory_order_acquire) * 4;
-    for (size_t slot = 0; slot < slots; ++slot) {
-        ChainBuffet* current = lanes[slot].exchange(nullptr, std::memory_order_acq_rel);
-        if (current == nullptr || current == PENDING_LINK) continue;
-        ChainBuffet* links[3] = {current->prev_.load(std::memory_order_acquire), current,
-            current->next_.load(std::memory_order_acquire)};
-        if (links[0] == current) links[0] = nullptr;
-        for (ChainBuffet* link : links) {
-            if (link == nullptr || link == PENDING_LINK) continue;
-            while (ChainBuffet::decrement_refcount(link)) {}
+PackedOffset::PackedOffset(size_t offset) {
+    if (offset & ~((MAX_SINGLE_UNITS << 1) | 1)) {
+        if (offset & ~((MAX_VECTOR_UNITS << 1) | 1)) {
+            if (offset & ~((MAX_MATRIX_UNITS << 1) | 1)) {
+                offset_ = (((offset + 4095) & ~4095) >> 10) | 3u;
+                return;
+            }
+            offset_ = (((offset + 255) & ~255) >> 6) | 2u;
+            return;
         }
+        offset_ = (((offset + 63) & ~63) >> 4) | 1u;
+        return;
+    }
+    offset_ = (offset << 2);
+}
+/** --------------------------------------------------------------------------------------------------------- Unit
+ * @brief Returns the unit of the packed offset.
+ * @return The unit value.
+ */
+size_t PackedOffset::unit() const { return offset_ & 3u; }
+/** --------------------------------------------------------------------------------------------------------- Offset
+ * @brief Returns the offset of the packed offset.
+ * @return The offset value.
+ */
+size_t PackedOffset::offset() const {
+    switch (offset_ & 3u) {
+        case 3u: return ((offset_ & ~3u) << 10);
+        case 2u: return ((offset_ & ~3u) << 6);
+        case 1u: return ((offset_ & ~3u) << 4);
+        default: return (offset_ >> 2);
     }
 }
-/** --------------------------------------------------------------------------------------------------------- Alligator Destructor
- * @brief The Alligator owns nothing of its own beyond the lanes, which finalize has already drained.
+/** --------------------------------------------------------------------------------------------------------- Assignment Operator
+ * @brief Assigns the value of another PackedOffset to this one.
+ * @param other The other PackedOffset.
+ * @return Reference to this PackedOffset.
  */
-Alligator::~Alligator() {}
-/** --------------------------------------------------------------------------------------------------------- For Type
- * @brief Retrieves the placement descriptor for the given type index.
- * @param type The type index.
- * @return The placement descriptor for the type.
- */
-const BuffetDescriptor* Alligator::for_type(uint32_t type) {
-    const BuffetDescriptor* placement = SliceStatics::semantics(type).placement;
-    return placement != nullptr ? placement : Slice::default_placement();
+PackedOffset& PackedOffset::operator=(PackedOffset&& other) {
+    std::swap(offset_, other.offset_);
+    return *this;
 }
-/** --------------------------------------------------------------------------------------------------------- Add Typed Placement
- * @brief A type's placement: the base placement's hooks under the registry's next index, so the type's claims
- * come from chains of their own that carry its table and type word.
- * @param base The placement whose memory the type's claims come from.
- * @param semantics The type's table.
- * @param type The type word its claims carry.
- * @return The type's placement descriptor.
+/** ------------------------------------------------------------------------------------------- Allocator
+ * @brief Returns the singleton instance of the allocator.
+ * @return Reference to the allocator instance.
  */
-const BuffetDescriptor* BuffetDescriptors::add_typed(const BuffetDescriptor& base, const void* semantics, uint32_t type) {
-    std::unique_lock write_lock(mutex_);
-    const size_t index = list_.size();
-    BuffetDescriptor* placement = new BuffetDescriptor(base);
-    placement->semantics = semantics;
-    placement->type = type;
-    placement->index = index;
-    placement->base = base.base;
-    list_.emplace_back(placement);
-    return placement;
+IBuffet::Allocator& IBuffet::allocator() {
+    static Allocator instance;
+    return instance;
+}
+/** --------------------------------------------------------------------------------------- next_available
+ * @brief Get the next available slice index for the given buffer.
+ * @param buffer The buffer to allocate from.
+ * @param offset The offset within the buffer.
+ * @param size The size of the slice.
+ * @return The index of the next available slice.
+ */
+uint32_t IBuffet::Allocator::next_available(
+    std::shared_ptr<IBuffet> buffer,
+    size_t offset,
+    size_t size
+) {
+    if (offset == 0 && size == 0xFFFFFFFFu) {
+        offset = 0;
+        size = buffer->size();
+    }
+    while (true) {
+        const size_t idx = next_idx.fetch_add(1) & 0xFFFFF;
+        if (pool[idx].try_claim()) {
+            pool[idx].buffer_ = buffer;
+            pool[idx].size_ = size;
+            return idx;
+        }
+    }
+}
+/** --------------------------------------------------------------------------------------- Next Available Slice
+ * @brief Get the next available slice record from the pool.
+ * @return Pointer to the next available SliceRec.
+ */
+SliceRec* IBuffet::Allocator::next_available() {
+    while (true) {
+        const size_t idx = next_idx.fetch_add(1) & 0xFFFFF;
+        if (pool[idx].try_claim()) return &pool[idx];
+    }
+}
+/** --------------------------------------------------------------------------------------- t_id
+ * @brief Get the thread-local ID for the current thread.
+ * @return The thread-local ID.
+ */
+size_t IBuffet::Allocator::t_id() {
+    static thread_local size_t id = pick.fetch_add(1);
+    return id;
 }
 } // namespace buffetalligator

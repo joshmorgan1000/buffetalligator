@@ -10,62 +10,32 @@
 #include <cstring>
 
 namespace buffetalligator {
-/** --------------------------------------------------------------------------------------------------------- IBuffet Constructor
- * @brief One buffer: the five Vulkan calls against the cached statics when a device is present, an aligned
- * heap block otherwise; either way the mapping and its address are what a claim cuts from.
- * @param size Bytes.
- * @param novel Whether the buffer is dedicated to one claim.
+/** --------------------------------------------------------------------------------------------------------- Slice Constructor
+ * @brief Constructs a slice with the given size and novelty.
+ * @param size The size of the slice in bytes.
+ * @param novel Whether the slice should be backed by a novel buffer.
  */
-IBuffet::IBuffet(size_t size, bool novel) : size_(static_cast<uint32_t>(size)), novel_(novel) {
-    live_.fetch_add(1, std::memory_order_acq_rel);
-    auto& statics = VulkanBuffer::statics();
-    if (statics.device) {
-        const vk::Buffer buffer = statics.device.createBuffer(
-            size == 64 * 1024 * 1024 ? statics.create_info
-                : vk::BufferCreateInfo({}, size, statics.usage, vk::SharingMode::eExclusive)
-        );
-        const vk::DeviceMemory memory = statics.device.allocateMemory(
-            size == 64 * 1024 * 1024 ? statics.alloc_info64mb
-                : statics.alloc_info_custom(size)
-        );
-        statics.device.bindBufferMemory(buffer, memory, 0);
-        mapped_ = statics.device.mapMemory(memory, 0, size);
-        address_ = statics.device.getBufferAddress(vk::BufferDeviceAddressInfo(buffer));
-        buffer_ = static_cast<VkBuffer>(buffer);
-        memory_ = static_cast<VkDeviceMemory>(memory);
-    } else {
-        const size_t rounded = (size + 63) & ~size_t{63};
-        mapped_ = std::aligned_alloc(64, rounded);
-        if (mapped_ == nullptr) ALLIGATOR_THROW("Allocating " + std::to_string(rounded) + " heap bytes failed");
-        std::memset(mapped_, 0, rounded);
-        address_ = reinterpret_cast<uint64_t>(mapped_);
-    }
-}
-/** --------------------------------------------------------------------------------------------------------- IBuffet Destructor
- * @brief Frees the mapping the way it was made; nothing touches a device that is already gone.
- */
-IBuffet::~IBuffet() {
-    live_.fetch_sub(1, std::memory_order_acq_rel);
-    if (finalize_) finalize_(mapped_);
-    auto& statics = VulkanBuffer::statics();
-    if (buffer_ != nullptr) {
-        if (statics.stopped) return;
-        const vk::DeviceMemory memory(static_cast<VkDeviceMemory>(memory_));
-        statics.device.unmapMemory(memory);
-        statics.device.freeMemory(memory);
-        statics.device.destroyBuffer(vk::Buffer(static_cast<VkBuffer>(buffer_)));
-    } else {
-        std::free(mapped_);
-    }
-    if (id_ != 0xFFFFFFFFu && !fast_allocator().stopping) fast_allocator().addresses[id_] = 0;
-}
 Slice::Slice(size_t size, bool novel) { *this = IBuffet::claim(static_cast<uint32_t>(size), novel); }
+/** --------------------------------------------------------------------------------------------------------- Slice Constructor
+ * @brief Constructs a slice with the given data, size, and novelty.
+ * @param data Pointer to the data to initialize the slice with.
+ * @param size The size of the slice in bytes.
+ * @param novel Whether the slice should be backed by a novel buffer.
+ */
 Slice::Slice(const void* data, size_t size, bool novel) {
     *this = IBuffet::claim(static_cast<uint32_t>(size), novel);
     if (size != 0) std::memcpy(raw(), data, size);
 }
+/** --------------------------------------------------------------------------------------------------------- Slice Copy Constructor
+ * @brief Constructs a slice as a copy of another slice.
+ * @param other The slice to copy.
+ */
 Slice::Slice(const Slice& other)
 : id_(other.id_ == 0xFFFFFFFFu ? 0xFFFFFFFFu : IBuffet::copy_rec(other.rec(), other.address())) {}
+/** --------------------------------------------------------------------------------------------------------- Slice Copy Assignment
+ * @brief Assigns the slice as a copy of another slice.
+ * @param other The slice to copy.
+ */
 Slice& Slice::operator=(const Slice& other) {
     if (this != &other) {
         if (id_ != 0xFFFFFFFFu) rec().release();
@@ -73,7 +43,15 @@ Slice& Slice::operator=(const Slice& other) {
     }
     return *this;
 }
+/** --------------------------------------------------------------------------------------------------------- Slice Move Constructor
+ * @brief Constructs a slice by moving another slice.
+ * @param other The slice to move.
+ */
 Slice::Slice(Slice&& other) : id_(other.id_) { other.id_ = 0xFFFFFFFFu; }
+/** --------------------------------------------------------------------------------------------------------- Slice Move Assignment
+ * @brief Assigns the slice by moving another slice.
+ * @param other The slice to move.
+ */
 Slice& Slice::operator=(Slice&& other) {
     if (this != &other) {
         if (id_ != 0xFFFFFFFFu) rec().release();
@@ -82,7 +60,13 @@ Slice& Slice::operator=(Slice&& other) {
     }
     return *this;
 }
+/** --------------------------------------------------------------------------------------------------------- Slice Destructor
+ * @brief Releases the resources held by the slice.
+ */
 Slice::~Slice() { if (id_ != 0xFFFFFFFFu) rec().release(); }
+/** --------------------------------------------------------------------------------------------------------- Slice::free
+ * @brief Frees the resources held by the slice and resets its ID.
+ */
 void Slice::free() {
     if (id_ != 0xFFFFFFFFu) rec().release();
     id_ = 0xFFFFFFFFu;
@@ -95,7 +79,7 @@ void Slice::free() {
  */
 void Slice::resize(size_t new_size, bool preserve_data, bool novel_buffer) {
     if (preserve_data && id_ != 0xFFFFFFFFu && new_size != 0 && new_size <= size_bytes()) {
-        rec().size_ = static_cast<uint32_t>(new_size);
+        rec().size_ = new_size;
         return;
     }
     Slice fresh = IBuffet::claim(static_cast<uint32_t>(new_size), novel_buffer);
@@ -104,19 +88,74 @@ void Slice::resize(size_t new_size, bool preserve_data, bool novel_buffer) {
     }
     *this = std::move(fresh);
 }
+/** --------------------------------------------------------------------------------------------------------- Slice::raw
+ * @brief Returns the raw pointer to the slice data.
+ * @return Pointer to the slice data.
+ */
 void* Slice::raw() { return rec().raw_; }
+/** --------------------------------------------------------------------------------------------------------- Slice::size_bytes
+ * @brief Returns the size of the slice in bytes.
+ * @return Size of the slice in bytes.
+ */
 const void* Slice::raw() const { return rec().raw_; }
+/** --------------------------------------------------------------------------------------------------------- Slice::size_bytes
+ * @brief Returns the size of the slice in bytes.
+ * @return Size of the slice in bytes.
+ */
 size_t Slice::size_bytes() const { return rec().size_; }
+/** --------------------------------------------------------------------------------------------------------- Slice::slice
+ * @brief Creates a sub-slice of the current slice.
+ * @param offset Offset into the current slice.
+ * @param length Length of the new slice.
+ * @return A new Slice representing the sub-slice.
+ */
 Slice Slice::slice(size_t offset, size_t length) const {
-    return Slice(*IBuffet::ref(IBuffet::copy_rec(rec().slice(offset, length), address() + offset)));
+    return Slice(*rec().sub_slice(offset, length));
 }
+/** --------------------------------------------------------------------------------------------------------- Slice::buffer
+ * @brief Returns the shared pointer to the associated buffer.
+ * @return Shared pointer to the buffer.
+ */
 std::shared_ptr<IBuffet> Slice::buffer() const { return rec().buffer_; }
+/** --------------------------------------------------------------------------------------------------------- Slice::is_novel
+ * @brief Checks if the slice is novel (i.e., newly allocated).
+ * @return True if the slice is novel, false otherwise.
+ */
 bool Slice::is_novel() const { return id_ != 0xFFFFFFFFu && rec().buffer_ && rec().buffer_->novel_; }
+/** --------------------------------------------------------------------------------------------------------- Slice::rec
+ * @brief Returns the underlying SliceRec.
+ * @return Reference to the SliceRec.
+ */
 SliceRec& Slice::rec() { return *IBuffet::ref(id_); }
+/** --------------------------------------------------------------------------------------------------------- Slice::address
+ * @brief Returns the address of the slice.
+ * @return Reference to the address.
+ */
 const SliceRec& Slice::rec() const { return *IBuffet::ref(id_); }
+/** --------------------------------------------------------------------------------------------------------- Slice::address
+ * @brief Returns the address of the slice.
+ * @return Reference to the address.
+ */
 uint64_t& Slice::address() { return IBuffet::addresses()[id_ & 0xFFFFFu]; }
+/** --------------------------------------------------------------------------------------------------------- Slice::address
+ * @brief Returns the address of the slice.
+ * @return Reference to the address.
+ */
 const uint64_t& Slice::address() const { return IBuffet::addresses()[id_ & 0xFFFFFu]; }
+/** --------------------------------------------------------------------------------------------------------- Slice::Slice
+ * @brief Constructs a Slice from a SliceRec.
+ * @param rec The SliceRec to construct from.
+ */
 Slice::Slice(const SliceRec& rec)
 : id_(static_cast<uint32_t>(&rec - static_cast<const SliceRec*>(IBuffet::pool()))) {}
-Slice::Slice(uint64_t, void*, uint32_t id, uint32_t) : id_(id) {}
+/** --------------------------------------------------------------------------------------------------------- Slice::Slice
+ * @brief Constructs a Slice from its components.
+ * @param address The address of the slice.
+ * @param data Pointer to the slice data.
+ * @param id The ID of the slice.
+ * @param flags Additional flags for the slice.
+ */
+Slice::Slice(uint64_t, void*, uint32_t id, uint32_t) : id_(id) {
+    if (id_ != 0xFFFFFFFFu) rec().ref_counter().increment();
+}
 } // namespace buffetalligator

@@ -200,7 +200,9 @@ public:
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
-        instance().placement_details_[*placement.type_idx_getter()].total_allocations_->fetch_add<uint64_t>(
+        instance().placement_details_[
+            *placement.type_idx_getter()
+        ].total_allocations_->template fetch_add<uint64_t>(
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
@@ -217,7 +219,9 @@ public:
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
-        instance().placement_details_[*placement.type_idx_getter()].total_freed_->fetch_add<uint64_t>(
+        instance().placement_details_[
+            *placement.type_idx_getter()
+        ].total_freed_->template fetch_add<uint64_t>(
             static_cast<uint64_t>(size),
             std::memory_order_relaxed
         );
@@ -244,8 +248,9 @@ public:
     template<typename T>
         requires std::is_base_of_v<IBuffet, T>
     static size_t placement_allocations(const T& placement) {
-        return instance().placement_details_[*placement.type_idx_getter()].total_allocations_->load<uint64_t>(
-            std::memory_order_acquire);
+        return instance().placement_details_[
+            *placement.type_idx_getter()
+        ].total_allocations_->template load<uint64_t>(std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Placement Freed
      * @brief Returns all slab bytes ever freed through one buffet type.
@@ -255,8 +260,9 @@ public:
     template<typename T>
         requires std::is_base_of_v<IBuffet, T>
     static size_t placement_freed(const T& placement) {
-        return instance().placement_details_[*placement.type_idx_getter()].total_freed_->load<uint64_t>(
-            std::memory_order_acquire);
+        return instance().placement_details_[
+            *placement.type_idx_getter()
+        ].total_freed_->template load<uint64_t>(std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Placement Usage
      * @brief Returns live slab bytes owned by one buffet type.
@@ -276,8 +282,9 @@ public:
     template<typename T>
         requires std::is_base_of_v<IBuffet, T>
     static size_t placement_available(const T& placement) {
-        return instance().placement_details_[*placement.type_idx_getter()].total_available_->load<uint64_t>(
-            std::memory_order_acquire);
+        return instance().placement_details_[
+            *placement.type_idx_getter()
+        ].total_available_->template load<uint64_t>(std::memory_order_acquire);
     }
     /** ------------------------------------------------------------------------------------------- Set Placement Available
      * @brief Records the reported capacity for one buffet type.
@@ -287,8 +294,9 @@ public:
     template<typename T>
         requires std::is_base_of_v<IBuffet, T>
     static void set_placement_available(const T& placement, size_t size) {
-        instance().placement_details_[*placement.type_idx_getter()].total_available_->store<uint64_t>(
-            static_cast<uint64_t>(size), std::memory_order_release);
+        instance().placement_details_[
+            *placement.type_idx_getter()
+        ].total_available_->template store<uint64_t>(static_cast<uint64_t>(size), std::memory_order_release);
     }
 };
 } // namespace buffetalligator

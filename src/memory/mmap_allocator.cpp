@@ -22,11 +22,14 @@ struct MmapContext {
 MmapContext context;
 }
 /** --------------------------------------------------------------------------------------------------------- MmapBuffet Constructor
- * @brief Creates, reserves, unlinks, and maps one zero-filled scratch file without touching its pages.
- * @param size Buffer size in bytes, rounded up to 64.
- * @param novel Whether the mapping is dedicated to one claim.
+ * @brief Records the size; allocate() creates and maps the scratch file.
+ * @param size Buffer size in bytes.
  */
-MmapBuffet::MmapBuffet(size_t size, bool novel) : IBuffet((size + 63) & ~size_t{63}, novel) {
+MmapBuffet::MmapBuffet(size_t size) : IBuffet(size) {}
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet Allocate
+ * @brief Creates, reserves, unlinks, and maps one zero-filled scratch file without touching its pages.
+ */
+void MmapBuffet::allocate() {
     const size_t bytes = this->size();
     std::string pattern = context.directory + "/buffetalligator-XXXXXX";
     descriptor_ = mkstemp(pattern.data());
@@ -88,6 +91,30 @@ void MmapBuffet::release() {
     mapped_ = nullptr;
     descriptor_ = -1;
 }
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet Free
+ * @brief Unmaps and closes the scratch file.
+ */
+void MmapBuffet::free() { release(); }
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet Size
+ * @brief Retrieves the size of the mapping.
+ * @return The size of the mapping in bytes.
+ */
+size_t MmapBuffet::size() const { return size_; }
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet Set Size
+ * @brief Sets the size the next allocate() maps.
+ * @param size The new size of the mapping in bytes.
+ */
+void MmapBuffet::set_size(size_t size) { size_ = size; }
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet Host Pointer
+ * @brief Retrieves the host pointer to the mapping.
+ * @return Pointer to the mapping.
+ */
+void* MmapBuffet::host_ptr() { return mapped_; }
+/** --------------------------------------------------------------------------------------------------------- MmapBuffet Host Pointer (Const)
+ * @brief Retrieves the host pointer to the mapping (const version).
+ * @return Const pointer to the mapping.
+ */
+const void* MmapBuffet::host_ptr() const { return mapped_; }
 /** --------------------------------------------------------------------------------------------------------- Set Directory
  * @brief Checks the scratch directory once; every mapping after it lands there.
  * @param directory A directory on the filesystem that should back the scratch files.

@@ -20,7 +20,7 @@ namespace buffetalligator {
  */
 void ez_vulkan_touch() { static_cast<void>(VulkanContext::instance()); }
 /// @brief Compiles GLSL compute source into SPIR-V words; defined in shader_source.cpp.
-std::vector<uint32_t> shader_compile_glsl(std::string_view source, bool float16, std::string_view name);
+std::vector<uint32_t> shader_compile_glsl(std::string_view source, const DeviceProperties& properties, std::string_view name);
 /// @brief Makes the shader's writes available to the host, recorded after the dispatch.
 static const vk::MemoryBarrier READBACK{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
 /** --------------------------------------------------------------------------------------------------------- Shader::prepare
@@ -33,7 +33,7 @@ void Shader::prepare(std::string_view glsl, std::string_view name, uint32_t work
     workgroups_.store(workgroups ? workgroups : std::max(1u, properties.max_workgroup_invocations / 64u),
         std::memory_order_relaxed);
     const std::vector<uint32_t> words =
-        shader_compile_glsl(public_shader_source(glsl), properties.supports_float16, name);
+        shader_compile_glsl(public_shader_source(glsl), properties, name);
     const vk::Device device = VulkanContext::device();
     const vk::PushConstantRange range(vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint64_t));
     layout_ = device.createPipelineLayout(vk::PipelineLayoutCreateInfo({}, 0, nullptr, 1, &range));

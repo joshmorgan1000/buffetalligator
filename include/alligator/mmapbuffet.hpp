@@ -23,12 +23,11 @@ private:
      */
     void release();
 public:
-    /** ------------------------------------------------------------------------------------------- Allocating Constructor
-     * @brief Creates, reserves, unlinks, and maps one zero-filled scratch file.
-     * @param size Buffer size in bytes, rounded up to 64.
-     * @param novel Whether the mapping is dedicated to one claim.
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Records the size; allocate() creates and maps the scratch file.
+     * @param size Buffer size in bytes.
      */
-    explicit MmapBuffet(size_t size, bool novel = true);
+    explicit MmapBuffet(size_t size = 0);
     MmapBuffet(const MmapBuffet&) = delete;
     MmapBuffet& operator=(const MmapBuffet&) = delete;
     MmapBuffet(MmapBuffet&&) = delete;
@@ -37,6 +36,12 @@ public:
      * @brief Releases the mapping by unmapping and closing the scratch file.
      */
     ~MmapBuffet() override { release(); }
+    void allocate() override;
+    void free() override;
+    size_t size() const override;
+    void set_size(size_t size) override;
+    void* host_ptr() override;
+    const void* host_ptr() const override;
     /** ------------------------------------------------------------------------------------------- Set Directory
      * @brief Checks the scratch directory once; every mapping after it lands there.
      * @param directory A directory on the filesystem that should back the scratch files.
@@ -47,7 +52,11 @@ public:
      * @param size Bytes.
      * @return The Slice; the mapping goes with its last handle.
      */
-    static Slice claim(size_t size) { return IBuffet::embue_id(std::make_shared<MmapBuffet>(size)); }
+    static Slice claim(size_t size) {
+        std::shared_ptr<IBuffet> buffer = std::make_shared<MmapBuffet>(size);
+        buffer->allocate();
+        return IBuffet::embue_id(buffer);
+    }
     /** ------------------------------------------------------------------------------------------- Flush
      * @brief Synchronously writes a Slice's page-aligned mapped range back to its scratch file.
      * @param slice A Slice claimed from this type.

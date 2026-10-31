@@ -79,14 +79,13 @@ class SliceQueue; class SliceChannel;
 struct SliceRecord; class PrioritySlice;
 class AlignedHeapBuffer; class VulkanBuffer;
 class IBuffet; class SliceMap; class Memory;
-class PotentialSlice; class SliceQueue;
-struct SliceRec;
+class PotentialSlice; class SliceQueue; class SliceRec;
+struct OnZero; struct Entry;
 void ez_vulkan_touch();
 template<typename T> class SliceT;
 template<typename T> class SliceMapT;
 template<typename T> class PotentialSliceT;
 template<typename T> class SliceQueueT;
-/// @brief Helper template that always evaluates to false, used for static assertions in templates.
 template<typename> struct always_false : std::false_type {};
 /** --------------------------------------------------------------------------------------------------------- IsAnIBuffetType
  * @brief Concept to check if a type is a valid IBuffet derived type.
@@ -112,12 +111,13 @@ HostMemoryUsage host_memory_usage();
  * @return The available bytes.
  */
 size_t available_host_bytes();
-/// @brief The smallest buffer a chain links; a buffer this large is checked against the host before it is touched.
+/// @brief The smallest buffer a chain links; a buffer this large is checked against the host
+/// before it is touched.
 inline constexpr size_t SLAB_FLOOR_BYTES = 64ull << 20;
 /** --------------------------------------------------------------------------------------------------------- Slice
  * @class Slice
- * @brief A slice of memory in the buffet alligator: 32 bytes by value, the device address and size a shader
- * reads first, then the parent it counts on, its type word and its count.
+ * @brief A slice of memory in the buffet alligator: 32 bytes by value, the device address and size a
+ * shader reads first, then the parent it counts on, its type word and its count.
  * 
  * All operations in the buffet alligator are performed on slices of memory, represented by the `Slice`
  * class. A Slice is the record a shader reads, so a Slice or a list of them goes to the GPU as it is.
@@ -141,13 +141,6 @@ inline constexpr size_t SLAB_FLOOR_BYTES = 64ull << 20;
  * since it requires the buffer to be allocated and freed individually, so keep that in mind.
  */
 class Slice {
-private:
-    /// @brief The ID of the slice in the buffer's pool.
-    uint32_t id_ = 0xFFFFFFFFu;
-    /// @brief Constructor used internally by the buffet.
-    Slice(uint64_t,void*,uint32_t,uint32_t);
-    /// @brief Friend class declaration for IBuffet.
-    friend class IBuffet;
 public:
     /** ------------------------------------------------------------------------------------------- Slice
      * @brief Default constructor for a Slice, creating an invalid slice.
@@ -351,98 +344,178 @@ public:
      * @return The capacity in bytes.
      */
     size_t capacity() const { return (size_bytes() + 63) & ~size_t{63}; }
+private:
+    /// @brief The ID of the slice in the buffer's pool.
+    uint32_t id_ = 0xFFFFFFFFu;
+    /// @brief Constructor used internally by the buffet.
+    Slice(uint64_t,void*,uint32_t,uint32_t);
+    /// @brief Friend class declaration for IBuffet.
+    friend class IBuffet;
+};
+/** --------------------------------------------------------------------------------------------------------- Packed Size
+ * @class PackedSize
+ * @brief Represents a packed size with different unit types (single, vector, matrix, page) and provides
+ * mechanisms for claiming and releasing a bit for slot ownership.
+ */
+class PackedSize {
+private:
+    uint32_t size_ = 0;
+    PackedSize& operator=(PackedSize&& other);
+public:
+    PackedSize(size_t size = 0);
+    PackedSize& operator=(size_t size);
+    PackedSize(const PackedSize&) = delete;
+    PackedSize& operator=(const PackedSize&) = delete;
+    PackedSize(PackedSize&&) = delete;
+    ~PackedSize();
+    operator size_t() const;
+    size_t unit() const;
+    size_t size() const;
+    size_t capacity() const;
+    bool try_claim();
+    void release();
+};
+/** --------------------------------------------------------------------------------------------------------- Packed Offset
+ * @class PackedOffset
+ * @brief Represents a packed offset with different unit types and provides access to the offset value.
+ */
+class PackedOffset {
+private:
+    uint32_t offset_ = 0;
+    PackedOffset& operator=(PackedOffset&& other);
+public:
+    PackedOffset(size_t offset = 0);
+    PackedOffset(const PackedOffset&) = delete;
+    PackedOffset& operator=(const PackedOffset&) = delete;
+    PackedOffset(PackedOffset&&) = delete;
+    ~PackedOffset() = default;
+    operator size_t() const;
+    size_t unit() const;
+    size_t offset() const;
+};
+/** --------------------------------------------------------------------------------------------------------- default_typed_deleter
+ * @brief Default deleter function for a given type T. Deletes the context pointer if it is not null.
+ * @tparam T The type of the object to delete.
+ * @param context Pointer to the object to delete.
+ */
+template<typename T>
+inline static void default_typed_deleter(void* context) {
+    if (context) delete static_cast<T*>(context);
+}
+/** --------------------------------------------------------------------------------------------------------- GenRefCounter
+ * @class GenRefCounter
+ * @brief A type of 32-bit atomic reference counter that is more efficient than standard atomic counters.
+ * Normally when reference counting you would use a `std::shared_ptr`, or set up a `std::atomic<int>*`, or
+ * something like that. These have a couple problems:
+ * 1. If it is a single object under a lot of contention (such as a slab buffer with a lot of children) this
+ *   can be VERY slow due to the fact that you have potentially thousands of threads all trying to hit the
+ *   same atomic. For this problem, we create generational reference counters, so that a copy of a counter
+ *   points to branch of atomics in a tree like structure rather than everyone all hitting the same atomic.
+ * 2. A `std::shared_ptr` is (at least on this Mac) 24 bytes in size, which can add up quickly, and push
+ *   things out of cache lines that would otherwise fit (since 24 is somewhat of an odd number when it comes
+ *   to power-of-two alignment considerations).
+ * So we question what a reference counter really is, and why we have them. The only purpose they serve is
+ * to act as garbage collection, freeing up heap-allocated resources when the last reference is gone
+ * automatically. I see that more as a counter with a low-priority event attached to it.
+ */
+class GenRefCounter {
+private:
+    static std::array<OnZero, 0x4000>& on_zero_registry();
+    static std::atomic<uint16_t>& next_on_zero_index();
+    void add_on_zero(void (*callback)(void*));
+    struct GenThread;
+    static std::array<GenThread, 2>& gen_threads();
+    uint32_t id_ = 0xFFFFFFFFu;
+public:
+    GenRefCounter() = default;
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a generational reference counter with an optional on-zero callback and
+     * context. A static method should be referenced so that it can be registered in the on-zero
+     * callback registry instead of having to store duplicate copies of the callback.
+     * @param on_zero Function pointer to the on-zero callback. This method is invoked when the
+     * reference count hits zero, passing the context pointer to the callback.
+     * @param context Pointer to the context to be passed to the on-zero callback. Note: the
+     * GenRefCounter does not take ownership of the context pointer; it is the caller's
+     * responsibility to manage its lifetime.
+     */
+    GenRefCounter(void (*on_zero)(void*), void* context);
+    /** ------------------------------------------------------------------------------------------- Typed Deleter Constructor
+     * @brief Constructs a generational reference counter with a typed deleter for the parent
+     * object, a typical or fairly standard use case for typed deleters.
+     * @tparam T The type of the parent object.
+     * @param parent Pointer to the parent object. The default typed deleter will be used to
+     * delete it when the reference count hits zero.
+     */
+    template<typename T>
+    GenRefCounter(T* parent)
+    : GenRefCounter(&default_typed_deleter<T>, parent) {}
+    /** ------------------------------------------------------------------------------------------- Disarm (unsafe)
+     * @brief Clears this counter without triggering the decrement callback. This must be
+     * paired with the `increment_unsafe` method to ensure proper reference counting. Not using
+     * this method properly will likely cause memory leaks and/or fragmentation.
+     */
+    void disarm_override();
+    /** ------------------------------------------------------------------------------------------- Accessors etc. */
+    GenRefCounter(const GenRefCounter& other);
+    GenRefCounter& operator=(const GenRefCounter& other);
+    GenRefCounter(GenRefCounter&& other) noexcept;
+    GenRefCounter& operator=(GenRefCounter&& other) noexcept;
+    ~GenRefCounter();
+    bool valid() const;
+    operator bool() const;
+    size_t num_references() const;
+    void increment();
+    void decrement();
 };
 /** --------------------------------------------------------------------------------------------------------- SliceRec
  * @struct SliceRec
  * @brief A record representing a slice of a buffer, including its raw pointer, associated buffer,
  * ID, and size. Provides mechanisms for claiming and releasing slices.
  */
-struct SliceRec {
-    /// @brief Raw pointer to the slice data.
-    void* raw_ = nullptr;
-    /// @brief Shared pointer to the buffer associated with the slice.
-    std::shared_ptr<IBuffet> buffer_;
-    /// @brief ID of the slice.
-    uint32_t id_ = 0;
-    /// @brief Size of the slice.
-    uint32_t size_ = 0;
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Attempts to claim the slice for exclusive use.
-     * @return True if the slice was successfully claimed, false otherwise.
-     */
-    bool try_claim() {
-        if (std::atomic_ref<uint32_t>(id_).load() & 0x80000000) return false;
-        return (std::atomic_ref<uint32_t>(id_).fetch_or(0x80000000) & 0x80000000) == 0;
-    }
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Releases the slice, making it available for others.
-     */
-    void release() {
-        std::atomic_ref<uint32_t>(id_).store(0, std::memory_order_release);
-        size_ = 0; raw_ = nullptr; buffer_.reset();
-    }
-    /// @brief Default constructor for SliceRec. Initializes members to default values.
-    SliceRec() = default;
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Constructs a SliceRec with the specified raw pointer, buffer, ID, and size.
+class alignas(32) SliceRec {
+public:
+    /** ------------------------------------------------------------------------------------------- Constructor
+     * @brief Constructs a SliceRec with the given raw pointer, buffer, ID, and size.
      * @param raw Raw pointer to the slice data.
-     * @param buffer Shared pointer to the buffer associated with the slice.
-     * @param id ID of the slice.
+     * @param buffer Shared pointer to the associated buffer.
      * @param size Size of the slice.
      */
-    SliceRec(void* raw, std::shared_ptr<IBuffet> buffer, uint32_t id, uint32_t size)
-    : raw_(raw), buffer_(buffer), id_(id | 0x80000000u), size_(size) {}
+    SliceRec(void* raw, std::shared_ptr<IBuffet> buffer, uint32_t size)
+    : raw_(raw), buffer_(buffer), size_(size) {}
     /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Copy constructor for SliceRec.
-     * @param other The SliceRec to copy from.
-     */
-    SliceRec(const SliceRec& other) : raw_(other.raw_)
-    , buffer_(other.buffer_), id_(other.id_), size_(other.size_) {}
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Copy assignment operator for SliceRec.
-     * @param other The SliceRec to copy from.
-     * @return Reference to the assigned SliceRec.
-     */
-    SliceRec& operator=(const SliceRec& other) {
-        release();
-        raw_ = other.raw_; buffer_ = other.buffer_;
-        id_ = other.id_; size_ = other.size_; return *this;
-    }
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Move constructor for SliceRec.
-     * @param other The SliceRec to move from.
-     */
-    SliceRec(SliceRec&& other) noexcept : raw_(other.raw_), buffer_(std::move(other.buffer_))
-    , id_(other.id_ | 0x80000000u), size_(other.size_) {
-        other.raw_ = nullptr; other.id_ = 0; other.size_ = 0;
-    }
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Move assignment operator for SliceRec.
-     * @param other The SliceRec to move from.
-     * @return Reference to the assigned SliceRec.
-     */
-    SliceRec& operator=(SliceRec&& other) noexcept {
-        release();
-        raw_ = other.raw_; buffer_ = std::move(other.buffer_); id_ = other.id_ | 0x80000000u;
-        size_ = other.size_; other.raw_ = nullptr; other.id_ = 0; other.size_ = 0; return *this;
-    }
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Destructor for SliceRec.
-     */
-    ~SliceRec() { release(); }
-    /** ------------------------------------------------------------------------------------------- SliceRec
-     * @brief Creates a slice of the current SliceRec.
+     * @brief Creates a sub-slice of the current SliceRec.
      * @param offset Offset into the current slice.
      * @param length Length of the new slice.
      * @return A new SliceRec representing the slice.
      */
-    SliceRec slice(size_t offset, size_t length) const {
-        SliceRec rec_copy = *this;
-        rec_copy.id_ = 0x80000000u | ((rec_copy.id_ & 0x7FFFFFFFu) + offset);
-        rec_copy.raw_ = static_cast<char*>(rec_copy.raw_) + offset;
-        rec_copy.size_ = length == SIZE_MAX ? size_ - offset : length;
-        return rec_copy;
-    }
+    SliceRec* sub_slice(size_t offset, size_t length) const;
+    //--------------------------------------------------------------------------------------------- Accessors, etc
+    bool try_claim(); void release(); SliceRec() = default; ~SliceRec();
+    SliceRec(const SliceRec& other) = delete;
+    SliceRec& operator=(const SliceRec& other) = delete;
+    SliceRec(SliceRec&& other) noexcept = delete;
+    SliceRec& operator=(SliceRec&& other) noexcept = delete;
+    size_t size() const;
+    void set_size(size_t size);
+    size_t capacity() const;
+    std::shared_ptr<IBuffet> buffer() const;
+    void set_buffer(std::shared_ptr<IBuffet> buffer);
+    void* raw();
+    const void* raw() const;
+    void set_raw(void* raw);
+    size_t id() const;
+    void set(std::shared_ptr<IBuffet> buffer, void* raw, size_t size);
+    void set(const SliceRec& other);
+    uint64_t& address();
+    const uint64_t& address() const;
+    GenRefCounter& ref_counter();
+    const GenRefCounter& ref_counter() const;
+private:
+    void* raw_ = nullptr;
+    std::shared_ptr<IBuffet> buffer_;
+    PackedSize size_;
+    friend class IBuffet;
+    friend class Slice;
 };
 /** --------------------------------------------------------------------------------------------------------- IBuffet
  * @class IBuffet
@@ -451,93 +524,90 @@ struct SliceRec {
  */
 class IBuffet : public std::enable_shared_from_this<IBuffet> {
 public:
+    struct Allocator;
+    virtual ~IBuffet();
+    IBuffet(size_t size = 0);
+    virtual void* host_ptr() = 0;
+    virtual const void* host_ptr() const = 0;
+    virtual void allocate();
+    virtual uint64_t device_address() const;
+    virtual size_t size() const = 0;
+    virtual void set_size(size_t size) = 0;
+    virtual void free() {}
+    static uint64_t device_table();
+    static uint32_t live();
+    static uint64_t* addresses();
+    static uint64_t& addr(uint32_t index);
+    static GenRefCounter* ref_counters();
+    using DefaultBufferFactoryFn = std::shared_ptr<IBuffet> (*)();
+    /** ------------------------------------------------------------------------------------------- Set Default Factory
+     * @brief Registers the factory every chain buffer comes from and builds the address table with it.
+     * @param factory The factory, a static method of the backend's buffer type.
+     */
+    static void set_default_factory(DefaultBufferFactoryFn factory);
+    IBuffet(const IBuffet&) = delete;
+    IBuffet& operator=(const IBuffet&) = delete;
+    IBuffet(IBuffet&&) = delete;
+    IBuffet& operator=(IBuffet&&) = delete;
+    void* mapped() const;
+    uint64_t address() const;
+    /** ------------------------------------------------------------------------------------------- Claim
+     * @brief Claims a slice of the buffer.
+     * @param size The size of the slice.
+     * @param novel Whether to allocate a novel buffer.
+     * @return The claimed slice.
+     */
+    static Slice claim(uint32_t size, bool novel = false);
+    static SliceRec* next_available();
+    static SliceRec* ref(uint32_t idx);
+    static std::shared_ptr<IBuffet> current();
+    static void* pool();
     /** ------------------------------------------------------------------------------------------- FastAllocator
      * @struct FastAllocator
-     * @brief A fast allocator for Vulkan buffers, managing a pool of slice records and providing
-     * efficient allocation and reclamation of buffer slices.
+     * @brief While the Allocator is an embedded structure, this is actually a static singleton
+     * It manages buffer slices and provides efficient allocation and reclamation mechanisms.
      */
-    struct FastAllocator {
+    struct Allocator {
         /// @brief Array of addresses for the buffer slices.
         uint64_t* addresses = nullptr;
         /// @brief Address table for the buffer slices.
         uint64_t address_table;
+        /// @brief The buffer the address table lives in, made by the default factory.
+        std::shared_ptr<IBuffet> table;
         /// @brief Atomic counter for picking the next thread ID.
         std::atomic<size_t> pick{0};
-        /** --------------------------------------------------------------------------------------- t_id
-         * @brief Get the thread-local ID for the current thread.
-         * @return The thread-local ID.
-         */
-        size_t t_id() {
-            static thread_local size_t id = pick.fetch_add(1); return id;
-        }
         /// @brief Queue of fresh buffer instances.
         moodycamel::ConcurrentQueue<std::shared_ptr<IBuffet>> fresh;
         /// @brief Array of current buffer instances.
         std::array<std::shared_ptr<IBuffet>, 2> current;
-        /// @brief Mutexes for protecting access to the current buffer instances.
-        std::array<std::mutex, 2> current_mutexes;
         /// @brief Atomic counter for thread IDs.
         std::atomic<size_t> tid{0};
         /// @brief Pool of slice records.
         std::array<SliceRec, 0x100000> pool;
+        /// @brief Array of reference counters for the buffer slices.
+        std::array<GenRefCounter, 0x100000> ref_counters;
         /// @brief Atomic counter for the next available index in the pool.
         std::atomic<size_t> next_idx{0};
         /// @brief Flag indicating if the allocator is stopping.
         bool stopping = false;
-        /** --------------------------------------------------------------------------------------- next_available
-         * @brief Get the next available slice index for the given buffer.
-         * @param buffer The buffer to allocate from.
-         * @param offset The offset within the buffer.
-         * @param size The size of the slice.
-         * @return The index of the next available slice.
-         */
+        size_t t_id();
         uint32_t next_available(
             std::shared_ptr<IBuffet> buffer,
-            uint32_t offset = 0,
-            uint32_t size = 0xFFFFFFFFu
-        ) {
-            if (offset == 0 && size == 0xFFFFFFFFu) {
-                offset = 0;
-                size = buffer->size();
-            }
-            while (true) {
-                const size_t idx = next_idx.fetch_add(1) & 0xFFFFF;
-                if (pool[idx].try_claim()) {
-                    pool[idx].buffer_ = buffer;
-                    pool[idx].size_ = size;
-                    pool[idx].id_ = offset | 0x80000000u;
-                    return idx;
-                }
-            }
-        }
-        /** --------------------------------------------------------------------------------------- Next Available Slice
-         * @brief Get the next available slice record from the pool.
-         * @return Pointer to the next available SliceRec.
-         */
-        SliceRec* next_available() {
-            while (true) {
-                const size_t idx = next_idx.fetch_add(1) & 0xFFFFF;
-                if (pool[idx].try_claim()) return &pool[idx];
-            }
-        }
-        /// @brief The last record is the null handle's: claimed forever, no bytes, no buffer.
-        FastAllocator() { pool[0xFFFFF].id_ = 0x80000000u; }
-        ~FastAllocator() { stopping = true; }
-        FastAllocator(const FastAllocator&) = delete;
-        FastAllocator& operator=(const FastAllocator&) = delete;
-        FastAllocator(FastAllocator&&) = delete;
-        FastAllocator& operator=(FastAllocator&&) = delete;
+            size_t offset = 0,
+            size_t size = 0xFFFFFFFFu
+        );
+        SliceRec* next_available();
+        Allocator() = default;
+        ~Allocator() { stopping = true; }
+        Allocator(const Allocator&) = delete;
+        Allocator& operator=(const Allocator&) = delete;
+        Allocator(Allocator&&) = delete;
+        Allocator& operator=(Allocator&&) = delete;
     };
-    /** --------------------------------------------------------------------------------------- fast_allocator
-     * @brief Get the singleton instance of the FastAllocator.
-     * @return Reference to the FastAllocator instance.
-     */
-    static FastAllocator& fast_allocator() {
-        static FastAllocator instance;
-        return instance;
-    }
+    static Allocator& allocator();
+protected:
     /// @brief ID of the slice, initialized to an invalid value.
-    uint32_t id_ = 0xFFFFFFFFu;
+    uint32_t id_ = 0;
     /// @brief The Vulkan buffer handle, null for a heap buffer.
     void* buffer_ = nullptr;
     /// @brief The Vulkan memory handle, null for a heap buffer.
@@ -547,7 +617,7 @@ public:
     /// @brief Device address of the memory.
     uint64_t address_ = 0;
     /// @brief Size of the buffer.
-    uint32_t size_ = 0;
+    PackedSize size_;
     /// @brief Atomic bump pointer for allocation within the slice.
     std::atomic<uint32_t> bump_{0};
     /// @brief Shared pointer to self, used for lifetime management.
@@ -558,187 +628,45 @@ public:
     void (*finalize_)(void*) = nullptr;
     /// @brief Buffers alive right now, pools and dedicated alike, for leak checks.
     inline static std::atomic<uint32_t> live_{0};
-    /** ------------------------------------------------------------------------------------------- Thread-local ID
-     * @brief Get the thread-local ID for the current thread.
-     * @return Thread-local ID.
-     */
-    static size_t threadid() {
-        static thread_local size_t thid =
-            fast_allocator().tid.fetch_add(1, std::memory_order_relaxed)
-                % fast_allocator().current.size();
-        return thid;
-    }
-    friend struct SliceRec;
+    static size_t threadid();
+    static DefaultBufferFactoryFn& default_factory();
+    static void ensure_table();
+    static void build_table();
+    static void recycle(IBuffet* buffer);
+    static void shutdown();
+    static uint32_t copy_rec(const SliceRec& rec, vk::DeviceAddress address);
+    static Slice embue_id(std::shared_ptr<IBuffet> buffer);
+    friend class SliceRec;
     friend class Slice;
-public:
-    virtual ~IBuffet();
-    using SharedPointerConstructorMethod = std::shared_ptr<IBuffet> (*)(size_t, bool);
-    virtual void* host_ptr() { return mapped_; }
-    virtual const void* host_ptr() const { return mapped_; }
-    virtual uint64_t device_address() const { return address_; }
-    virtual size_t size() const { return size_; }
-    static uint64_t device_table() { return fast_allocator().address_table; }
-    static uint32_t live() { return live_.load(std::memory_order_acquire); }
-    static uint64_t* addresses() { return fast_allocator().addresses; }
-    static uint64_t& addr(uint32_t index) { return fast_allocator().addresses[index]; }
-    IBuffet(size_t size, bool novel = false);
-    IBuffet(const IBuffet&) = delete;
-    IBuffet& operator=(const IBuffet&) = delete;
-    IBuffet(IBuffet&&) = delete;
-    IBuffet& operator=(IBuffet&&) = delete;
-    void* mapped() const { return mapped_; }
-    uint64_t address() const { return address_; }
-    static Slice embue_id(std::shared_ptr<IBuffet> buffer) {
-        ensure_table();
-        FastAllocator& allocator = fast_allocator();
-        const uint32_t idx = allocator.next_available(buffer, 0, buffer->size());
-        allocator.pool[idx].raw_ = buffer->mapped_;
-        allocator.addresses[idx] = buffer->address_;
-        return Slice(buffer->address_, buffer->mapped_, idx, buffer->size());
-    }
-    static Slice claim(uint32_t size, bool novel = false) {
-        std::shared_ptr<IBuffet> current = IBuffet::current();
-        if (size == 0) return Slice{};
-        FastAllocator& allocator = fast_allocator();
-        if (novel || size > 64u * 1024u * 1024u) {
-            std::shared_ptr<IBuffet> dedicated =
-                std::make_shared<IBuffet>(size, true);
-            const uint32_t idx = allocator.next_available(dedicated, 0, size);
-            dedicated->id_ = idx;
-            allocator.pool[idx].raw_ = dedicated->mapped_;
-            allocator.addresses[idx] = dedicated->address_;
-            return Slice(dedicated->address_, dedicated->mapped_, idx, size);
-        }
-        const uint32_t units = (size + 63u) >> 6;
-        const uint32_t start = current->bump_.fetch_add(units, std::memory_order_relaxed);
-        if (start + units > (current->size_ >> 6)) {
-            std::shared_ptr<IBuffet> next;
-            {
-                std::lock_guard<std::mutex> lock(allocator.current_mutexes[threadid()]);
-                if (current == allocator.current[threadid()]) {
-                    if (!allocator.fresh.try_dequeue(next)) {
-                        next = pooled();
-                        allocator.fresh.enqueue(pooled());
-                    }
-                    allocator.current[threadid()] = next;
-                } else {
-                    next = allocator.current[threadid()];
-                }
-            }
-            return next->claim(size);
-        }
-        const uint32_t offset = start << 6;
-        const uint32_t idx = allocator.next_available(current, offset, size);
-        if (current->id_ == 0xFFFFFFFFu) current->id_ = idx;
-        allocator.pool[idx].raw_ = static_cast<char*>(current->mapped_) + offset;
-        allocator.addresses[idx] = current->address_ + offset;
-        return Slice(current->address_ + offset, allocator.pool[idx].raw_, idx, size);
-    }
-    static SliceRec* next_available() { return fast_allocator().next_available(); }
-    static SliceRec* ref(uint32_t idx) { return &fast_allocator().pool[idx & 0xFFFFFu]; }
-    /** ------------------------------------------------------------------------------------------- Ensure Table
-     * @brief Builds the device address table once, after the context has had its chance to freeze.
-     */
-    static void ensure_table() {
-        static std::once_flag built;
-        std::call_once(built, &IBuffet::build_table);
-    }
-    /// @brief The one table: a buffer of the backend the context froze on, never freed.
-    static void build_table() {
-        ez_vulkan_touch();
-        IBuffet* table = new IBuffet(sizeof(uint64_t) * 0x100000);
-        fast_allocator().addresses = static_cast<uint64_t*>(table->mapped_);
-        fast_allocator().address_table = table->address_;
-    }
-    static void recycle(IBuffet* buffer) {
-        FastAllocator& allocator = fast_allocator();
-        if (!allocator.stopping && allocator.fresh.size_approx() < 6) {
-            std::memset(buffer->mapped_, 0, buffer->size_);
-            buffer->bump_.store(0, std::memory_order_relaxed);
-            buffer->id_ = 0xFFFFFFFFu;
-            allocator.fresh.enqueue(std::shared_ptr<IBuffet>(buffer, &recycle));
-        } else {
-            delete buffer;
-        }
-    }
-    static std::shared_ptr<IBuffet> pooled() {
-        return std::shared_ptr<IBuffet>(new IBuffet(64u * 1024u * 1024u), &recycle);
-    }
-    static void shutdown() {
-        FastAllocator& allocator = fast_allocator();
-        allocator.stopping = true;
-        for (std::shared_ptr<IBuffet>& buffer : allocator.current) buffer.reset();
-        std::shared_ptr<IBuffet> spare;
-        while (allocator.fresh.try_dequeue(spare)) spare.reset();
-    }
-    static uint32_t copy_rec(const SliceRec& rec, vk::DeviceAddress address) {
-        FastAllocator& allocator = fast_allocator();
-        SliceRec* fresh = allocator.next_available();
-        *fresh = rec;
-        const uint32_t idx = static_cast<uint32_t>(fresh - allocator.pool.data());
-        allocator.addresses[idx] = address;
-        return idx;
-    }
-    static std::shared_ptr<IBuffet> current() {
-        if (fast_allocator().current[threadid()] == nullptr) {
-            std::lock_guard<std::mutex> lock(fast_allocator().current_mutexes[threadid()]);
-            if (fast_allocator().current[threadid()] == nullptr) {
-                ensure_table();
-                std::shared_ptr<IBuffet> v;
-                if (!fast_allocator().fresh.try_dequeue(v)) {
-                    fast_allocator().current[threadid()] = pooled();
-                    fast_allocator().fresh.enqueue(pooled());
-                } else {
-                    fast_allocator().current[threadid()] = std::move(v);
-                }
-            }
-        }
-        return fast_allocator().current[threadid()];
-    }
-    static void* pool() { return &fast_allocator().pool; }  
 };
 /** --------------------------------------------------------------------------------------------------------- AlignedHeapBuffer
  * @class AlignedHeapBuffer
  * @brief A heap-allocated buffer with 64-byte alignment.
  */
 class AlignedHeapBuffer : public IBuffet {
-private:
-    /// @brief Pointer to the aligned heap buffer.
-    void* buffer_ = nullptr;
-    /// @brief The size of the aligned heap buffer.
-    size_t size_ = 0;
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Creates an aligned heap buffer with the specified size and optional novelty flag.
      * @param size The size of the buffer.
      * @param novel Whether the buffer is novel.
      */
-    AlignedHeapBuffer(size_t size = 0, bool novel = false)
-    : IBuffet(size, novel), size_(((size + 63) & ~63)) {
-        if (size_ == 0) return;
-        buffer_ = aligned_alloc(64, size_);
-        if (buffer_ == nullptr) {
-            std::string error_msg = "AlignedHeapBuffer: failed to allocate " + std::to_string(size_) +
-                " bytes";
-            ALLIGATOR_THROW(error_msg);
-        }
-        std::memset(buffer_, 0, size_);
-    }
-    ~AlignedHeapBuffer() {
-        if (buffer_) std::free(buffer_);
-    }
-    AlignedHeapBuffer(const AlignedHeapBuffer&) = delete;
-    AlignedHeapBuffer& operator=(const AlignedHeapBuffer&) = delete;
-    AlignedHeapBuffer(AlignedHeapBuffer&&) = delete;
-    AlignedHeapBuffer& operator=(AlignedHeapBuffer&&) = delete;
-
+    AlignedHeapBuffer(size_t size = 0) : IBuffet(size) {}
+    AlignedHeapBuffer(const AlignedHeapBuffer& other) = delete;
+    AlignedHeapBuffer& operator=(const AlignedHeapBuffer& other) = delete;
+    AlignedHeapBuffer(AlignedHeapBuffer&& other) = delete;
+    AlignedHeapBuffer& operator=(AlignedHeapBuffer&& other) = delete;
+    ~AlignedHeapBuffer();
+    void allocate() override;
+    void free() override;
+    size_t size() const override;
+    void set_size(size_t size) override;
+    void* host_ptr() override;
+    const void* host_ptr() const override;
 };
 inline static vk::DeviceAddress* addresses() { return IBuffet::addresses(); }
 inline static SliceRec* next_available() { return IBuffet::next_available(); }
 inline static std::shared_ptr<IBuffet> current() { return IBuffet::current(); }
-inline static Slice tiny_claim(uint32_t size, bool novel = false) {
-    return IBuffet::claim(size, novel);
-}
+inline static Slice claim_slice(uint32_t size, bool novel = false) { return IBuffet::claim(size, novel); }
 /** --------------------------------------------------------------------------------------------------------- PotentialSlice
  * @class PotentialSlice
  * @brief A slice that gets filled lazily by the provided fulfillment method.
@@ -751,11 +679,23 @@ private:
 public:
     /** ------------------------------------------------------------------------------------------- Constructor
      * @brief Default constructor for PotentialSlice.
+     * @param fulfillment_method The method to fulfill the slice.
+     * @param context The context for the fulfillment method.
+     * @param context_deleter The deleter for the context.
      */
     PotentialSlice(
         Slice (*fulfillment_method)(void* context) = nullptr,
         void* context = nullptr,
         void (*context_deleter)(void* context) = nullptr
+    );
+    /** ------------------------------------------------------------------------------------------- Constructor with shared context
+     * @brief Constructor for PotentialSlice with a shared context.
+     * @param fulfillment_method The method to fulfill the slice.
+     * @param context The shared context for the fulfillment method.
+     */
+    PotentialSlice(
+        Slice (*fulfillment_method)(std::shared_ptr<void> context),
+        std::shared_ptr<void> context = nullptr
     );
     /** ------------------------------------------------------------------------------------------- Copy/move semantics */
     PotentialSlice(const PotentialSlice& other);
@@ -840,10 +780,12 @@ public:
      */
     bool is_fulfilled() const;
     /** ------------------------------------------------------------------------------------------- Fulfill Slice
-     * @brief Fulfills the slice by invoking its fulfillment method if it has not been fulfilled
-     * yet.
+     * @brief Schedules a fulfillment of the slice if it has not been fulfilled yet asynchronously.
+     * This can be called ahead of time to pre-fetch the slice's data if we know we're going to
+     * need it, for example if looping through a set of these, call the `fulfill()` method on all
+     * all of them first, then process them as needed.
      */
-    void fulfill();
+    void fulfill() const;
     /** ------------------------------------------------------------------------------------------- Get Raw Slice
      * @brief Returns a pointer to the underlying raw Slice object, which may be nullptr if the
      * slice has not been fulfilled yet.
@@ -918,23 +860,27 @@ class SliceT {
 private:
     /// @brief The underlying Slice object that this SliceT wraps.
     Slice slice_;
-    /// @brief Claims one T's worth of bytes in a slot carrying T's type, so the last release runs ~T.
-    static Slice claim_typed(bool novel_buffer);
-    /// @brief Runs ~T over a dedicated buffer's payload as the buffer frees.
-    static void finalize(void* payload) { static_cast<T*>(payload)->~T(); }
 public:
     /** ------------------------------------------------------------------------------------------- Constructor with Initialization
      * @brief Constructs a SliceT and optionally initializes it with the given arguments.
      * @param initialize If true, allocates and initializes the slice.
+     * @param count The number of elements of type T to allocate.
      * @param novel_buffer If true, allocates a novel buffer for the slice.
      * @param args Arguments to forward to the constructor of T.
      */
     template <typename ...Args>
         requires std::is_constructible_v<T, Args...>
-    SliceT(bool initialize = false, bool novel_buffer = false, Args&&... args) {
+    SliceT(
+        bool initialize = false,
+        size_t count = 1,
+        bool novel_buffer = false,
+        Args&&... args
+    ) {
         if (initialize) {
-            slice_ = claim_typed(novel_buffer);
-            new (slice_.raw()) T(std::forward<Args>(args)...);
+            slice_.resize(count * sizeof(T), novel_buffer);
+            for (size_t i = 0; i < count; ++i) {
+                new (static_cast<T*>(slice_.raw()) + i) T(std::forward<Args>(args)...);
+            }
         }
     }
     /** ------------------------------------------------------------------------------------------- Constructor
@@ -1093,16 +1039,32 @@ public:
     /** ------------------------------------------------------------------------------------------- Free the slice
      * @brief Frees the underlying memory of the slice.
      */
-    void free() { slice_.free(); }
+    void free(bool destroy = false) {
+        if (destroy) {
+            if constexpr (std::is_same_v<T, std::string>) {
+                for (size_t i = 0; i < length(); ++i) {
+                    reinterpret_cast<T*>(slice_.raw())[i].~T();
+                }
+            } else if constexpr (requires {
+                typename T::value_type;
+                requires std::is_same_v<std::vector<typename T::value_type>, T>;
+            }) {
+                for (size_t i = 0; i < length(); ++i) {
+                    reinterpret_cast<T*>(slice_.raw())[i].~T();
+                }
+            } else {
+                for (size_t i = 0; i < length(); ++i) {
+                    reinterpret_cast<T*>(slice_.raw())[i].~T();
+                }
+            }
+        }
+        slice_.free();
+    }
     /// @brief Whether the typed handle names no claim.
     bool is_null() const { return slice_.is_null(); }
     /// @brief Whether the typed handle names a claim.
     bool valid() const { return slice_.valid(); }
     operator bool() const { return slice_.valid(); }
-    /// @brief The underlying Slice.
-    Slice& root_slice() { return slice_; }
-    /// @brief The underlying Slice.
-    const Slice& root_slice() const { return slice_; }
 };
 /** --------------------------------------------------------------------------------------------------------- Copy Constructor
  * @brief Copy constructor for SliceT.
@@ -1136,18 +1098,5 @@ template <typename T>
 SliceT<T>& SliceT<T>::operator=(SliceT&& other) noexcept {
     if (this != &other) slice_ = std::move(other.slice_);
     return *this;
-}
-/** --------------------------------------------------------------------------------------------------------- Claim Typed
- * @brief One T's worth of bytes; a T with a destructor gets a dedicated buffer so the last handle's release runs ~T.
- * @param novel_buffer Whether the claim gets a dedicated buffer.
- * @return The claim.
- */
-template <typename T>
-Slice SliceT<T>::claim_typed(bool novel_buffer) {
-    static_assert(alignof(T) <= 64, "A typed claim is SIMD aligned; a T aligned past 64 bytes is not supported yet");
-    if constexpr (std::is_trivially_destructible_v<T>) return IBuffet::claim(sizeof(T), novel_buffer);
-    Slice claim = IBuffet::claim(sizeof(T), true);
-    claim.rec().buffer_->finalize_ = &SliceT<T>::finalize;
-    return claim;
 }
 } // namespace buffetalligator
