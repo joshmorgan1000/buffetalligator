@@ -32,6 +32,7 @@ struct DeviceProperties {
     uint32_t max_push_constants;               ///< Max push constant bytes.
     bool supports_subgroup_arithmetic;         ///< Subgroup arithmetic ops available.
     bool supports_subgroup_shuffle;            ///< Subgroup shuffle ops available.
+    bool supports_subgroup_ballot;             ///< Subgroup ballot ops available.
     bool supports_buffer_device_address;       ///< Device-resolvable buffer addresses.
     bool supports_int64;                       ///< 64-bit integers in shaders.
     bool supports_int64_atomics;               ///< 64-bit buffer atomics.
@@ -332,6 +333,9 @@ private:
             device_props_.supports_subgroup_shuffle =
                 (subgroup.supportedOperations & vk::SubgroupFeatureFlagBits::eShuffle)
                     == vk::SubgroupFeatureFlagBits::eShuffle;
+            device_props_.supports_subgroup_ballot =
+                (subgroup.supportedOperations & vk::SubgroupFeatureFlagBits::eBallot)
+                    == vk::SubgroupFeatureFlagBits::eBallot;
             device_props_.supports_buffer_device_address = true;
             device_props_.supports_int64 = supported.features.shaderInt64 == VK_TRUE;
             device_props_.supports_int64_atomics = supported12.shaderBufferInt64Atomics == VK_TRUE;
@@ -522,6 +526,14 @@ inline constexpr std::string_view EZ_GLSL_PRELUDE = R"glsl(#version 450
 #ifdef VULKAN_INT16
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 #extension GL_EXT_shader_16bit_storage : require
+#endif
+#ifdef VULKAN_SUBGROUP_BALLOT
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#endif
+#ifdef VULKAN_SUBGROUP_ARITHMETIC
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
 #endif
 layout(push_constant) uniform EZPush { uint64_t address; } push;
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Array { uint v[]; };

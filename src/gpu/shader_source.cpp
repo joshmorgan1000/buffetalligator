@@ -51,6 +51,8 @@ std::vector<uint32_t> shader_compile_glsl(std::string_view source, const DeviceP
     if (properties.supports_float16) options.AddMacroDefinition("VULKAN_FLOAT16", "1");
     if (properties.supports_int8) options.AddMacroDefinition("VULKAN_INT8", "1");
     if (properties.supports_int16) options.AddMacroDefinition("VULKAN_INT16", "1");
+    if (properties.supports_subgroup_ballot) options.AddMacroDefinition("VULKAN_SUBGROUP_BALLOT", "1");
+    if (properties.supports_subgroup_arithmetic) options.AddMacroDefinition("VULKAN_SUBGROUP_ARITHMETIC", "1");
     const std::string diagnostic_name(name);
     const shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(
         source.data(), source.size(), shaderc_compute_shader, diagnostic_name.c_str(), options);
